@@ -1,0 +1,69 @@
+# NOTE: This is a SAFE template (no proxy credentials).
+# Fill in `proxies:` / `proxy-groups:` as needed, and keep the real config under `var/private/`.
+
+mixed-port: 7890
+allow-lan: false
+bind-address: 127.0.0.1
+mode: rule
+log-level: info
+ipv6: true
+
+# IMPORTANT:
+# The dashboard app runs behind LazyCat ingress (container network).
+# Bind controller on the host bridge so ingress can reach it via `host.lzcapp:9090`.
+external-controller: 172.18.0.1:9090
+
+# If you set this, also set it in the dashboard UI (it sends Authorization: Bearer <secret>).
+secret: ''
+
+tun:
+  enable: true
+  stack: system
+  auto-route: true
+  auto-detect-interface: true
+  strict-route: true
+  # Bypass local networks + LazyCat control-plane/health probes.
+  route-exclude-address:
+    - 6.6.6.6/32
+    - 127.0.0.0/8
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 169.254.0.0/16
+    - 100.64.0.0/10
+    - 224.0.0.0/4
+    - 255.255.255.255/32
+    - ::1/128
+    - 2000::6666/128
+    - fc00::/7
+    - fe80::/10
+    - ff00::/8
+    - fc03:1136:3800::/40
+
+# ---
+# proxies:
+#   - name: ...
+#     type: socks5
+#     server: ...
+#     port: ...
+#     username: ...
+#     password: ...
+#
+# proxy-groups:
+#   - name: PROXY
+#     type: select
+#     proxies:
+#       - AUTO
+#       - ...
+#
+# rules:
+#   - DOMAIN-SUFFIX,heiyu.space,DIRECT
+#   - DOMAIN-SUFFIX,lazycat.cloud,DIRECT
+#   - DOMAIN-SUFFIX,openai.com,PROXY
+#   - DOMAIN-SUFFIX,chatgpt.com,PROXY
+#   - DOMAIN-SUFFIX,oaistatic.com,PROXY
+#   - DOMAIN-SUFFIX,oaiusercontent.com,PROXY
+#   - DOMAIN-SUFFIX,anthropic.com,PROXY
+#   - DOMAIN-SUFFIX,claude.ai,PROXY
+#   - GEOIP,CN,DIRECT
+#   - MATCH,PROXY

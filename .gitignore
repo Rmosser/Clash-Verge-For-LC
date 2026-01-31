@@ -1,0 +1,44 @@
+# macOS
+.DS_Store
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Logs
+*.log
+
+# Local data / downloads
+data/
+downloads/
+tmp/
+var/
+cookies*.txt
+.notion-write.state.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Node
+node_modules/
+dist/
+# Keep dashboard app dist (it is source for the LazyCat LPK)
+!src/mihomo-dashboard-app/dist/
+!src/mihomo-dashboard-app/dist/**
+.next/
+
+# IDE
+.idea/
+.vscode/
+
+# LPK artifacts
+*.lpk
+
+# Private proxy subscriptions/configs (contain credentials)
+var/private/

@@ -1,0 +1,14 @@
+name: mihomo-dashboard
+package: cloud.lazycat.app.mihomo-dashboard
+version: 0.0.2
+description: Mihomo (Clash Meta) dashboard for switching proxy nodes/groups.
+license: https://choosealicense.com/licenses/mit/
+homepage:
+author:
+application:
+  subdomain: mihomo
+  routes:
+    # Proxy Mihomo controller API from the ingress container to the host network.
+    - /api=http://host.lzcapp:9090
+    # Static UI (packed into the LPK).
+    - /=file:///lzcapp/pkg/content/

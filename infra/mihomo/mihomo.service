@@ -1,0 +1,21 @@
+[Unit]
+Description=Mihomo (Clash Meta)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mihomo
+Group=mihomo
+ExecStart=/usr/local/bin/mihomo -d /var/lib/mihomo -f /etc/mihomo/config.yaml
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+
+# Required for TUN + policy routing.
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target
