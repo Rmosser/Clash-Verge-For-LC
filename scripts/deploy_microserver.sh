@@ -59,18 +59,19 @@ else
 fi
 
 echo "Applying on microserver ..."
-ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$SSH_USER@$HOST" bash -lc "
+ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+  "$SSH_USER@$HOST" TS="$TS" TMP_CFG="$TMP_CFG" TMP_UNIT="$TMP_UNIT" bash -s <<'REMOTE'
 set -euo pipefail
 
 cfg=/etc/mihomo/config.yaml
 unit=/etc/systemd/system/mihomo.service
 
-bak_cfg=\"${cfg}.bak.$TS\"
-bak_unit=\"${unit}.bak.$TS\"
+bak_cfg="${cfg}.bak.${TS}"
+bak_unit="${unit}.bak.${TS}"
 
 # Backups
-if [[ -f \"$cfg\" ]]; then cp -a \"$cfg\" \"$bak_cfg\"; fi
-if [[ -f \"$unit\" ]]; then cp -a \"$unit\" \"$bak_unit\"; fi
+if [[ -f "$cfg" ]]; then cp -a "$cfg" "$bak_cfg"; fi
+if [[ -f "$unit" ]]; then cp -a "$unit" "$bak_unit"; fi
 
 # Ensure directories exist
 id mihomo >/dev/null 2>&1 || useradd --system --home /var/lib/mihomo --shell /usr/sbin/nologin mihomo
@@ -78,14 +79,14 @@ install -d -o root -g mihomo -m 750 /etc/mihomo
 install -d -o mihomo -g mihomo -m 750 /var/lib/mihomo
 
 # Install config + unit
-install -o root -g mihomo -m 640 \"$TMP_CFG\" \"$cfg\"
-install -o root -g root -m 644 \"$TMP_UNIT\" \"$unit\"
-rm -f \"$TMP_CFG\" \"$TMP_UNIT\"
+install -o root -g mihomo -m 640 "$TMP_CFG" "$cfg"
+install -o root -g root -m 644 "$TMP_UNIT" "$unit"
+rm -f "$TMP_CFG" "$TMP_UNIT"
 
 # Optional mmdb
-if [[ -f /tmp/Country.mmdb.$TS ]]; then
-  install -o mihomo -g mihomo -m 644 /tmp/Country.mmdb.$TS /var/lib/mihomo/Country.mmdb
-  rm -f /tmp/Country.mmdb.$TS
+if [[ -f "/tmp/Country.mmdb.${TS}" ]]; then
+  install -o mihomo -g mihomo -m 644 "/tmp/Country.mmdb.${TS}" /var/lib/mihomo/Country.mmdb
+  rm -f "/tmp/Country.mmdb.${TS}"
 fi
 
 # Validate config
@@ -97,7 +98,7 @@ systemctl restart mihomo
 sleep 2
 systemctl is-active mihomo >/dev/null
 
-echo \"OK: mihomo restarted. backups: $bak_cfg $bak_unit\"
-"
+echo "OK: mihomo restarted. backups: $bak_cfg $bak_unit"
+REMOTE
 
-echo "Done." 
+echo "Done."
