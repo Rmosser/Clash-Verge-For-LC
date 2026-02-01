@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Optional local env override
+if [[ -f "$ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$ROOT/.env"
+  set +a
+fi
+
+HOST="${MICROSERVER_HOST:-rainierserver.heiyu.space}"
+SSH_USER="${MICROSERVER_SSH_USER:-root}"
+SSH_KEY="${MICROSERVER_SSH_KEY:-$HOME/.ssh/id_ed25519}"
+
+SECRET_LOCAL_FILE="${MIHOMO_SECRET_FILE_LOCAL:-$ROOT/var/private/mihomo.secret}"
+CONTROLLER_URL="${MIHOMO_CONTROLLER_URL:-http://172.18.0.1:9090}"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/mihomo-manager <command> [args]
+
+Commands:
+  status                    Show service/container status
+  logs [-f]                 Show logs (add -f to follow)
+  config-test               Validate /etc/mihomo/config.yaml (remote)
+  reload                    PUT /configs?force=true
+  restart-core              POST /restart
+  update-geo                POST /upgrade/geo
+  version                   GET /version
+  secret show               Print controller secret (local file or remote /etc/mihomo/config.yaml)
+
+Env (optional, see .env.example):
+  MICROSERVER_HOST, MICROSERVER_SSH_USER, MICROSERVER_SSH_KEY
+  MIHOMO_CONTROLLER_URL (default: http://172.18.0.1:9090)
+  MIHOMO_SECRET or MIHOMO_SECRET_FILE_LOCAL
+EOF
+}
+
+cmd="${1:-}"
+shift || true
+
+if [[ -z "$cmd" || "$cmd" == "help" || "$cmd" == "--help" || "$cmd" == "-h" ]]; then
+  usage
+  exit 0
+fi
+
+ssh_remote() {
+  ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$SSH_USER@$HOST" "$@"
+}
+
+detect_mode() {
+  if ssh_remote "systemctl list-unit-files --no-pager 2>/dev/null | awk '{print \$1}' | grep -qx mihomo.service"; then
+    echo "systemd"
+    return 0
+  fi
+
+  if ssh_remote "command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' | grep -qx mihomo"; then
+    echo "docker"
+    return 0
+  fi
+
+  echo "unknown"
+  return 0
+}
+
+get_secret_local() {
+  if [[ -n "${MIHOMO_SECRET:-}" ]]; then
+    printf '%s' "$MIHOMO_SECRET"
+    return 0
+  fi
+  if [[ -f "$SECRET_LOCAL_FILE" ]]; then
+    tr -d '\r\n' <"$SECRET_LOCAL_FILE"
+    return 0
+  fi
+  printf ''
+}
+
+get_secret_remote() {
+  # Extract only the secret value; avoid printing any other config content.
+  ssh_remote "set -euo pipefail; grep -E '^[[:space:]]*secret:' /etc/mihomo/config.yaml | head -n 1 | sed -E \"s/^[[:space:]]*secret:[[:space:]]*//\" | sed -E \"s/^'(.*)'\\\$|^\\\"(.*)\\\"\\\$/\\1\\2/\" | tr -d '\r\n'"
+}
+
+api_call() {
+  local method="$1"
+  local path="$2"
+  local secret
+  secret="$(get_secret_local)"
+
+  ssh_remote SECRET="$secret" CONTROLLER_URL="$CONTROLLER_URL" METHOD="$method" PATH="$path" bash -s <<'REMOTE'
+set -euo pipefail
+url="${CONTROLLER_URL%/}${PATH}"
+if [[ -n "${SECRET:-}" ]]; then
+  curl -fsS -X "$METHOD" -H "Authorization: Bearer ${SECRET}" "$url" >/dev/null
+else
+  curl -fsS -X "$METHOD" "$url" >/dev/null
+fi
+REMOTE
+}
+
+case "$cmd" in
+  status)
+    mode="$(detect_mode)"
+    echo "mode=$mode host=$HOST"
+    if [[ "$mode" == "systemd" ]]; then
+      ssh_remote "systemctl status mihomo --no-pager"
+    elif [[ "$mode" == "docker" ]]; then
+      ssh_remote "docker ps -a --filter name=^/mihomo$ --format 'table {{.Names}}\\t{{.Status}}\\t{{.Image}}'"
+    else
+      echo "ERROR: could not detect deployment mode (systemd/docker)" >&2
+      exit 1
+    fi
+    ;;
+
+  logs)
+    mode="$(detect_mode)"
+    follow="${1:-}"
+    if [[ "$mode" == "systemd" ]]; then
+      if [[ "$follow" == "-f" ]]; then
+        ssh_remote "journalctl -u mihomo -f --no-pager"
+      else
+        ssh_remote "journalctl -u mihomo -n 200 --no-pager"
+      fi
+    elif [[ "$mode" == "docker" ]]; then
+      if [[ "$follow" == "-f" ]]; then
+        ssh_remote "docker logs -f --tail 200 mihomo"
+      else
+        ssh_remote "docker logs --tail 200 mihomo"
+      fi
+    else
+      echo "ERROR: could not detect deployment mode (systemd/docker)" >&2
+      exit 1
+    fi
+    ;;
+
+  config-test)
+    ssh_remote "set -euo pipefail; /usr/local/bin/mihomo -t -d /var/lib/mihomo -f /etc/mihomo/config.yaml >/dev/null; echo OK"
+    ;;
+
+  reload)
+    api_call PUT "/configs?force=true"
+    echo "OK: reloaded"
+    ;;
+
+  restart-core)
+    api_call POST "/restart"
+    echo "OK: restarted"
+    ;;
+
+  update-geo)
+    api_call POST "/upgrade/geo"
+    echo "OK: geo updated"
+    ;;
+
+  version)
+    secret="$(get_secret_local)"
+    ssh_remote SECRET="$secret" CONTROLLER_URL="$CONTROLLER_URL" bash -s <<'REMOTE'
+set -euo pipefail
+url="${CONTROLLER_URL%/}/version"
+if [[ -n "${SECRET:-}" ]]; then
+  curl -fsS -H "Authorization: Bearer ${SECRET}" "$url"
+else
+  curl -fsS "$url"
+fi
+REMOTE
+    ;;
+
+  secret)
+    sub="${1:-}"
+    shift || true
+    case "$sub" in
+      show)
+        secret="$(get_secret_local)"
+        if [[ -z "$secret" ]]; then
+          secret="$(get_secret_remote)"
+        fi
+        if [[ -z "$secret" ]]; then
+          echo "ERROR: secret not found (set MIHOMO_SECRET or create $SECRET_LOCAL_FILE)" >&2
+          exit 1
+        fi
+        echo "$secret"
+        ;;
+      *)
+        usage
+        exit 1
+        ;;
+    esac
+    ;;
+
+  *)
+    usage
+    exit 1
+    ;;
+esac
+
