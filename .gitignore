@@ -28,9 +28,10 @@ venv/
 # Node
 node_modules/
 dist/
-# Keep dashboard app dist (it is source for the LazyCat LPK)
+# Dashboard app dist is generated (metacubexd assets)
 !src/mihomo-dashboard-app/dist/
-!src/mihomo-dashboard-app/dist/**
+src/mihomo-dashboard-app/dist/**
+!src/mihomo-dashboard-app/dist/README.md
 .next/
 
 # IDE
