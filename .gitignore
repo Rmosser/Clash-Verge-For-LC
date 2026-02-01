@@ -42,3 +42,8 @@ dist/
 
 # Private proxy subscriptions/configs (contain credentials)
 var/private/
+
+# docker compose (deploy/)
+deploy/config.yaml
+deploy/config.yaml.bak
+deploy/secret.txt

@@ -1,0 +1,64 @@
+# NOTE: SAFE template (no proxy credentials).
+# Copy to config.yaml and fill in proxies / proxy-groups / rules as needed.
+
+mixed-port: 7890
+allow-lan: false
+bind-address: 127.0.0.1
+mode: rule
+log-level: info
+ipv6: true
+
+# IMPORTANT:
+# The LazyCat dashboard app reaches the host controller via `host.lzcapp:9090`.
+# Bind controller on the host bridge so ingress can reach it (see docs/LAZYCAT_NETWORK_REPORT.md).
+external-controller: 172.18.0.1:9090
+
+# Controller API secret. `deploy/init.sh` auto-generates one if empty.
+secret: ''
+
+tun:
+  enable: true
+  stack: system
+  auto-route: true
+  auto-detect-interface: true
+  strict-route: true
+  # Bypass local networks + LazyCat control-plane/health probes.
+  route-exclude-address:
+    - 6.6.6.6/32
+    - 127.0.0.0/8
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 169.254.0.0/16
+    - 100.64.0.0/10
+    - 224.0.0.0/4
+    - 255.255.255.255/32
+    - ::1/128
+    - 2000::6666/128
+    - fc00::/7
+    - fe80::/10
+    - ff00::/8
+    - fc03:1136:3800::/40
+
+# ---
+# proxies:
+#   - name: ...
+#     type: socks5
+#     server: ...
+#     port: ...
+#     username: ...
+#     password: ...
+#
+# proxy-groups:
+#   - name: PROXY
+#     type: select
+#     proxies:
+#       - AUTO
+#       - ...
+#
+# rules:
+#   - DOMAIN-SUFFIX,heiyu.space,DIRECT
+#   - DOMAIN-SUFFIX,lazycat.cloud,DIRECT
+#   - GEOIP,CN,DIRECT
+#   - MATCH,PROXY
+
