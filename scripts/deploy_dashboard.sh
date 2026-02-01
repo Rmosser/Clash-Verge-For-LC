@@ -15,6 +15,16 @@ LPK="$APP_DIR/mihomo-dashboard.lpk"
 
 cd "$APP_DIR"
 
+# Ensure the dashboard assets are metacubexd (defaults to latest release).
+if [[ "${METACUBEXD_SKIP_UPDATE:-}" != "1" ]]; then
+  "$ROOT/scripts/update_metacubexd.sh"
+fi
+
+if [[ ! -f "$APP_DIR/dist/index.html" ]]; then
+  echo "ERROR: missing dashboard assets under $APP_DIR/dist (run scripts/update_metacubexd.sh)" >&2
+  exit 1
+fi
+
 # Ensure lzc-cli connected.
 lzc-cli box list >/dev/null
 

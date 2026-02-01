@@ -1,7 +1,7 @@
 name: mihomo-dashboard
 package: cloud.lazycat.app.mihomo-dashboard
-version: 0.0.2
-description: Mihomo (Clash Meta) dashboard for switching proxy nodes/groups.
+version: 0.0.3
+description: metacubexd dashboard for Mihomo (Clash Meta), proxied via LazyCat.
 license: https://choosealicense.com/licenses/mit/
 homepage:
 author:
