@@ -159,12 +159,23 @@ inject = (
     '<script>(function(){'
     'var c=window.__LZCAPP_MIHOMO__||{};'
     'if(!c.secret){return;}'
-    'var u=new URL(window.location.href);'
-    # Prefer full URL so we can include /api path behind the LazyCat app.
-    'if(!u.searchParams.get(\"url\")){u.searchParams.set(\"url\",new URL(\"/api/\",window.location.origin).toString());}'
-    'if(!u.searchParams.get(\"secret\")){u.searchParams.set(\"secret\",c.secret);}'
-    'var next=u.toString();'
-    'if(next!==window.location.href){window.location.replace(next);}'
+    'var backendUrl=new URL(\"/api/\",window.location.origin).toString();'
+    # Seed metacubexd's persisted endpoint store so the whole UI can talk to
+    # our proxied controller (and include Authorization header automatically).
+    'try{'
+    'var id=\"lzc\";'
+    'var list=[];'
+    'try{list=JSON.parse(localStorage.getItem(\"endpointList\")||\"[]\")||[]}catch(_e){list=[]}'
+    'var selected=localStorage.getItem(\"selectedEndpoint\")||\"\";'
+    'var cur=list.find(function(x){return x&&x.id===selected});'
+    'var ok=cur&&cur.url===backendUrl&&cur.secret===c.secret;'
+    'if(!ok){'
+    'list=list.filter(function(x){return x&&x.url!==backendUrl});'
+    'list.unshift({id:id,url:backendUrl,secret:c.secret});'
+    'localStorage.setItem(\"endpointList\",JSON.stringify(list));'
+    'localStorage.setItem(\"selectedEndpoint\",id);'
+    '}'
+    '}catch(_e){}'
     '})();</script>'
 )
 
