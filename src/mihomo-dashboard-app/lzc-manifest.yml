@@ -9,6 +9,8 @@ application:
   subdomain: mihomo
   routes:
     # Proxy Mihomo controller API from the ingress container to the host network.
-    - /api=http://host.lzcapp:9090
+    # NOTE: keep the trailing slash so LazyCat trims the prefix correctly:
+    # /api/v1 -> http://host.lzcapp:9090/v1
+    - /api/=http://host.lzcapp:9090
     # Static UI (packed into the LPK).
     - /=file:///lzcapp/pkg/content/
