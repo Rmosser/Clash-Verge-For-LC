@@ -120,7 +120,7 @@ for p in targets:
         "if(e&&typeof e==`object`){"
         "let t=e.url;"
         "if(t){F.url=t,F.secret=e.secret||``,await $();return}"
-        "let t2=e.hostname;"
+        "t=e.hostname;"
     )
     s2 = s.replace(anchor, inject, 1)
     if s2 == s:
