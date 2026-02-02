@@ -10,6 +10,7 @@
 - Always set a non-empty `secret:` in `/etc/mihomo/config.yaml`.
 - `scripts/deploy_microserver.sh` auto-generates one if empty and saves it locally to `var/private/mihomo.secret`.
 - Use `scripts/mihomo-manager secret show` to retrieve the current secret when configuring metacubexd.
+  - `scripts/deploy_dashboard.sh` can optionally embed the secret into the dashboard package (behind LazyCat login) to make first-time setup zero-config.
 
 ## TUN / transparent proxy risk
 
@@ -19,4 +20,3 @@
 ## Docker privileged risk
 
 The compose option in `deploy/` uses host networking + `NET_ADMIN` + `/dev/net/tun`, which is effectively a privileged networking setup. Only use it if you understand the risks and trust the image/source.
-

@@ -59,6 +59,8 @@ scripts/deploy_all.sh
 scripts/mihomo-manager secret show
 ```
 
+Tip: `scripts/deploy_dashboard.sh` will embed the secret into the dashboard package if it exists at `var/private/mihomo.secret`, so in most cases you can open the dashboard and it will auto-connect.
+
 ## Daily ops
 
 ```bash
