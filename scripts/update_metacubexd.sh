@@ -47,6 +47,7 @@ if [[ ! -f "$cfg" ]]; then
 fi
 
 # Make metacubexd default to our proxied backend under the same origin.
+# Use an absolute URL (metacubexd's connect screen validates URL format).
 python3 - "$cfg" <<'PY'
 import re
 import sys
@@ -55,28 +56,65 @@ from pathlib import Path
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
 
-def set_default_backend_url(src: str) -> str:
-    # Prefer editing an existing defaultBackendURL entry.
-    out = re.sub(r"(defaultBackendURL\s*:\s*)'[^']*'", r"\1'/api'", src)
-    if out != src:
-        return out
-    out = re.sub(r'(defaultBackendURL\s*:\s*)"[^"]*"', r'\1"/api"', src)
+replacement = "defaultBackendURL: new URL('/api', location.href).toString(),"
+
+def patch(src: str) -> str:
+    # Replace an existing defaultBackendURL line (string or expression).
+    out = re.sub(r"^\s*defaultBackendURL\s*:\s*.*?,\s*$", f"  {replacement}", src, flags=re.M)
     if out != src:
         return out
 
-    # Fallback: insert into config object if missing.
+    # Insert into config object.
     m = re.search(r"window\.__METACUBEXD_CONFIG__\s*=\s*\{\s*", src)
     if not m:
         raise SystemExit("config.js format unexpected: missing window.__METACUBEXD_CONFIG__ object")
     insert_at = m.end()
-    return src[:insert_at] + "\n  defaultBackendURL: '/api'," + src[insert_at:]
+    return src[:insert_at] + f"\n  {replacement}\n" + src[insert_at:]
 
 
-new_text = set_default_backend_url(text)
+new_text = patch(text)
 if not new_text.endswith("\n"):
     new_text += "\n"
 path.write_text(new_text, encoding="utf-8")
 PY
+
+# Inject a small bootstrap that auto-connects on first load by passing
+# `?url=<origin>/api&secret=<secret>` (secret provided at build time).
+index_html="$DIST_DIR/index.html"
+if [[ -f "$index_html" ]]; then
+  python3 - "$index_html" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+html = path.read_text(encoding="utf-8", errors="replace")
+
+marker = '<script type="module" src="./_nuxt/'
+if marker not in html:
+    raise SystemExit("index.html format unexpected: missing nuxt module script marker")
+
+if "lzcapp-config.js" in html and "__LZCAPP_MIHOMO__" in html:
+    # Already injected.
+    sys.exit(0)
+
+inject = (
+    '<script src="lzcapp-config.js"></script>'
+    '<script>(function(){'
+    'var c=window.__LZCAPP_MIHOMO__||{};'
+    'if(!c.secret){return;}'
+    'var u=new URL(window.location.href);'
+    'if(!u.searchParams.get(\"url\")){u.searchParams.set(\"url\",new URL(\"/api\",u).toString());}'
+    'if(!u.searchParams.get(\"secret\")){u.searchParams.set(\"secret\",c.secret);}'
+    'var next=u.toString();'
+    'if(next!==window.location.href){window.location.replace(next);}'
+    '})();</script>'
+)
+
+pos = html.index(marker)
+html = html[:pos] + inject + html[pos:]
+path.write_text(html, encoding="utf-8")
+PY
+fi
 
 if [[ -n "${tag:-}" ]]; then
   printf '%s\n' "$tag" >"$DIST_DIR/.metacubexd-version"

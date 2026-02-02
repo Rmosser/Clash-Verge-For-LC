@@ -25,6 +25,27 @@ if [[ ! -f "$APP_DIR/dist/index.html" ]]; then
   exit 1
 fi
 
+# Optional: embed controller secret into the dashboard package so users don't
+# have to paste it manually (still protected by LazyCat login).
+SECRET_LOCAL_FILE="${MIHOMO_SECRET_FILE_LOCAL:-$ROOT/var/private/mihomo.secret}"
+if [[ -n "${MIHOMO_SECRET:-}" ]]; then
+  secret="$MIHOMO_SECRET"
+elif [[ -f "$SECRET_LOCAL_FILE" ]]; then
+  secret="$(tr -d '\r\n' <"$SECRET_LOCAL_FILE")"
+else
+  secret=""
+fi
+
+if [[ -n "$secret" ]]; then
+  cat >"$APP_DIR/dist/lzcapp-config.js" <<EOF
+window.__LZCAPP_MIHOMO__ = { secret: ${secret@Q} };
+EOF
+else
+  # Keep the file absent if we don't have a secret.
+  rm -f "$APP_DIR/dist/lzcapp-config.js" 2>/dev/null || true
+  echo "NOTE: mihomo secret not found; metacubexd will ask user to enter URL/secret." >&2
+fi
+
 # Ensure lzc-cli connected.
 lzc-cli box list >/dev/null
 
