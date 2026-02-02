@@ -33,7 +33,7 @@ if [[ ! -f "$UNIT_LOCAL" ]]; then
 fi
 
 # Guardrails: avoid accidentally breaking dashboard access.
-if ! grep -Eq '^[[:space:]]*external-controller:[[:space:]]*172\\.18\\.0\\.1:9090[[:space:]]*$' "$CFG_LOCAL"; then
+if ! grep -Eq '^[[:space:]]*external-controller:[[:space:]]*172\.18\.0\.1:9090[[:space:]]*$' "$CFG_LOCAL"; then
   echo "ERROR: $CFG_LOCAL must contain: external-controller: 172.18.0.1:9090" >&2
   echo "(LazyCat ingress reaches host via host.lzcapp -> 172.18.0.1)" >&2
   exit 1
