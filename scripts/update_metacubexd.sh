@@ -78,6 +78,60 @@ if not new_text.endswith("\n"):
 path.write_text(new_text, encoding="utf-8")
 PY
 
+# Patch metacubexd's setup page to support auto-connect via
+# `?url=<full_url>&secret=<secret>` (upstream supports only hostname/http/https/port).
+python3 - "$DIST_DIR" <<'PY'
+import sys
+from pathlib import Path
+
+dist_dir = Path(sys.argv[1])
+nuxt_dir = dist_dir / "_nuxt"
+if not nuxt_dir.is_dir():
+    raise SystemExit(f"dist missing _nuxt dir: {nuxt_dir}")
+
+targets = []
+for p in nuxt_dir.glob("*.js"):
+    try:
+        s = p.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        continue
+    if "setupDescription" in s and "endpointURL" in s and "defaultBackendURL" in s and "window.location.search" in s:
+        targets.append(p)
+
+if not targets:
+    raise SystemExit("unable to locate metacubexd setup chunk to patch (query url/secret support)")
+if len(targets) > 2:
+    # Avoid patching multiple unrelated chunks accidentally.
+    raise SystemExit(f"found multiple candidates for setup chunk: {[p.name for p in targets]}")
+
+patched_any = False
+for p in targets:
+    s = p.read_text(encoding="utf-8", errors="replace")
+    if "let t=e.url;" in s and "F.url=t" in s:
+        patched_any = True
+        continue
+
+    anchor = "if(e&&typeof e==`object`){let t=e.hostname;"
+    idx = s.find(anchor)
+    if idx == -1:
+        raise SystemExit(f"unexpected setup chunk format in {p.name}: missing hostname anchor")
+
+    inject = (
+        "if(e&&typeof e==`object`){"
+        "let t=e.url;"
+        "if(t){F.url=t,F.secret=e.secret||``,await $();return}"
+        "let t2=e.hostname;"
+    )
+    s2 = s.replace(anchor, inject, 1)
+    if s2 == s:
+        raise SystemExit(f"failed to patch {p.name}")
+    p.write_text(s2, encoding="utf-8")
+    patched_any = True
+
+if not patched_any:
+    raise SystemExit("failed to patch any setup chunk")
+PY
+
 # Inject a small bootstrap that auto-connects on first load by passing
 # `?url=<origin>/api&secret=<secret>` (secret provided at build time).
 index_html="$DIST_DIR/index.html"
@@ -103,7 +157,8 @@ inject = (
     'var c=window.__LZCAPP_MIHOMO__||{};'
     'if(!c.secret){return;}'
     'var u=new URL(window.location.href);'
-    'if(!u.searchParams.get(\"url\")){u.searchParams.set(\"url\",new URL(\"/api\",u).toString());}'
+    # Prefer full URL so we can include /api path behind the LazyCat app.
+    'if(!u.searchParams.get(\"url\")){u.searchParams.set(\"url\",new URL(\"/api\",window.location.origin).toString());}'
     'if(!u.searchParams.get(\"secret\")){u.searchParams.set(\"secret\",c.secret);}'
     'var next=u.toString();'
     'if(next!==window.location.href){window.location.replace(next);}'
