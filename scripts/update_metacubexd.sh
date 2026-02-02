@@ -56,7 +56,10 @@ from pathlib import Path
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
 
-replacement = "defaultBackendURL: new URL('/api', location.href).toString(),"
+# IMPORTANT: keep trailing slash so ky's prefixUrl resolves correctly:
+# new URL('configs', 'https://x/api') -> https://x/configs (wrong)
+# new URL('configs', 'https://x/api/') -> https://x/api/configs (correct)
+replacement = "defaultBackendURL: new URL('/api/', location.href).toString(),"
 
 def patch(src: str) -> str:
     # Replace an existing defaultBackendURL line (string or expression).
@@ -158,7 +161,7 @@ inject = (
     'if(!c.secret){return;}'
     'var u=new URL(window.location.href);'
     # Prefer full URL so we can include /api path behind the LazyCat app.
-    'if(!u.searchParams.get(\"url\")){u.searchParams.set(\"url\",new URL(\"/api\",window.location.origin).toString());}'
+    'if(!u.searchParams.get(\"url\")){u.searchParams.set(\"url\",new URL(\"/api/\",window.location.origin).toString());}'
     'if(!u.searchParams.get(\"secret\")){u.searchParams.set(\"secret\",c.secret);}'
     'var next=u.toString();'
     'if(next!==window.location.href){window.location.replace(next);}'
