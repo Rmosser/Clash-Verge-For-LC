@@ -19,7 +19,7 @@ SECRET_LOCAL_FILE="${MIHOMO_SECRET_FILE_LOCAL:-$ROOT/var/private/mihomo.secret}"
 CONTROLLER_URL="${MIHOMO_CONTROLLER_URL:-http://172.18.0.1:9090}"
 
 usage() {
-  cat <<'EOF'
+  cat <<'EOF_USAGE'
 Usage: scripts/mihomo-manager <command> [args]
 
 Commands:
@@ -31,12 +31,15 @@ Commands:
   update-geo                POST /upgrade/geo
   version                   GET /version
   secret show               Print controller secret (local file or remote /etc/mihomo/config.yaml)
+  upgrade-core [version]    One-click core upgrade (default: latest stable)
+  rollback-core [target]    Rollback core from backup (default: latest)
+                            target=latest or full backup path
 
 Env (optional, see .env.example):
   MICROSERVER_HOST, MICROSERVER_SSH_USER, MICROSERVER_SSH_KEY
   MIHOMO_CONTROLLER_URL (default: http://172.18.0.1:9090)
   MIHOMO_SECRET or MIHOMO_SECRET_FILE_LOCAL
-EOF
+EOF_USAGE
 }
 
 cmd="${1:-}"
@@ -80,7 +83,7 @@ get_secret_local() {
 
 get_secret_remote() {
   # Extract only the secret value; avoid printing any other config content.
-  ssh_remote "set -euo pipefail; grep -E '^[[:space:]]*secret:' /etc/mihomo/config.yaml | head -n 1 | sed -E \"s/^[[:space:]]*secret:[[:space:]]*//\" | sed -E \"s/^'(.*)'\\\$|^\\\"(.*)\\\"\\\$/\\1\\2/\" | tr -d '\r\n'"
+  ssh_remote "set -euo pipefail; grep -E '^[[:space:]]*secret:' /etc/mihomo/config.yaml | head -n 1 | sed -E \"s/^[[:space:]]*secret:[[:space:]]*//\" | sed -E \"s/^'(.*)'\\$|^\\\"(.*)\\\"\\$/\\1\\2/\" | tr -d '\r\n'"
 }
 
 api_call() {
@@ -189,9 +192,71 @@ REMOTE
     esac
     ;;
 
+  upgrade-core)
+    version="${1:-}"
+    if [[ -n "$version" ]]; then
+      "$ROOT/scripts/deploy_microserver.sh" --upgrade-core --only-core --core-version "$version"
+    else
+      "$ROOT/scripts/deploy_microserver.sh" --upgrade-core --only-core --latest-stable
+    fi
+    ;;
+
+  rollback-core)
+    target="${1:-latest}"
+    ssh_remote ROLLBACK_TARGET="$target" bash -s <<'REMOTE'
+set -euo pipefail
+
+rollback_dir=/var/lib/mihomo/rollback
+meta="$rollback_dir/latest.env"
+mihomo_bin=/usr/local/bin/mihomo
+cfg=/etc/mihomo/config.yaml
+
+target="${ROLLBACK_TARGET:-latest}"
+if [[ "$target" == "latest" ]]; then
+  if [[ ! -f "$meta" ]]; then
+    echo "ERROR: rollback metadata not found: $meta" >&2
+    exit 1
+  fi
+  # shellcheck disable=SC1090
+  . "$meta"
+  target="${BACKUP_BIN:-}"
+fi
+
+if [[ -z "$target" ]]; then
+  echo "ERROR: rollback target is empty" >&2
+  exit 1
+fi
+
+if [[ ! -f "$target" ]]; then
+  echo "ERROR: rollback backup not found: $target" >&2
+  exit 1
+fi
+
+current_version="$("$mihomo_bin" -v 2>/dev/null | head -n 1 | sed -E 's/^Mihomo Meta[[:space:]]+([^[:space:]]+).*/\1/' || true)"
+restore_version="$("$target" -v 2>/dev/null | head -n 1 | sed -E 's/^Mihomo Meta[[:space:]]+([^[:space:]]+).*/\1/' || true)"
+
+install -o root -g root -m 755 "$target" "$mihomo_bin"
+"$mihomo_bin" -t -d /var/lib/mihomo -f "$cfg" >/dev/null
+systemctl restart mihomo
+sleep 2
+systemctl is-active mihomo >/dev/null
+
+now_ts="$(date +%Y%m%d-%H%M%S)"
+cat >"$meta" <<META
+PREV_VERSION=${current_version}
+TARGET_VERSION=${restore_version}
+BACKUP_BIN=${target}
+UPGRADE_AT=${now_ts}
+STATUS=rolled_back
+META
+chmod 600 "$meta" || true
+
+echo "OK: rolled back to ${restore_version:-unknown} using ${target}"
+REMOTE
+    ;;
+
   *)
     usage
     exit 1
     ;;
 esac
-
