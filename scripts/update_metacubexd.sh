@@ -5,6 +5,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 APP_DIR="$ROOT/src/mihomo-dashboard-app"
 DIST_DIR="$APP_DIR/dist"
+CUSTOM_DASHBOARD_ENHANCE_JS="$APP_DIR/custom/lzcapp-dashboard-enhance.js"
+CUSTOM_FETCH_PROXY_JS="$APP_DIR/custom/lzcapp-fetch-proxy.js"
+CUSTOM_JSQR_JS="$APP_DIR/custom/vendor/jsQR.js"
+CUSTOM_ZH_LOCALIZATION_JS="$APP_DIR/custom/lzcapp-zh-localization.js"
 
 VERSION="${METACUBEXD_VERSION:-latest}"
 
@@ -181,6 +185,59 @@ inject = (
 
 pos = html.index(marker)
 html = html[:pos] + inject + html[pos:]
+path.write_text(html, encoding="utf-8")
+PY
+fi
+
+# Copy local enhancement scripts (required for subscription UX improvements).
+if [[ ! -f "$CUSTOM_DASHBOARD_ENHANCE_JS" ]]; then
+  echo "ERROR: missing custom dashboard enhancement script: $CUSTOM_DASHBOARD_ENHANCE_JS" >&2
+  exit 1
+fi
+
+if [[ ! -f "$CUSTOM_FETCH_PROXY_JS" ]]; then
+  echo "ERROR: missing fetch proxy script: $CUSTOM_FETCH_PROXY_JS" >&2
+  exit 1
+fi
+
+if [[ ! -f "$CUSTOM_JSQR_JS" ]]; then
+  echo "ERROR: missing local jsQR fallback script: $CUSTOM_JSQR_JS" >&2
+  exit 1
+fi
+
+if [[ ! -f "$CUSTOM_ZH_LOCALIZATION_JS" ]]; then
+  echo "ERROR: missing zh localization script: $CUSTOM_ZH_LOCALIZATION_JS" >&2
+  exit 1
+fi
+
+cp "$CUSTOM_DASHBOARD_ENHANCE_JS" "$DIST_DIR/lzcapp-dashboard-enhance.js"
+cp "$CUSTOM_FETCH_PROXY_JS" "$DIST_DIR/lzcapp-fetch-proxy.js"
+cp "$CUSTOM_JSQR_JS" "$DIST_DIR/lzcapp-jsqr.js"
+cp "$CUSTOM_ZH_LOCALIZATION_JS" "$DIST_DIR/lzcapp-zh-localization.js"
+
+if [[ -f "$index_html" ]]; then
+  python3 - "$index_html" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+html = path.read_text(encoding="utf-8", errors="replace")
+
+# Remove legacy injection if present.
+html = html.replace('<script src="lzcapp-local-config-upload.js"></script>', '')
+
+inject = '<script src="lzcapp-jsqr.js"></script><script src="lzcapp-zh-localization.js"></script><script src="lzcapp-dashboard-enhance.js"></script>'
+if inject not in html:
+    anchor = '<script src="lzcapp-config.js"></script>'
+    if anchor in html:
+        html = html.replace(anchor, anchor + inject, 1)
+    else:
+        marker = '<script type="module" src="./_nuxt/'
+        pos = html.find(marker)
+        if pos == -1:
+            raise SystemExit("index.html format unexpected: missing nuxt module script marker for dashboard enhance scripts")
+        html = html[:pos] + inject + html[pos:]
+
 path.write_text(html, encoding="utf-8")
 PY
 fi

@@ -12,5 +12,24 @@ application:
     # NOTE: keep the trailing slash so LazyCat trims the prefix correctly:
     # /api/v1 -> http://host.lzcapp:9090/v1
     - /api/=http://host.lzcapp:9090
+    # Same-origin fetch proxy for subscription YAML to bypass browser CORS.
+    - /fetch/=http://fetchproxy:3001
     # Static UI (packed into the LPK).
     - /=file:///lzcapp/pkg/content/
+
+services:
+  fetchproxy:
+    image: registry.lazycat.cloud/node:18-alpine
+    command: node /lzcapp/pkg/content/lzcapp-fetch-proxy.js
+    environment:
+      - PORT=3001
+      - TIMEOUT_MS=25000
+      - MAX_BYTES=12582912
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -qO- http://127.0.0.1:3001/healthz >/dev/null 2>&1 || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
