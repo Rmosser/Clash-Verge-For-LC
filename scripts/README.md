@@ -37,3 +37,31 @@ Operational scripts.
 
 - `selfcheck.sh`
   - Runs a quick remote health check (status, config test, /version, bypass probes).
+
+- `audit_proxy_egress.sh`
+  - Audits each Socks5 proxy's IPv4/IPv6 egress via Mihomo controller API (/proxies/*/delay).
+  - Controller secret never leaves the microserver.
+
+- `patch_auto_group.py`
+  - Dependency-free patcher to restrict `proxy-groups.AUTO.proxies` to a specific list.
+  - Intended for `var/private/mihomo.config.yaml` (ignored, contains credentials).
+
+- `egress_fix.sh`
+  - End-to-end helper:
+    - runs `audit_proxy_egress.sh`
+    - if any V6-capable proxies exist, pins AUTO group to them
+    - deploys via `deploy_microserver.sh`
+    - runs 30x curl acceptance checks via the local mixed-port
+
+- `block_aaaa_resolved.sh` / `unblock_aaaa_resolved.sh`
+  - Optional workaround: configure `systemd-resolved` to refuse AAAA record types.
+  - Used when your proxy nodes are V4-only egress and IPv6 destinations cause stalls/EOF under TUN.
+  - Note: on some LazyCat base OS builds, `systemd-resolved.service` may not exist.
+
+- `prefer_ipv4_gai.sh` / `unprefer_ipv4_gai.sh`
+  - Workaround: tune `/etc/gai.conf` so apps prefer IPv4 destinations (without breaking IPv6 access to IPv6 proxy servers).
+  - This is the recommended fallback when `systemd-resolved` is not manageable as a unit.
+
+- `ensure_ipv6_reject_rule.py`
+  - Optional workaround: inject `IP-CIDR6,::/0,REJECT,no-resolve` before `GEOIP,CN`/`MATCH` to fail-fast on IPv6 destinations.
+  - Useful when your proxies are V4-only egress but clients still attempt IPv6 (prevents long hangs).
