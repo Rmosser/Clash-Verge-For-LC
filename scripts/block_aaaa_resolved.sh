@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=/dev/null
+. "$ROOT/scripts/_lib_paths.sh"
+
+# Optional local env override
+if [[ -f "$ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$ROOT/.env"
+  set +a
+fi
+
+HOST="${MICROSERVER_HOST:-rainierserver.heiyu.space}"
+SSH_USER="${MICROSERVER_SSH_USER:-root}"
+SSH_KEY="${MICROSERVER_SSH_KEY:-$HOME/.ssh/id_ed25519}"
+
+DROPIN_DIR="/etc/systemd/resolved.conf.d"
+DROPIN_FILE="$DROPIN_DIR/90-lzc-no-aaaa.conf"
+
+ssh_remote() {
+  ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$SSH_USER@$HOST" "$@"
+}
+
+echo "Applying AAAA refusal via systemd-resolved drop-in on $SSH_USER@$HOST ..."
+
+ssh_remote DROPIN_DIR="$DROPIN_DIR" DROPIN_FILE="$DROPIN_FILE" bash -s <<'REMOTE'
+set -euo pipefail
+
+if ! systemctl list-unit-files --no-pager 2>/dev/null | awk '{print $1}' | grep -qx systemd-resolved.service; then
+  echo "ERROR: systemd-resolved.service not found on this microserver (LazyCat base OS may provide DNS differently)." >&2
+  echo "Hint: use /etc/gai.conf IPv4 preference instead: scripts/prefer_ipv4_gai.sh" >&2
+  exit 2
+fi
+
+install -d -o root -g root -m 755 "$DROPIN_DIR"
+
+cat >"$DROPIN_FILE" <<'CONF'
+[Resolve]
+# Workaround: many SOCKS5 nodes here appear to be V4-only egress.
+# Refuse AAAA so clients prefer IPv4 destinations under TUN.
+RefuseRecordTypes=AAAA
+CONF
+
+systemctl restart systemd-resolved
+sleep 1
+systemctl is-active systemd-resolved >/dev/null
+
+echo "OK: systemd-resolved restarted"
+echo "--- resolvectl query google.com (should NOT include an IPv6 address)"
+resolvectl query google.com | head -n 25 || true
+REMOTE
