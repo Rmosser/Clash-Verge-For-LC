@@ -3,6 +3,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# shellcheck source=/dev/null
+. "$ROOT/scripts/_lib_paths.sh"
+
 # Optional local env override
 if [[ -f "$ROOT/.env" ]]; then
   set -a
@@ -15,10 +18,10 @@ HOST="${MICROSERVER_HOST:-rainierserver.heiyu.space}"
 SSH_USER="${MICROSERVER_SSH_USER:-root}"
 SSH_KEY="${MICROSERVER_SSH_KEY:-$HOME/.ssh/id_ed25519}"
 
-CFG_LOCAL="${MIHOMO_CONFIG_LOCAL:-$ROOT/var/private/mihomo.config.yaml}"
+CFG_LOCAL="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_CONFIG_LOCAL:-var/private/mihomo.config.yaml}")"
 UNIT_LOCAL="$ROOT/infra/mihomo/mihomo.service"
-MMDB_LOCAL="${MIHOMO_COUNTRY_MMDB_LOCAL:-$ROOT/var/private/Country.mmdb}"
-SECRET_LOCAL_FILE="${MIHOMO_SECRET_FILE_LOCAL:-$ROOT/var/private/mihomo.secret}"
+MMDB_LOCAL="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_COUNTRY_MMDB_LOCAL:-var/private/Country.mmdb}")"
+SECRET_LOCAL_FILE="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_SECRET_FILE_LOCAL:-var/private/mihomo.secret}")"
 TUN_ENABLE="${MIHOMO_TUN_ENABLE:-1}" # 1=enabled (default), 0=disabled
 
 UPGRADE_CORE=0

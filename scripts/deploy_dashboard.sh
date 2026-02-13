@@ -3,6 +3,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# shellcheck source=/dev/null
+. "$ROOT/scripts/_lib_paths.sh"
+
 if [[ -f "$ROOT/.env" ]]; then
   set -a
   # shellcheck disable=SC1091
@@ -27,7 +30,7 @@ fi
 
 # Optional: embed controller secret into the dashboard package so users don't
 # have to paste it manually (still protected by LazyCat login).
-SECRET_LOCAL_FILE="${MIHOMO_SECRET_FILE_LOCAL:-$ROOT/var/private/mihomo.secret}"
+SECRET_LOCAL_FILE="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_SECRET_FILE_LOCAL:-var/private/mihomo.secret}")"
 if [[ -n "${MIHOMO_SECRET:-}" ]]; then
   secret="$MIHOMO_SECRET"
 elif [[ -f "$SECRET_LOCAL_FILE" ]]; then
