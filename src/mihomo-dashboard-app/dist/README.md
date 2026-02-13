@@ -1,12 +1,12 @@
-This directory is the LPK "contentdir".
+This directory is the LazyCat LPK `contentdir`.
 
-The actual dashboard is **metacubexd** and is downloaded at deploy/build time.
+The actual dashboard UI is **metacubexd** and is downloaded/generated at build time.
 
 Common workflows:
 
-- Update + deploy to LazyCat box:
-  - `scripts/deploy_dashboard.sh`
-
-- Update assets only (pin via `METACUBEXD_VERSION=vX.Y.Z`):
+- Update dashboard assets (optionally pin `METACUBEXD_VERSION=vX.Y.Z`):
   - `scripts/update_metacubexd.sh`
+
+- Build + install the LazyCat dashboard app:
+  - `scripts/deploy_dashboard.sh`
 
