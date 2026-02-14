@@ -21,6 +21,41 @@ FORCED_PROXY_RULES = [
     "- DOMAIN-SUFFIX,claude.ai,PROXY",
 ]
 
+DOH_PROXY_RULES = [
+    "- IP-CIDR,1.1.1.1/32,PROXY,no-resolve",
+    "- IP-CIDR,1.0.0.1/32,PROXY,no-resolve",
+    "- IP-CIDR6,2606:4700:4700::1111/128,PROXY,no-resolve",
+    "- IP-CIDR6,2606:4700:4700::1001/128,PROXY,no-resolve",
+]
+
+# A known-good DNS config verified on the microserver. Keep it secret-free.
+DNS_BLOCK = """dns:
+  enable: true
+  listen: 127.0.0.1:1053
+  ipv6: true
+  enhanced-mode: redir-host
+  use-hosts: true
+  respect-rules: true
+  default-nameserver:
+    - 192.168.1.1
+    - 223.5.5.5
+    - 119.29.29.29
+  proxy-server-nameserver:
+    - 192.168.1.1
+    - 223.5.5.5
+    - 119.29.29.29
+  nameserver:
+    - https://1.1.1.1/dns-query
+    - https://1.0.0.1/dns-query
+  nameserver-policy:
+    "+.heiyu.space":
+      - 192.168.1.1
+      - fe80::1
+    "+.lazycat.cloud":
+      - 192.168.1.1
+      - fe80::1
+"""
+
 
 TUN_BLOCK = """\
 
@@ -258,12 +293,219 @@ def ensure_tun_excludes(text: str) -> tuple[str, bool]:
     return "".join(lines), True
 
 
+def _find_top_level_key_line(lines: list[str], key: str) -> int | None:
+    pat = re.compile(rf"^{re.escape(key)}:\s*(#.*)?$")
+    for i, line in enumerate(lines):
+        if pat.match(line.rstrip("\n")):
+            return i
+    return None
+
+
+def _top_level_block_range(lines: list[str], key: str) -> tuple[int, int] | None:
+    """
+    Return [start,end) line indexes for a top-level YAML block like:
+      key:
+        ...
+    We stop at the first non-indented non-empty line (including comments).
+    """
+
+    start = _find_top_level_key_line(lines, key)
+    if start is None:
+        return None
+
+    end = start + 1
+    while end < len(lines):
+        s = lines[end].rstrip("\n")
+        if s.strip() == "":
+            end += 1
+            continue
+        if s.startswith((" ", "\t")):
+            end += 1
+            continue
+        break
+    return start, end
+
+
+def ensure_dns_block(text: str) -> tuple[str, bool]:
+    """
+    Ensure a known-good top-level dns: block exists.
+
+    If absent, insert before proxies: (to avoid credential-bearing sections).
+    If present, normalize it to DNS_BLOCK (dns is safe to override).
+    """
+
+    desired = DNS_BLOCK
+    if not desired.endswith("\n"):
+        desired += "\n"
+
+    lines = text.splitlines(keepends=True)
+    rng = _top_level_block_range(lines, "dns")
+    if rng is not None:
+        start, end = rng
+        current = "".join(lines[start:end])
+        if current == desired:
+            return text, False
+        lines[start:end] = desired.splitlines(keepends=True)
+        return "".join(lines), True
+
+    # Insert before proxies: (preferred), otherwise before proxy-groups:/rules:.
+    insert_before = None
+    for key in ("proxies", "proxy-groups", "rules"):
+        i = _find_top_level_key_line(lines, key)
+        if i is not None:
+            insert_before = i
+            break
+
+    if insert_before is None:
+        # Append at end.
+        if text and not text.endswith("\n"):
+            text += "\n"
+        return text + desired, True
+
+    # Ensure a blank line before the inserted block (unless already at file start).
+    prefix = ""
+    if insert_before > 0 and lines[insert_before - 1].strip() != "":
+        prefix = "\n"
+    lines[insert_before:insert_before] = (prefix + desired).splitlines(keepends=True)
+    return "".join(lines), True
+
+
+def ensure_doh_proxy_rules(text: str) -> tuple[str, bool]:
+    """
+    Ensure DoH endpoint IPs always go PROXY (no-resolve).
+    """
+
+    missing = [r for r in DOH_PROXY_RULES if r not in text]
+    if not missing:
+        return text, False
+
+    insert = "\n" + "\n".join(missing)
+
+    for anchor in (
+        "- DOMAIN-SUFFIX,lazycat.cloud,DIRECT",
+        "- DOMAIN-SUFFIX,heiyu.space,DIRECT",
+    ):
+        out, ok = _insert_after_first(text, anchor, insert)
+        if ok:
+            return out, True
+
+    m = re.search(r"^rules:\s*$", text, flags=re.M)
+    if not m:
+        raise SystemExit("Cannot find rules: section to insert DoH proxy rules")
+    insert_at = m.end()
+    return text[:insert_at] + insert + text[insert_at:], True
+
+
+def ensure_auto_url_test(text: str, url: str) -> tuple[str, bool]:
+    """
+    Set proxy-groups[name=AUTO,type=url-test].url to the given URL and ensure interval=300.
+
+    This is indentation-based to avoid YAML deps.
+    """
+
+    lines = text.splitlines(keepends=True)
+    changed = False
+
+    # Find "- name: AUTO" list item.
+    start = None
+    base_indent = ""
+    for i, line in enumerate(lines):
+        m = re.match(r"^(\s*)-\s*name:\s*AUTO\s*$", line.rstrip("\n"))
+        if m:
+            start = i
+            base_indent = m.group(1)
+            break
+    if start is None:
+        return text, False
+
+    # Determine the end of this group item (next "- name:" at same indent, or next top-level key).
+    end = start + 1
+    while end < len(lines):
+        s = lines[end].rstrip("\n")
+        if re.match(rf"^{re.escape(base_indent)}-\s*name:\s*", s):
+            break
+        if re.match(r"^[^\s].+:\s*$", s):
+            break
+        end += 1
+
+    block = lines[start:end]
+
+    # Only patch url-test groups.
+    type_value = None
+    for line in block:
+        m = re.match(r"^\s*type:\s*(.*?)\s*$", line.rstrip("\n"))
+        if m:
+            type_value = _parse_yaml_scalar(m.group(1))
+            break
+    if type_value != "url-test":
+        return text, False
+
+    field_indent = base_indent + "  "
+    url_line = f"{field_indent}url: {url}\n"
+    interval_line = f"{field_indent}interval: 300\n"
+
+    url_i = None
+    interval_i = None
+    type_i = None
+    for j, line in enumerate(block):
+        if line.startswith(field_indent + "type:"):
+            type_i = j
+        if line.startswith(field_indent + "url:"):
+            url_i = j
+        if line.startswith(field_indent + "interval:"):
+            interval_i = j
+
+    if url_i is None:
+        insert_at = (type_i + 1) if type_i is not None else 1
+        block.insert(insert_at, url_line)
+        changed = True
+        if interval_i is not None and interval_i >= insert_at:
+            interval_i += 1
+    else:
+        if block[url_i] != url_line:
+            block[url_i] = url_line
+            changed = True
+
+    if interval_i is None:
+        # Prefer right after url for readability.
+        if url_i is None:
+            # We inserted url at some point; find it again.
+            for j, line in enumerate(block):
+                if line == url_line:
+                    url_i = j
+                    break
+        insert_at = (url_i + 1) if url_i is not None else 1
+        block.insert(insert_at, interval_line)
+        changed = True
+    else:
+        if block[interval_i] != interval_line:
+            block[interval_i] = interval_line
+            changed = True
+
+    if not changed:
+        return text, False
+
+    lines[start:end] = block
+    return "".join(lines), True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--in", dest="in_path", required=True, help="Input config.yaml")
     parser.add_argument("--out", dest="out_path", required=True, help="Output path")
     parser.add_argument("--add-forced", action="store_true", help="Insert forced PROXY domain rules")
     parser.add_argument("--add-tun", action="store_true", help="Insert a conservative tun: block")
+    parser.add_argument("--ensure-dns", action="store_true", help="Ensure a known-good dns: block exists")
+    parser.add_argument(
+        "--ensure-doh-proxy-rules",
+        action="store_true",
+        help="Ensure DoH endpoint IP rules are forced to PROXY (no-resolve)",
+    )
+    parser.add_argument(
+        "--set-auto-test-url",
+        default=None,
+        help="Set proxy-groups[name=AUTO,type=url-test].url to this value (keeps candidates list)",
+    )
     parser.add_argument(
         "--ensure-secret",
         action="store_true",
@@ -316,6 +558,15 @@ def main() -> int:
         changed = changed or did
     if args.ensure_tun_excludes:
         text, did = ensure_tun_excludes(text)
+        changed = changed or did
+    if args.ensure_dns:
+        text, did = ensure_dns_block(text)
+        changed = changed or did
+    if args.ensure_doh_proxy_rules:
+        text, did = ensure_doh_proxy_rules(text)
+        changed = changed or did
+    if args.set_auto_test_url:
+        text, did = ensure_auto_url_test(text, args.set_auto_test_url)
         changed = changed or did
 
     if not text.endswith("\n"):
