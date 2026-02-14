@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# lzc-net-safe-apply
+# Apply risky network/DNS changes with a 5-minute auto-rollback safety timer.
+#
+# Typical flow:
+#   export LZC_NET_ROLLBACK_DNS="192.168.1.1 fe80::1"
+#   lzc-net-safe-apply apply-dns wlp4s0 223.5.5.5 119.29.29.29
+#   # verify from outside: https://mihomo.<box>.heiyu.space
+#   lzc-net-safe-apply confirm
+
+STATE_DIR="/var/lib/lzc-net-safe-apply"
+CURRENT_FILE="$STATE_DIR/current"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  lzc-net-safe-apply apply-dns <iface> <dns1> [dns2...]
+  lzc-net-safe-apply confirm [op_id]
+  lzc-net-safe-apply rollback <op_id>
+  lzc-net-safe-apply status
+
+Env:
+  LZC_NET_ROLLBACK_DNS="192.168.1.1 fe80::1"   Override rollback DNS servers.
+
+Notes:
+  - apply-dns schedules an auto-rollback after 5 minutes unless confirmed.
+  - rollback restores DNS to the captured previous value (or LZC_NET_ROLLBACK_DNS if set).
+USAGE
+}
+
+need_root() {
+  if [[ "${EUID:-0}" -ne 0 ]]; then
+    echo "ERROR: must run as root" >&2
+    exit 1
+  fi
+}
+
+need_bin() {
+  local b="$1"
+  command -v "$b" >/dev/null 2>&1 || { echo "ERROR: missing required binary: $b" >&2; exit 1; }
+}
+
+now_id() {
+  # Unique enough for transient unit names.
+  date +%Y%m%d-%H%M%S
+}
+
+read_current_op() {
+  [[ -f "$CURRENT_FILE" ]] || return 1
+  cat "$CURRENT_FILE" 2>/dev/null | tr -d '\r\n'
+}
+
+write_current_op() {
+  local op_id="$1"
+  install -d -m 700 "$STATE_DIR"
+  printf '%s\n' "$op_id" >"$CURRENT_FILE"
+  chmod 600 "$CURRENT_FILE" || true
+}
+
+clear_current_op_if() {
+  local op_id="$1"
+  local cur=""
+  cur="$(read_current_op 2>/dev/null || true)"
+  if [[ -n "$cur" && "$cur" == "$op_id" ]]; then
+    rm -f "$CURRENT_FILE" || true
+  fi
+}
+
+state_file_for() {
+  local op_id="$1"
+  echo "$STATE_DIR/op-${op_id}.env"
+}
+
+get_iface_dns() {
+  local iface="$1"
+  # Example: "Link 2 (wlp4s0): 192.168.1.1 223.5.5.5"
+  resolvectl dns "$iface" 2>/dev/null | sed -E 's/^.*: *//'
+}
+
+cancel_units() {
+  local unit="$1"
+  # Transient units created by systemd-run show up as <unit>.timer and <unit>.service.
+  systemctl stop "${unit}.timer" >/dev/null 2>&1 || true
+  systemctl stop "${unit}.service" >/dev/null 2>&1 || true
+  systemctl cancel "${unit}.timer" "${unit}.service" >/dev/null 2>&1 || true
+  systemctl reset-failed "${unit}.timer" "${unit}.service" >/dev/null 2>&1 || true
+}
+
+cmd_apply_dns() {
+  need_root
+  need_bin resolvectl
+  need_bin systemd-run
+  need_bin systemctl
+
+  if [[ $# -lt 2 ]]; then
+    usage >&2
+    exit 1
+  fi
+
+  local iface="$1"
+  shift
+  local new_dns=("$@")
+
+  local prev_dns=""
+  prev_dns="$(get_iface_dns "$iface" | tr -s ' ' | sed 's/^ *//; s/ *$//')"
+
+  local rollback_dns=""
+  rollback_dns="${LZC_NET_ROLLBACK_DNS:-$prev_dns}"
+  rollback_dns="$(echo "$rollback_dns" | tr -s ' ' | sed 's/^ *//; s/ *$//')"
+
+  local op_id
+  op_id="$(now_id)-$$-${RANDOM:-0}"
+
+  install -d -m 700 "$STATE_DIR"
+  local sf
+  sf="$(state_file_for "$op_id")"
+  {
+    echo "iface='$iface'"
+    echo "prev_dns='$prev_dns'"
+    echo "rollback_dns='$rollback_dns'"
+    printf "new_dns='"
+    printf '%s' "${new_dns[*]}"
+    echo "'"
+  } >"$sf"
+  chmod 600 "$sf" || true
+
+  write_current_op "$op_id"
+
+  echo "Applying DNS on iface=$iface: ${new_dns[*]}" >&2
+  resolvectl dns "$iface" "${new_dns[@]}"
+  resolvectl flush-caches >/dev/null 2>&1 || true
+
+  local unit="lzc-net-rollback-${op_id}"
+  echo "Scheduling auto-rollback in 300s: ${unit}.timer" >&2
+  systemd-run \
+    --unit="$unit" \
+    --collect \
+    --on-active=300s \
+    /usr/local/sbin/lzc-net-safe-apply rollback "$op_id" >/dev/null
+
+  echo "OK. Verify external access now, then run: lzc-net-safe-apply confirm ${op_id}" >&2
+}
+
+cmd_confirm() {
+  need_root
+  need_bin systemctl
+
+  local op_id="${1:-}"
+  if [[ -z "$op_id" ]]; then
+    op_id="$(read_current_op 2>/dev/null || true)"
+  fi
+  if [[ -z "$op_id" ]]; then
+    echo "No pending op_id found." >&2
+    exit 0
+  fi
+
+  local unit="lzc-net-rollback-${op_id}"
+  cancel_units "$unit"
+
+  rm -f "$(state_file_for "$op_id")" >/dev/null 2>&1 || true
+  clear_current_op_if "$op_id"
+
+  echo "Confirmed. Auto-rollback canceled for op_id=$op_id" >&2
+}
+
+cmd_rollback() {
+  need_root
+  need_bin resolvectl
+
+  local op_id="${1:-}"
+  if [[ -z "$op_id" ]]; then
+    usage >&2
+    exit 1
+  fi
+
+  local sf
+  sf="$(state_file_for "$op_id")"
+  if [[ ! -f "$sf" ]]; then
+    echo "WARN: state file not found, nothing to rollback: $sf" >&2
+    clear_current_op_if "$op_id"
+    exit 0
+  fi
+
+  # shellcheck source=/dev/null
+  . "$sf"
+
+  local dns_to_apply="${rollback_dns:-}"
+  dns_to_apply="${LZC_NET_ROLLBACK_DNS:-$dns_to_apply}"
+  dns_to_apply="$(echo "$dns_to_apply" | tr -s ' ' | sed 's/^ *//; s/ *$//')"
+
+  echo "Auto-rollback triggered for op_id=$op_id iface=$iface" >&2
+  if [[ -n "$dns_to_apply" ]]; then
+    echo "Restoring DNS: $dns_to_apply" >&2
+    # shellcheck disable=SC2086
+    resolvectl dns "$iface" $dns_to_apply
+  else
+    echo "Restoring DNS via resolvectl revert (no rollback DNS available)" >&2
+    resolvectl revert "$iface" || true
+  fi
+  resolvectl flush-caches >/dev/null 2>&1 || true
+
+  rm -f "$sf" || true
+  clear_current_op_if "$op_id"
+}
+
+cmd_status() {
+  local op_id=""
+  op_id="$(read_current_op 2>/dev/null || true)"
+  if [[ -z "$op_id" ]]; then
+    echo "No pending operation." >&2
+    exit 0
+  fi
+  echo "Pending op_id=$op_id" >&2
+  systemctl list-timers --no-pager 2>/dev/null | grep -F "lzc-net-rollback-${op_id}.timer" || true
+}
+
+main() {
+  local cmd="${1:-}"
+  shift || true
+
+  case "$cmd" in
+    apply-dns) cmd_apply_dns "$@" ;;
+    confirm) cmd_confirm "$@" ;;
+    rollback) cmd_rollback "$@" ;;
+    status) cmd_status ;;
+    -h|--help|"") usage ;;
+    *)
+      echo "ERROR: unknown command: $cmd" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"
