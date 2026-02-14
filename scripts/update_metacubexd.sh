@@ -87,7 +87,10 @@ PY
 
 # Patch metacubexd's setup page to support auto-connect via
 # `?url=<full_url>&secret=<secret>` (upstream supports only hostname/http/https/port).
-python3 - "$DIST_DIR" <<'PY'
+# NOTE: metacubexd minified bundle changes frequently. This patch is a QoL
+# improvement only; if it fails, keep updating and rely on the index.html
+# bootstrap that seeds localStorage instead.
+if ! python3 - "$DIST_DIR" <<'PY'
 import sys
 from pathlib import Path
 
@@ -138,6 +141,9 @@ for p in targets:
 if not patched_any:
     raise SystemExit("failed to patch any setup chunk")
 PY
+then
+  echo "WARN: unable to patch metacubexd setup chunk for ?url/&secret auto-connect; continuing." >&2
+fi
 
 # Inject a small bootstrap that auto-connects on first load by passing
 # `?url=<origin>/api&secret=<secret>` (secret provided at build time).
