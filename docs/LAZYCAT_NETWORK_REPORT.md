@@ -188,6 +188,48 @@
 
 ---
 
+### 8.3 DNS 变更安全流程（5 分钟未确认自动回滚）
+
+背景：DNS/TUN/透明代理相关改动一旦误伤 `.heiyu.space/.lazycat.cloud` 或控制面探测流量，可能导致你在外部无法访问微服。为降低“改完就断链”的风险，我们提供一个安全工具：`lzc-net-safe-apply`。
+
+工具安装位置（微服侧）：
+
+- `/usr/local/sbin/lzc-net-safe-apply`
+
+仓库沉淀（用于部署脚本自动安装）：
+
+- `infra/microserver/lzc-net-safe-apply`
+- `scripts/deploy_microserver.sh`（默认会安装，不默认执行）
+
+标准流程（以网卡 `wlp4s0` 为例）：
+
+1) 预设回滚 DNS（建议指向路由器 + link-local，确保控制面域名可直连解析）：
+
+```bash
+export LZC_NET_ROLLBACK_DNS="192.168.1.1 fe80::1"
+```
+
+2) 应用 DNS 变更（立刻生效，同时自动安排 5 分钟后回滚）：
+
+```bash
+lzc-net-safe-apply apply-dns wlp4s0 223.5.5.5 119.29.29.29
+```
+
+3) 立刻从外部验证懒猫入口仍可访问（至少满足其一即可）：
+
+- `https://mihomo.<boxname>.heiyu.space` 可打开
+- 或能确认控制面域名解析与 443 连接正常
+
+4) 5 分钟内确认（取消自动回滚）：
+
+```bash
+lzc-net-safe-apply confirm
+```
+
+如果忘记确认或验证失败：系统会在 5 分钟后自动回滚到 `LZC_NET_ROLLBACK_DNS`（或变更前捕获到的 DNS 配置）。
+
+---
+
 ## 9. 回滚方案（出现异常时先保系统）
 
 如果发现内网穿透/控制面异常，建议先快速回滚到“无全局代理”的安全状态：
