@@ -23,6 +23,10 @@ UNIT_LOCAL="$ROOT/infra/mihomo/mihomo.service"
 MMDB_LOCAL="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_COUNTRY_MMDB_LOCAL:-var/private/Country.mmdb}")"
 SECRET_LOCAL_FILE="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_SECRET_FILE_LOCAL:-var/private/mihomo.secret}")"
 TUN_ENABLE="${MIHOMO_TUN_ENABLE:-1}" # 1=enabled (default), 0=disabled
+DNS_ENABLE="${MIHOMO_DNS_ENABLE:-1}" # 1=enabled (default), 0=disabled
+AUTO_TEST_URL="${MIHOMO_AUTO_TEST_URL-https://api.openai.com/v1/models}"
+DOH_PROXY_RULES_ENABLE="${MIHOMO_DOH_PROXY_RULES_ENABLE:-1}" # 1=enabled (default), 0=disabled
+INSTALL_NET_SAFE_APPLY="${LZC_NET_SAFE_APPLY_INSTALL:-1}" # 1=install (default), 0=skip
 
 UPGRADE_CORE=0
 ONLY_CORE=0
@@ -135,6 +139,17 @@ if [[ "$ONLY_CORE" != "1" ]]; then
     PATCH_ARGS+=(--set-tun-enabled true --ensure-tun-excludes)
   fi
 
+  if [[ "$DNS_ENABLE" == "1" ]]; then
+    PATCH_ARGS+=(--ensure-dns)
+    if [[ "$DOH_PROXY_RULES_ENABLE" == "1" ]]; then
+      PATCH_ARGS+=(--ensure-doh-proxy-rules)
+    fi
+  fi
+
+  if [[ -n "$AUTO_TEST_URL" ]]; then
+    PATCH_ARGS+=(--set-auto-test-url "$AUTO_TEST_URL")
+  fi
+
   python3 "$ROOT/scripts/patch_remote_mihomo_config.py" "${PATCH_ARGS[@]}" >/dev/null
 
   MIHOMO_SECRET_EFFECTIVE="$(cat "$SECRET_OUT_LOCAL" | tr -d '\r\n')"
@@ -207,6 +222,22 @@ if [[ "$ONLY_CORE" != "1" ]]; then
       "$MMDB_LOCAL" "$SSH_USER@$HOST:/tmp/Country.mmdb.$TS" >/dev/null
   else
     echo "NOTE: $MMDB_LOCAL not found; skipping Country.mmdb upload." >&2
+  fi
+
+  # Optional: install the DNS change safety tool (no execution by default).
+  if [[ "$INSTALL_NET_SAFE_APPLY" == "1" && -f "$ROOT/infra/microserver/lzc-net-safe-apply" ]]; then
+    echo "Installing lzc-net-safe-apply ..."
+    scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+      "$ROOT/infra/microserver/lzc-net-safe-apply" "$SSH_USER@$HOST:/tmp/lzc-net-safe-apply.$TS" >/dev/null
+    ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+      "$SSH_USER@$HOST" \
+      TS="$TS" \
+      bash -s <<'NETSAFE'
+set -euo pipefail
+install -d -m 755 /usr/local/sbin
+install -m 755 "/tmp/lzc-net-safe-apply.${TS}" /usr/local/sbin/lzc-net-safe-apply
+rm -f "/tmp/lzc-net-safe-apply.${TS}" || true
+NETSAFE
   fi
 fi
 
