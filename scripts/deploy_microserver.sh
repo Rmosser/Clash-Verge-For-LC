@@ -20,6 +20,8 @@ SSH_KEY="${MICROSERVER_SSH_KEY:-$HOME/.ssh/id_ed25519}"
 
 CFG_LOCAL="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_CONFIG_LOCAL:-var/private/mihomo.config.yaml}")"
 UNIT_LOCAL="$ROOT/infra/mihomo/mihomo.service"
+CONTAINER_PROXY_SOCKET_LOCAL="$ROOT/infra/microserver/mihomo-container-proxy.socket"
+CONTAINER_PROXY_SERVICE_LOCAL="$ROOT/infra/microserver/mihomo-container-proxy.service"
 MMDB_LOCAL="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_COUNTRY_MMDB_LOCAL:-var/private/Country.mmdb}")"
 SECRET_LOCAL_FILE="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_SECRET_FILE_LOCAL:-var/private/mihomo.secret}")"
 TUN_ENABLE="${MIHOMO_TUN_ENABLE:-1}" # 1=enabled (default), 0=disabled
@@ -27,6 +29,7 @@ DNS_ENABLE="${MIHOMO_DNS_ENABLE:-1}" # 1=enabled (default), 0=disabled
 AUTO_TEST_URL="${MIHOMO_AUTO_TEST_URL-https://api.openai.com/v1/models}"
 DOH_PROXY_RULES_ENABLE="${MIHOMO_DOH_PROXY_RULES_ENABLE:-1}" # 1=enabled (default), 0=disabled
 INSTALL_NET_SAFE_APPLY="${LZC_NET_SAFE_APPLY_INSTALL:-1}" # 1=install (default), 0=skip
+CONTAINER_PROXY_ENABLE="${MIHOMO_CONTAINER_PROXY_ENABLE:-1}" # 1=enabled (default), 0=disabled
 
 UPGRADE_CORE=0
 ONLY_CORE=0
@@ -101,6 +104,8 @@ PATCHED_CFG_LOCAL="$TMPDIR_LOCAL/mihomo.config.patched.$TS.yaml"
 SECRET_OUT_LOCAL="$TMPDIR_LOCAL/mihomo.secret.$TS"
 TMP_CFG="/tmp/mihomo.config.$TS.yaml"
 TMP_UNIT="/tmp/mihomo.service.$TS"
+TMP_CONTAINER_PROXY_SOCKET="/tmp/mihomo-container-proxy.socket.$TS"
+TMP_CONTAINER_PROXY_SERVICE="/tmp/mihomo-container-proxy.service.$TS"
 
 if [[ "$ONLY_CORE" != "1" ]]; then
   if [[ ! -f "$CFG_LOCAL" ]]; then
@@ -241,23 +246,43 @@ NETSAFE
   fi
 fi
 
+if [[ "$CONTAINER_PROXY_ENABLE" == "1" ]]; then
+  if [[ ! -f "$CONTAINER_PROXY_SOCKET_LOCAL" || ! -f "$CONTAINER_PROXY_SERVICE_LOCAL" ]]; then
+    echo "ERROR: missing container proxy unit(s):" >&2
+    echo "  - $CONTAINER_PROXY_SOCKET_LOCAL" >&2
+    echo "  - $CONTAINER_PROXY_SERVICE_LOCAL" >&2
+    exit 1
+  fi
+
+  echo "Uploading mihomo-container-proxy units ..."
+  scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+    "$CONTAINER_PROXY_SOCKET_LOCAL" "$SSH_USER@$HOST:$TMP_CONTAINER_PROXY_SOCKET" >/dev/null
+  scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+    "$CONTAINER_PROXY_SERVICE_LOCAL" "$SSH_USER@$HOST:$TMP_CONTAINER_PROXY_SERVICE" >/dev/null
+fi
+
 echo "Applying on microserver ..."
 ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
   "$SSH_USER@$HOST" \
   TS="$TS" \
   TMP_CFG="$TMP_CFG" \
   TMP_UNIT="$TMP_UNIT" \
+  TMP_CONTAINER_PROXY_SOCKET="$TMP_CONTAINER_PROXY_SOCKET" \
+  TMP_CONTAINER_PROXY_SERVICE="$TMP_CONTAINER_PROXY_SERVICE" \
   MIHOMO_URL="$MIHOMO_URL" \
   MIHOMO_TAG="$MIHOMO_TAG" \
   MMDB_URL="$MMDB_URL" \
   UPGRADE_CORE="$UPGRADE_CORE" \
   ONLY_CORE="$ONLY_CORE" \
   NO_ROLLBACK="$NO_ROLLBACK" \
+  CONTAINER_PROXY_ENABLE="$CONTAINER_PROXY_ENABLE" \
   bash -s <<'REMOTE'
 set -euo pipefail
 
 cfg=/etc/mihomo/config.yaml
 unit=/etc/systemd/system/mihomo.service
+container_proxy_socket=/etc/systemd/system/mihomo-container-proxy.socket
+container_proxy_service=/etc/systemd/system/mihomo-container-proxy.service
 mihomo_bin=/usr/local/bin/mihomo
 rollback_dir=/var/lib/mihomo/rollback
 log_file="$rollback_dir/upgrade-${TS}.log"
@@ -406,6 +431,18 @@ if [[ "$ONLY_CORE" != "1" ]]; then
     curl --retry 3 --retry-delay 1 --retry-all-errors --connect-timeout 10 --max-time 180 -fsSL "$MMDB_URL" -o "$tmp_mmdb"
     install -o mihomo -g mihomo -m 644 "$tmp_mmdb" /var/lib/mihomo/Country.mmdb
     rm -f "$tmp_mmdb"
+  fi
+fi
+
+if [[ "${CONTAINER_PROXY_ENABLE}" == "1" ]]; then
+  if [[ -x /lib/systemd/systemd-socket-proxyd && -f "${TMP_CONTAINER_PROXY_SOCKET}" && -f "${TMP_CONTAINER_PROXY_SERVICE}" ]]; then
+    install -o root -g root -m 644 "${TMP_CONTAINER_PROXY_SOCKET}" "${container_proxy_socket}"
+    install -o root -g root -m 644 "${TMP_CONTAINER_PROXY_SERVICE}" "${container_proxy_service}"
+    rm -f "${TMP_CONTAINER_PROXY_SOCKET}" "${TMP_CONTAINER_PROXY_SERVICE}" || true
+    systemctl daemon-reload
+    systemctl enable --now mihomo-container-proxy.socket >/dev/null || log "WARN: failed to enable mihomo-container-proxy.socket"
+  else
+    log "NOTE: container proxy socket/service not installed (missing tmp files or systemd-socket-proxyd)."
   fi
 fi
 
