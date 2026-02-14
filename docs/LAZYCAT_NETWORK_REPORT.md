@@ -230,6 +230,71 @@ lzc-net-safe-apply confirm
 
 ---
 
+### 8.4 容器出网标准做法（显式代理）
+
+背景：有些目标站（例如 `api.openai.com`、`api.telegram.org`）在“直连”场景会出现 TLS 握手被中断（`SSL_ERROR_SYSCALL` / `ECONNRESET`），但通过宿主机 `mihomo` 的显式代理可用。为让懒猫应用/Docker 容器稳定出网，推荐统一走“容器侧显式代理入口”，而不是依赖透明代理是否覆盖到容器网络。
+
+微服侧（宿主机）做法：
+
+- 保持 `mihomo` 仍只监听本机：`127.0.0.1:7890`
+- 新增一个仅容器网桥可达的代理入口：`172.18.0.1:17890`（不会暴露到 LAN/WAN）
+- 通过 `systemd-socket-proxyd` 转发：`172.18.0.1:17890 -> 127.0.0.1:7890`
+
+仓库沉淀对应的 unit 模板（部署脚本会自动安装并启用）：
+
+- `infra/microserver/mihomo-container-proxy.socket`
+- `infra/microserver/mihomo-container-proxy.service`
+
+容器侧通用环境变量（建议全部容器统一）：
+
+```bash
+HTTP_PROXY=http://172.18.0.1:17890
+HTTPS_PROXY=http://172.18.0.1:17890
+http_proxy=http://172.18.0.1:17890
+https_proxy=http://172.18.0.1:17890
+
+# 仅使用域名/主机名/IP 白名单绕开内网流量，避免依赖 CIDR 支持。
+NO_PROXY=localhost,127.0.0.1,::1,.heiyu.space,.lazycat.cloud,172.18.0.1
+no_proxy=localhost,127.0.0.1,::1,.heiyu.space,.lazycat.cloud,172.18.0.1
+```
+
+Node.js（`fetch`）额外注意：
+
+- Node 内置 `fetch` 默认不一定遵守 `HTTP(S)_PROXY`。
+- 推荐用 `NODE_OPTIONS=--require ...` 在启动前注入一个 bootstrap，把全局 `fetch` 切换到 `undici.fetch` 并启用 `EnvHttpProxyAgent`（自动读取 `HTTP(S)_PROXY` + `NO_PROXY`）。
+
+最小 bootstrap 范式（示例：`proxy-bootstrap.cjs`）：
+
+```js
+(() => {
+  const env = process.env;
+  const hasProxy = !!(env.HTTP_PROXY || env.HTTPS_PROXY || env.http_proxy || env.https_proxy);
+  if (!hasProxy) return;
+
+  // 如果 undici 不在 CWD 可 resolve（例如作为全局模块/依赖被安装在别处），用 createRequire 锚定入口文件。
+  const { createRequire } = require("module");
+  const req = createRequire(env.APP_ENTRY || process.argv[1] || __filename);
+
+  let undici;
+  try {
+    undici = req("undici");
+  } catch {
+    return;
+  }
+
+  const proxy = env.HTTPS_PROXY || env.HTTP_PROXY || env.https_proxy || env.http_proxy;
+  const agent =
+    typeof undici.EnvHttpProxyAgent === "function"
+      ? new undici.EnvHttpProxyAgent()
+      : new undici.ProxyAgent(proxy);
+
+  undici.setGlobalDispatcher(agent);
+  globalThis.fetch = undici.fetch;
+})();
+```
+
+---
+
 ## 9. 回滚方案（出现异常时先保系统）
 
 如果发现内网穿透/控制面异常，建议先快速回滚到“无全局代理”的安全状态：
