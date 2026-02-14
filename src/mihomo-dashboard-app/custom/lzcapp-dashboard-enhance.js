@@ -527,26 +527,43 @@
 
     // Fail-fast on IPv6 destinations for V4-only egress proxy sets (prevents UI "hangs").
     // This can be removed later once you have V6_EGRESS_OK nodes.
-    var v6Rule = "- IP-CIDR6,::/0,REJECT,no-resolve";
-    if (text.indexOf(v6Rule) < 0) {
+    var v6Rule = "IP-CIDR6,::/0,REJECT,no-resolve";
+    if (!/^[ \t]*-[ \t]*IP-CIDR6,::\/0,REJECT,no-resolve[ \t]*$/m.test(text)) {
       var lines2 = text.split("\n");
       var insertAt = -1;
+      var indent = "";
       for (var ii = 0; ii < lines2.length; ii += 1) {
-        if (lines2[ii] === "- GEOIP,CN,DIRECT") {
+        var mGeo = lines2[ii].match(/^(\s*)-\s*GEOIP,CN,DIRECT\s*$/);
+        if (mGeo) {
           insertAt = ii;
+          indent = mGeo[1] || "";
           break;
         }
       }
       if (insertAt < 0) {
         for (var jj = 0; jj < lines2.length; jj += 1) {
-          if (lines2[jj] === "- MATCH,PROXY") {
+          var mMatch = lines2[jj].match(/^(\s*)-\s*MATCH,PROXY\s*$/);
+          if (mMatch) {
             insertAt = jj;
+            indent = mMatch[1] || "";
             break;
           }
         }
       }
+      if (insertAt < 0) {
+        for (var kk = 0; kk < lines2.length; kk += 1) {
+          if (!/^\s*rules:\s*$/.test(lines2[kk])) continue;
+          // Try to reuse the existing rule indent style (if any).
+          var next = lines2[kk + 1] || "";
+          var mNext = next.match(/^(\s*)-/);
+          indent = mNext ? mNext[1] || "" : "";
+          insertAt = kk + 1;
+          break;
+        }
+      }
+
       if (insertAt >= 0) {
-        lines2.splice(insertAt, 0, v6Rule);
+        lines2.splice(insertAt, 0, indent + "- " + v6Rule);
         text = lines2.join("\n");
       }
     }
