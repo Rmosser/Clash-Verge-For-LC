@@ -10,6 +10,7 @@
 
 # Logs
 *.log
+*.pid
 
 # Local data / downloads
 data/
