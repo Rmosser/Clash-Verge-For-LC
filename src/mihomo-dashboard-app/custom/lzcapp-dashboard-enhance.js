@@ -418,9 +418,147 @@
     }
   }
 
+  function ensureLine(text, pattern, lineToInsert, anchorPattern) {
+    if (pattern.test(text)) return { text: text, changed: false };
+    var m = text.match(anchorPattern);
+    if (!m || m.index == null) return { text: text + "\n" + lineToInsert + "\n", changed: true };
+    var idx = m.index + m[0].length;
+    return { text: text.slice(0, idx) + "\n" + lineToInsert + text.slice(idx), changed: true };
+  }
+
+  function patchFetchedMihomoConfig(payloadText, secret) {
+    var text = String(payloadText || "");
+    if (!text.trim()) return text;
+
+    // Keep dashboard reachability stable.
+    text = text.replace(/^[ \t]*external-controller:[^\n]*$/m, "external-controller: 172.18.0.1:9090");
+    // Don't expose proxy port to LAN by accident.
+    text = text.replace(/^[ \t]*allow-lan:[^\n]*$/m, "allow-lan: false");
+    text = text.replace(/^[ \t]*bind-address:[^\n]*$/m, "bind-address: 127.0.0.1");
+
+    if (secret) {
+      if (/^[ \t]*secret:/m.test(text)) {
+        text = text.replace(/^[ \t]*secret:[^\n]*$/m, "secret: '" + String(secret).replace(/'/g, "''") + "'");
+      } else {
+        // Insert after external-controller if missing.
+        var out = ensureLine(
+          text,
+          /^[ \t]*secret:/m,
+          "secret: '" + String(secret).replace(/'/g, "''") + "'",
+          /^[ \t]*external-controller:[^\n]*$/m
+        );
+        text = out.text;
+      }
+    }
+
+    // Ensure TUN block exists; keep it conservative and aligned with repo defaults.
+    if (!/^[ \t]*tun:\s*$/m.test(text)) {
+      var anchor = /^[ \t]*secret:[^\n]*$/m;
+      var tunBlock =
+        "\n" +
+        "tun:\n" +
+        "  enable: true\n" +
+        "  stack: system\n" +
+        "  auto-route: true\n" +
+        "  auto-detect-interface: true\n" +
+        "  strict-route: true\n" +
+        "  route-exclude-address:\n" +
+        "    - 6.6.6.6/32\n" +
+        "    - 127.0.0.0/8\n" +
+        "    - 10.0.0.0/8\n" +
+        "    - 172.16.0.0/12\n" +
+        "    - 192.168.0.0/16\n" +
+        "    - 169.254.0.0/16\n" +
+        "    - 100.64.0.0/10\n" +
+        "    - 224.0.0.0/4\n" +
+        "    - 255.255.255.255/32\n" +
+        "    - ::1/128\n" +
+        "    - 2000::6666/128\n" +
+        "    - fc00::/7\n" +
+        "    - fe80::/10\n" +
+        "    - ff00::/8\n" +
+        "    - fc03:1136:3800::/40\n";
+
+      var m = text.match(anchor);
+      if (m && m.index != null) {
+        var idx2 = m.index + m[0].length;
+        text = text.slice(0, idx2) + tunBlock + text.slice(idx2);
+      } else {
+        text = text + tunBlock;
+      }
+    } else {
+      // Ensure required excludes remain present.
+      var required = ["6.6.6.6/32", "2000::6666/128", "fc03:1136:3800::/40"];
+      var lines = text.split("\n");
+      var tunIdx = -1;
+      for (var i = 0; i < lines.length; i += 1) {
+        if (lines[i] === "tun:") {
+          tunIdx = i;
+          break;
+        }
+      }
+      if (tunIdx >= 0) {
+        var routeIdx = -1;
+        for (var j = tunIdx + 1; j < lines.length; j += 1) {
+          if (/^[^\s].+:\s*$/.test(lines[j])) break;
+          if (lines[j] === "  route-exclude-address:") {
+            routeIdx = j;
+            break;
+          }
+        }
+        if (routeIdx >= 0) {
+          var existing = {};
+          var k = routeIdx + 1;
+          for (; k < lines.length; k += 1) {
+            if (!/^    - /.test(lines[k])) break;
+            existing[String(lines[k]).replace(/^    - /, "")] = true;
+          }
+          var inserts = [];
+          for (var r = 0; r < required.length; r += 1) {
+            if (!existing[required[r]]) inserts.push("    - " + required[r]);
+          }
+          if (inserts.length) {
+            lines.splice(k, 0, ...inserts);
+            text = lines.join("\n");
+          }
+        }
+      }
+    }
+
+    // Fail-fast on IPv6 destinations for V4-only egress proxy sets (prevents UI "hangs").
+    // This can be removed later once you have V6_EGRESS_OK nodes.
+    var v6Rule = "- IP-CIDR6,::/0,REJECT,no-resolve";
+    if (text.indexOf(v6Rule) < 0) {
+      var lines2 = text.split("\n");
+      var insertAt = -1;
+      for (var ii = 0; ii < lines2.length; ii += 1) {
+        if (lines2[ii] === "- GEOIP,CN,DIRECT") {
+          insertAt = ii;
+          break;
+        }
+      }
+      if (insertAt < 0) {
+        for (var jj = 0; jj < lines2.length; jj += 1) {
+          if (lines2[jj] === "- MATCH,PROXY") {
+            insertAt = jj;
+            break;
+          }
+        }
+      }
+      if (insertAt >= 0) {
+        lines2.splice(insertAt, 0, v6Rule);
+        text = lines2.join("\n");
+      }
+    }
+
+    if (!/\n$/.test(text)) text += "\n";
+    return text;
+  }
+
   async function fetchAndApplyRemoteConfig(url, secret) {
     var payload = await fetchRemoteTextViaProxy(url);
-    await uploadConfig(payload, secret);
+    var patched = patchFetchedMihomoConfig(payload, secret);
+    await uploadConfig(patched, secret);
   }
 
   function createButtonBy(submitBtn, text) {
@@ -996,6 +1134,7 @@
       }
 
       var secret = findSecret();
+      showNotice(wrap, t("loading"), true);
       try {
         await fetchAndApplyRemoteConfig(clean, secret);
         if (selectedSourceId) {
@@ -1059,7 +1198,7 @@
       groupInput.value = source.group;
     });
 
-    applyBtn.addEventListener("click", function () {
+    applyBtn.addEventListener("click", async function () {
       var source = getSelectedSource();
       if (!source) {
         showNotice(wrap, t("selectFirst"), false);
@@ -1071,15 +1210,14 @@
       urlInput.value = source.url;
       triggerInput(urlInput);
 
+      // Prefer our same-origin fetch+upload path so we can surface errors and
+      // keep required safety patches (controller bind/secret/tun excludes).
+      applyBtn.__originText = applyBtn.__originText || applyBtn.textContent;
+      setWorkingState(true, applyBtn);
       try {
-        // Use upstream MetaCubeXD + Mihomo core remote fetch (avoids browser CORS).
-        if (form.requestSubmit) {
-          form.requestSubmit(submitBtn);
-        } else {
-          submitBtn.click();
-        }
-      } catch (_e) {
-        submitBtn.click();
+        await runEnhancedFetch(source.url, source.id);
+      } finally {
+        setWorkingState(false, applyBtn);
       }
     });
 

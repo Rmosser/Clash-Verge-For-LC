@@ -9,6 +9,7 @@
 
 const http = require("http");
 const https = require("https");
+const dns = require("dns");
 const net = require("net");
 const { URL } = require("url");
 
@@ -18,6 +19,41 @@ const MAX_BYTES = parseInt(process.env.MAX_BYTES || String(12 * 1024 * 1024), 10
 const ALLOW_LOOPBACK = String(process.env.ALLOW_LOOPBACK || "") === "1";
 
 const UA = "lzc-mihomo-dashboard-fetchproxy/0.1";
+
+// Prefer IPv4 when the subscription host is dual-stack. This avoids "hangs" on
+// V4-only egress environments where the IPv6 connect attempt can take a full
+// timeout window.
+try {
+  if (typeof dns.setDefaultResultOrder === "function") {
+    dns.setDefaultResultOrder("ipv4first");
+  }
+} catch (_e) {}
+
+function ipv4FirstLookup(hostname, options, callback) {
+  // Node may pass (hostname, family, cb) on older versions.
+  if (typeof options === "function") {
+    callback = options;
+    options = {};
+  }
+
+  dns.lookup(hostname, { all: true }, (err, addresses) => {
+    if (err) return callback(err);
+    if (!addresses || !addresses.length) {
+      const e = Object.assign(new Error("no address"), { code: "ENOTFOUND" });
+      return callback(e);
+    }
+
+    // Pick the first IPv4 if available, otherwise the first entry.
+    let chosen = addresses[0];
+    for (const a of addresses) {
+      if (a && a.family === 4) {
+        chosen = a;
+        break;
+      }
+    }
+    return callback(null, chosen.address, chosen.family);
+  });
+}
 
 function send(res, statusCode, headers, bodyBuf) {
   res.statusCode = statusCode;
@@ -89,6 +125,7 @@ function httpRequestOnce(targetUrl, timeoutMs, maxBytes) {
           // Keep response as plain bytes to simplify size accounting.
           "accept-encoding": "identity",
         },
+        lookup: ipv4FirstLookup,
       },
       (resp) => {
         const statusCode = resp.statusCode || 0;
@@ -218,4 +255,3 @@ server.listen(PORT, "0.0.0.0", () => {
   // eslint-disable-next-line no-console
   console.log(`[fetchproxy] listening on :${PORT}`);
 });
-
