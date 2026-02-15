@@ -69,6 +69,15 @@ scripts/mihomo-manager logs
 scripts/mihomo-manager reload
 ```
 
+## Local Runtime Contract v1 (stub)
+
+This repo is deploy/ops oriented and has no long-running local daemon. We still provide unified entrypoints as stubs:
+
+```bash
+bash scripts/run_local.sh
+bash scripts/stop_local.sh
+```
+
 ## TUN toggle (explicit switch)
 
 - Default is enabled.

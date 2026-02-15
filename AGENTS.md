@@ -20,6 +20,10 @@
 ## 常用命令
 
 ```bash
+# Local Runtime Contract v1 (stub; this repo has no long-running local daemon)
+bash scripts/run_local.sh
+bash scripts/stop_local.sh
+
 # 连接微服（示例）
 ssh -i ~/.ssh/id_ed25519 root@rainierserver.heiyu.space
 
