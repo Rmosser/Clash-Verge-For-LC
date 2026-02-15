@@ -24,6 +24,9 @@
 bash scripts/run_local.sh
 bash scripts/stop_local.sh
 
+# Local Runtime Contract v2 (stub)
+bash scripts/doctor.sh
+
 # 连接微服（示例）
 ssh -i ~/.ssh/id_ed25519 root@rainierserver.heiyu.space
 
