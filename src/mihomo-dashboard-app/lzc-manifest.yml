@@ -1,7 +1,7 @@
 name: mihomo-dashboard
 package: cloud.lazycat.app.mihomo-dashboard
-version: 0.0.3
-description: metacubexd dashboard for Mihomo (Clash Meta), proxied via LazyCat.
+version: 0.1.0
+description: Clash Verge Rev web port for Mihomo (Clash Meta), proxied via LazyCat.
 license: https://choosealicense.com/licenses/mit/
 homepage:
 author:
@@ -12,6 +12,7 @@ application:
     # NOTE: keep the trailing slash so LazyCat trims the prefix correctly:
     # /api/v1 -> http://host.lzcapp:9090/v1
     - /api/=http://host.lzcapp:9090
+    - /verge-api/=http://host.lzcapp:9091
     # Same-origin fetch proxy for subscription YAML to bypass browser CORS.
     - /fetch/=http://fetchproxy:3001
     # Static UI (packed into the LPK).

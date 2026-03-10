@@ -22,8 +22,11 @@ CFG_LOCAL="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_CONFIG_LOCAL:-var/priv
 UNIT_LOCAL="$ROOT/infra/mihomo/mihomo.service"
 CONTAINER_PROXY_SOCKET_LOCAL="$ROOT/infra/microserver/mihomo-container-proxy.socket"
 CONTAINER_PROXY_SERVICE_LOCAL="$ROOT/infra/microserver/mihomo-container-proxy.service"
+VERGE_API_LOCAL="$ROOT/infra/microserver/mihomo-verge-api.py"
+VERGE_API_UNIT_LOCAL="$ROOT/infra/microserver/mihomo-verge-api.service"
 MMDB_LOCAL="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_COUNTRY_MMDB_LOCAL:-var/private/Country.mmdb}")"
 SECRET_LOCAL_FILE="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_SECRET_FILE_LOCAL:-var/private/mihomo.secret}")"
+VERGE_SECRET_LOCAL_FILE="$(lzc_resolve_path_from_root "$ROOT" "${VERGE_API_SECRET_FILE_LOCAL:-var/private/verge-api.secret}")"
 TUN_ENABLE="${MIHOMO_TUN_ENABLE:-1}" # 1=enabled (default), 0=disabled
 DNS_ENABLE="${MIHOMO_DNS_ENABLE:-1}" # 1=enabled (default), 0=disabled
 AUTO_TEST_URL="${MIHOMO_AUTO_TEST_URL-https://api.openai.com/v1/models}"
@@ -106,6 +109,9 @@ TMP_CFG="/tmp/mihomo.config.$TS.yaml"
 TMP_UNIT="/tmp/mihomo.service.$TS"
 TMP_CONTAINER_PROXY_SOCKET="/tmp/mihomo-container-proxy.socket.$TS"
 TMP_CONTAINER_PROXY_SERVICE="/tmp/mihomo-container-proxy.service.$TS"
+TMP_VERGE_API="/tmp/mihomo-verge-api.py.$TS"
+TMP_VERGE_API_UNIT="/tmp/mihomo-verge-api.service.$TS"
+TMP_VERGE_SECRET="/tmp/verge-api.secret.$TS"
 
 if [[ "$ONLY_CORE" != "1" ]]; then
   if [[ ! -f "$CFG_LOCAL" ]]; then
@@ -169,6 +175,22 @@ if [[ "$ONLY_CORE" != "1" ]]; then
     chmod 600 "$SECRET_LOCAL_FILE" 2>/dev/null || true
     echo "MIHOMO_SECRET generated and saved to: $SECRET_LOCAL_FILE" >&2
   fi
+
+  if [[ -n "${VERGE_API_SECRET:-}" ]]; then
+    VERGE_API_SECRET_EFFECTIVE="$VERGE_API_SECRET"
+  elif [[ -f "$VERGE_SECRET_LOCAL_FILE" ]]; then
+    VERGE_API_SECRET_EFFECTIVE="$(tr -d '\r\n' <"$VERGE_SECRET_LOCAL_FILE")"
+  else
+    VERGE_API_SECRET_EFFECTIVE="$(python3 - <<'PY'
+import secrets
+print(secrets.token_hex(16))
+PY
+)"
+    mkdir -p "$(dirname "$VERGE_SECRET_LOCAL_FILE")"
+    printf '%s\n' "$VERGE_API_SECRET_EFFECTIVE" >"$VERGE_SECRET_LOCAL_FILE"
+    chmod 600 "$VERGE_SECRET_LOCAL_FILE" 2>/dev/null || true
+    echo "VERGE_API_SECRET generated and saved to: $VERGE_SECRET_LOCAL_FILE" >&2
+  fi
 fi
 
 echo "Deploying to $SSH_USER@$HOST ..."
@@ -220,6 +242,21 @@ if [[ "$ONLY_CORE" != "1" ]]; then
   scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
     "$UNIT_LOCAL" "$SSH_USER@$HOST:$TMP_UNIT" >/dev/null
 
+  if [[ ! -f "$VERGE_API_LOCAL" || ! -f "$VERGE_API_UNIT_LOCAL" ]]; then
+    echo "ERROR: missing verge api files:" >&2
+    echo "  - $VERGE_API_LOCAL" >&2
+    echo "  - $VERGE_API_UNIT_LOCAL" >&2
+    exit 1
+  fi
+
+  scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+    "$VERGE_API_LOCAL" "$SSH_USER@$HOST:$TMP_VERGE_API" >/dev/null
+  scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+    "$VERGE_API_UNIT_LOCAL" "$SSH_USER@$HOST:$TMP_VERGE_API_UNIT" >/dev/null
+  printf '%s\n' "$VERGE_API_SECRET_EFFECTIVE" | \
+    ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+      "$SSH_USER@$HOST" "cat > '$TMP_VERGE_SECRET'"
+
   # Optional: sync Country.mmdb if present locally.
   if [[ -f "$MMDB_LOCAL" ]]; then
     echo "Uploading Country.mmdb ..."
@@ -269,6 +306,9 @@ ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
   TMP_UNIT="$TMP_UNIT" \
   TMP_CONTAINER_PROXY_SOCKET="$TMP_CONTAINER_PROXY_SOCKET" \
   TMP_CONTAINER_PROXY_SERVICE="$TMP_CONTAINER_PROXY_SERVICE" \
+  TMP_VERGE_API="$TMP_VERGE_API" \
+  TMP_VERGE_API_UNIT="$TMP_VERGE_API_UNIT" \
+  TMP_VERGE_SECRET="$TMP_VERGE_SECRET" \
   MIHOMO_URL="$MIHOMO_URL" \
   MIHOMO_TAG="$MIHOMO_TAG" \
   MMDB_URL="$MMDB_URL" \
@@ -283,6 +323,9 @@ cfg=/etc/mihomo/config.yaml
 unit=/etc/systemd/system/mihomo.service
 container_proxy_socket=/etc/systemd/system/mihomo-container-proxy.socket
 container_proxy_service=/etc/systemd/system/mihomo-container-proxy.service
+verge_api_service=/etc/systemd/system/mihomo-verge-api.service
+verge_api_secret=/etc/mihomo/verge-api.secret
+verge_api_bin=/usr/local/lib/lzc-mihomo/mihomo-verge-api.py
 mihomo_bin=/usr/local/bin/mihomo
 rollback_dir=/var/lib/mihomo/rollback
 log_file="$rollback_dir/upgrade-${TS}.log"
@@ -415,11 +458,15 @@ if [[ "$ONLY_CORE" != "1" ]]; then
   id mihomo >/dev/null 2>&1 || useradd --system --home /var/lib/mihomo --shell /usr/sbin/nologin mihomo
   install -d -o root -g mihomo -m 750 /etc/mihomo
   install -d -o mihomo -g mihomo -m 750 /var/lib/mihomo
+  install -d -o root -g root -m 755 /usr/local/lib/lzc-mihomo
 
   # Install config + unit
   install -o root -g mihomo -m 640 "$TMP_CFG" "$cfg"
   install -o root -g root -m 644 "$TMP_UNIT" "$unit"
-  rm -f "$TMP_CFG" "$TMP_UNIT"
+  install -o root -g root -m 755 "$TMP_VERGE_API" "$verge_api_bin"
+  install -o root -g root -m 644 "$TMP_VERGE_API_UNIT" "$verge_api_service"
+  install -o root -g root -m 600 "$TMP_VERGE_SECRET" "$verge_api_secret"
+  rm -f "$TMP_CFG" "$TMP_UNIT" "$TMP_VERGE_API" "$TMP_VERGE_API_UNIT" "$TMP_VERGE_SECRET"
 
   # Optional mmdb
   if [[ -f "/tmp/Country.mmdb.${TS}" ]]; then
@@ -452,8 +499,15 @@ fi
 systemctl daemon-reload
 systemctl enable mihomo >/dev/null
 systemctl restart mihomo
+if [[ -f "$verge_api_service" ]]; then
+  systemctl enable mihomo-verge-api >/dev/null
+  systemctl restart mihomo-verge-api
+fi
 sleep 2
 systemctl is-active mihomo >/dev/null
+if [[ -f "$verge_api_service" ]]; then
+  systemctl is-active mihomo-verge-api >/dev/null
+fi
 
 secret="$(grep -E '^[[:space:]]*secret:' "$cfg" | head -n 1 | sed -E 's/^[[:space:]]*secret:[[:space:]]*//' | sed -E "s/^'(.*)'$|^\"(.*)\"$/\1\2/" | tr -d '\r\n')"
 version_ok=0
@@ -474,6 +528,24 @@ done
 if [[ "$version_ok" != "1" ]]; then
   log "Controller /version probe failed after restart"
   false
+fi
+
+if [[ -f "$verge_api_service" && -f "$verge_api_secret" ]]; then
+  verge_secret="$(tr -d '\r\n' <"$verge_api_secret" 2>/dev/null || true)"
+  verge_ok=0
+  for _ in 1 2 3 4 5; do
+    if [[ -n "$verge_secret" ]]; then
+      if curl -fsS -H "Authorization: Bearer ${verge_secret}" "http://172.18.0.1:9091/healthz" >/dev/null; then
+        verge_ok=1
+        break
+      fi
+    fi
+    sleep 1
+  done
+  if [[ "$verge_ok" != "1" ]]; then
+    log "Verge API /healthz probe failed after restart"
+    false
+  fi
 fi
 
 if [[ "$core_attempted" == "1" ]]; then

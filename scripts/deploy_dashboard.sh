@@ -18,19 +18,16 @@ LPK="$APP_DIR/mihomo-dashboard.lpk"
 
 cd "$APP_DIR"
 
-# Ensure the dashboard assets are metacubexd (defaults to latest release).
-if [[ "${METACUBEXD_SKIP_UPDATE:-}" != "1" ]]; then
-  "$ROOT/scripts/update_metacubexd.sh"
-fi
+echo "Building Clash Verge Rev web assets ..."
+pnpm build >/dev/null
 
 if [[ ! -f "$APP_DIR/dist/index.html" ]]; then
-  echo "ERROR: missing dashboard assets under $APP_DIR/dist (run scripts/update_metacubexd.sh)" >&2
+  echo "ERROR: missing dashboard assets under $APP_DIR/dist (pnpm build failed or produced no index.html)" >&2
   exit 1
 fi
 
-# Optional: embed controller secret into the dashboard package so users don't
-# have to paste it manually (still protected by LazyCat login).
 SECRET_LOCAL_FILE="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_SECRET_FILE_LOCAL:-var/private/mihomo.secret}")"
+VERGE_SECRET_LOCAL_FILE="$(lzc_resolve_path_from_root "$ROOT" "${VERGE_API_SECRET_FILE_LOCAL:-var/private/verge-api.secret}")"
 if [[ -n "${MIHOMO_SECRET:-}" ]]; then
   secret="$MIHOMO_SECRET"
 elif [[ -f "$SECRET_LOCAL_FILE" ]]; then
@@ -39,15 +36,49 @@ else
   secret=""
 fi
 
-if [[ -n "$secret" ]]; then
-  cat >"$APP_DIR/dist/lzcapp-config.js" <<EOF
-window.__LZCAPP_MIHOMO__ = { secret: ${secret@Q} };
-EOF
+if [[ -n "${VERGE_API_SECRET:-}" ]]; then
+  verge_secret="$VERGE_API_SECRET"
+elif [[ -f "$VERGE_SECRET_LOCAL_FILE" ]]; then
+  verge_secret="$(tr -d '\r\n' <"$VERGE_SECRET_LOCAL_FILE")"
 else
-  # Keep the file absent if we don't have a secret.
-  rm -f "$APP_DIR/dist/lzcapp-config.js" 2>/dev/null || true
-  echo "NOTE: mihomo secret not found; metacubexd will ask user to enter URL/secret." >&2
+  verge_secret=""
 fi
+
+cat >"$APP_DIR/dist/lzcapp-config.js" <<EOF
+(function () {
+  var config = {
+    secret: ${secret@Q},
+    vergeApiSecret: ${verge_secret@Q},
+    mihomoBaseUrl: "/api",
+    vergeApiBaseUrl: "/verge-api",
+    appVersion: "2.4.7-webport.0"
+  };
+
+  try {
+    if (config.vergeApiSecret) {
+      var request = new XMLHttpRequest();
+      request.open(
+        "GET",
+        config.vergeApiBaseUrl +
+          "/public-config?token=" +
+          encodeURIComponent(config.vergeApiSecret),
+        false
+      );
+      request.send(null);
+      if (request.status >= 200 && request.status < 300) {
+        var remote = JSON.parse(request.responseText || "{}");
+        config.secret = remote.secret || config.secret;
+        config.vergeApiSecret = remote.vergeApiSecret || config.vergeApiSecret;
+        config.mihomoBaseUrl = remote.mihomoBaseUrl || config.mihomoBaseUrl;
+        config.vergeApiBaseUrl = remote.vergeApiBaseUrl || config.vergeApiBaseUrl;
+        config.appVersion = remote.appVersion || config.appVersion;
+      }
+    }
+  } catch (_error) {}
+
+  window.__LZCAPP_MIHOMO__ = config;
+})();
+EOF
 
 # Ensure lzc-cli connected.
 lzc-cli box list >/dev/null
