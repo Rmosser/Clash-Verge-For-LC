@@ -1,92 +1,165 @@
-# lzc-clash_mihome
+# Clash Verge for LazyCat
 
-LazyCat Microservice (懒猫微服) + Mihomo (Clash Meta) setup:
+LazyCat Microservice deployment and dashboard packaging for Mihomo.
 
-- Split-tunnel rules: CN DIRECT, others PROXY (with MATCH fallback)
-- TUN (transparent proxy) enabled on the microserver (with LazyCat control-plane bypasses)
-- A LazyCat Launchpad app serves **metacubexd** and proxies `/api` to the Mihomo controller
+This repository adapts the `clash-verge-rev` / `metacubexd` ecosystem to the LazyCat microservice environment so you can:
 
-## Safety constraints
+- run Mihomo on a LazyCat microserver with TUN enabled
+- keep LazyCat control-plane and tunnel traffic bypassed
+- access a web dashboard through the LazyCat app route instead of exposing the controller to LAN/WAN
 
-- Before changing any TUN/transparent-proxy settings, read `docs/LAZYCAT_NETWORK_REPORT.md`.
-- Do NOT expose the Mihomo controller port to LAN/WAN. Access it only via the LazyCat app route.
+## Upstream Credit
 
-## Layout
+This project is not an original proxy dashboard implementation.
 
-- `src/mihomo-dashboard-app/`  LazyCat app (LPK) that serves metacubexd + proxies `/api` to Mihomo controller
-- `scripts/`                  SSH-based deploy/ops scripts (no controller exposure)
-- `infra/`                    Microserver-side systemd/config templates
-- `deploy/`                   Optional docker compose deployment
-- `configs/`                  Rules/config templates (non-secret)
-- `docs/`                     Ops notes + network impact report
-- `var/private/`              Local/private configs (DO NOT COMMIT)
+It stands on the work of these upstream projects:
 
-## Setup (recommended: systemd on microserver)
+- [clash-verge-rev/clash-verge-rev](https://github.com/clash-verge-rev/clash-verge-rev): the upstream Verge frontend source vendored in this repo
+- [MetaCubeX/metacubexd](https://github.com/MetaCubeX/metacubexd): the official Mihomo dashboard distributed as static assets
+- [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo): the proxy core this project deploys and manages
 
-1) Create `.env`:
+If you want the original desktop app or the upstream dashboard itself, use the upstream repositories first. This repository exists to solve LazyCat-specific deployment, ingress, and operational problems around them.
+
+## What This Repo Adds
+
+Compared with upstream projects, this repository mainly adds:
+
+- LazyCat-oriented deployment scripts for the microserver
+- a LazyCat Launchpad app that serves the dashboard and proxies `/api` to the host controller
+- controller-secret handling that avoids direct LAN/WAN exposure
+- TUN safety notes and bypass guidance for the LazyCat control plane
+- operational scripts for health checks, upgrades, rollback, and egress auditing
+
+In other words: upstream provides the core UI and engine, this repo provides the LazyCat adaptation layer.
+
+## Safety First
+
+Before using or modifying this setup:
+
+- read `docs/LAZYCAT_NETWORK_REPORT.md` before changing any TUN or transparent-proxy behavior
+- do not expose Mihomo `external-controller` to LAN/WAN
+- keep real configs and credentials under `var/private/` and out of git
+
+More details: `docs/SECURITY.md`.
+
+## Repository Layout
+
+- `src/mihomo-dashboard-app/`: LazyCat app package for the web dashboard
+- `src/mihomo-dashboard-app/vendor/clash-verge-rev/`: vendored upstream Verge frontend source
+- `scripts/`: deploy, sync, self-check, and operational scripts
+- `infra/`: microserver-side templates and helpers
+- `deploy/`: optional Docker Compose deployment
+- `configs/`: non-secret config templates
+- `docs/`: operations notes, security notes, and network impact reports
+- `var/private/`: local private config and secrets, intentionally not committed
+
+## Quick Start
+
+1. Create local env:
 
 ```bash
 cp .env.example .env
 ```
 
-2) Put your real Mihomo config (with proxy credentials) at `var/private/mihomo.config.yaml`.
+2. Put your real Mihomo config at `var/private/mihomo.config.yaml`.
 
-Hard requirement for LazyCat dashboard access:
+Required for dashboard access:
 
-- `external-controller: 172.18.0.1:9090`
+```yaml
+external-controller: 172.18.0.1:9090
+```
 
-3) Deploy to microserver (installs mihomo binary if missing, ensures Country.mmdb, generates controller secret):
+3. Deploy Mihomo to the microserver:
 
 ```bash
 scripts/deploy_microserver.sh
 ```
 
-4) Deploy dashboard app (downloads latest metacubexd assets, builds + installs the LPK):
+4. Build and install the LazyCat dashboard app:
 
 ```bash
 scripts/deploy_dashboard.sh
 ```
 
-Or run both:
+5. Or run both:
 
 ```bash
 scripts/deploy_all.sh
 ```
 
-5) Open the dashboard (`MIHOMO_DASHBOARD_URL` in `.env`), and set the controller secret:
+6. Show the controller secret if you need to connect manually:
 
 ```bash
 scripts/mihomo-manager secret show
 ```
 
-Tip: `scripts/deploy_dashboard.sh` will embed the secret into the dashboard package if it exists at `var/private/mihomo.secret`, so in most cases you can open the dashboard and it will auto-connect.
-
-## Daily ops
+## Daily Operations
 
 ```bash
 scripts/mihomo-manager status
 scripts/mihomo-manager logs
 scripts/mihomo-manager reload
+scripts/selfcheck.sh
 ```
 
-## Local Runtime Contract v1 (stub)
+## Local Runtime Contract
 
-This repo is deploy/ops oriented and has no long-running local daemon. We still provide unified entrypoints as stubs:
+This repo is deployment- and ops-oriented. It does not run a long-lived local daemon, but it keeps standard entrypoints:
 
 ```bash
 bash scripts/run_local.sh
 bash scripts/stop_local.sh
+bash scripts/doctor.sh
 ```
 
-## TUN toggle (explicit switch)
+## Keeping Up with Upstream
 
-- Default is enabled.
-- To deploy with TUN disabled:
+The vendored Verge frontend can be refreshed from upstream with:
 
 ```bash
-MIHOMO_TUN_ENABLE=0 scripts/deploy_microserver.sh
+scripts/sync_clash_verge_rev.sh
 ```
 
-## Alternative: docker compose
+By default it syncs from:
 
-See `deploy/README.md`.
+- `https://github.com/clash-verge-rev/clash-verge-rev.git`
+- ref `v2.4.7`
+
+The vendored upstream license and upstream README are preserved under:
+
+- `src/mihomo-dashboard-app/vendor/clash-verge-rev/LICENSE`
+- `src/mihomo-dashboard-app/vendor/clash-verge-rev/README.upstream.md`
+
+## Why This README Is Explicit About Origin
+
+For an open-source derivative, the most useful README is the one that reduces confusion:
+
+- users can quickly tell whether they need this repo or the upstream project
+- maintainers avoid overstating authorship
+- contributors can see where LazyCat-specific changes belong
+- upstream authors get visible credit instead of being hidden inside a vendor directory
+
+If you fully recreated an existing open-source project, the best move is to say so plainly and then explain your specific delta.
+
+## Contributing
+
+Issues and pull requests are welcome, especially for:
+
+- LazyCat deployment compatibility
+- safer TUN defaults and rollback paths
+- dashboard packaging and ingress behavior
+- documentation, recovery guides, and test coverage
+
+When changing vendored frontend code, document whether the change should stay local or be proposed upstream.
+
+## License and Notice
+
+This repository vendors upstream code from `clash-verge-rev`, which ships with GPL-3.0 licensing in the vendored source tree.
+
+Before publishing this repository broadly, make sure you:
+
+- keep upstream copyright and license notices intact
+- add a top-level `LICENSE` file for this repository
+- verify your redistribution terms are compatible with the upstream license
+
+If you want, the next step can be to turn this README into a stronger public-facing version with badges, screenshots, a "Who is this for?" section, and a short migration guide from upstream usage to LazyCat usage.
