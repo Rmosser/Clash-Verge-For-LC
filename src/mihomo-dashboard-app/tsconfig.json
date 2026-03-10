@@ -1,0 +1,52 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "target": "ESNext",
+    "useDefineForClassFields": true,
+    "lib": ["DOM", "DOM.Iterable", "ESNext"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "esModuleInterop": false,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "paths": {
+      "@/*": ["./vendor/clash-verge-rev/src/*"],
+      "@root/*": ["./*"],
+      "@tauri-apps/api": ["./browser/shims/tauri-api.ts"],
+      "@tauri-apps/api/app": ["./browser/shims/tauri-api-app.ts"],
+      "@tauri-apps/api/core": ["./browser/shims/tauri-api-core.ts"],
+      "@tauri-apps/api/event": ["./browser/shims/tauri-api-event.ts"],
+      "@tauri-apps/api/path": ["./browser/shims/tauri-api-path.ts"],
+      "@tauri-apps/api/webviewWindow": [
+        "./browser/shims/tauri-api-webviewWindow.ts"
+      ],
+      "@tauri-apps/api/window": ["./browser/shims/tauri-api-window.ts"],
+      "@tauri-apps/plugin-clipboard-manager": [
+        "./browser/shims/tauri-plugin-clipboard-manager.ts"
+      ],
+      "@tauri-apps/plugin-dialog": [
+        "./browser/shims/tauri-plugin-dialog.ts"
+      ],
+      "@tauri-apps/plugin-fs": ["./browser/shims/tauri-plugin-fs.ts"],
+      "@tauri-apps/plugin-http": ["./browser/shims/tauri-plugin-http.ts"],
+      "@tauri-apps/plugin-process": [
+        "./browser/shims/tauri-plugin-process.ts"
+      ],
+      "@tauri-apps/plugin-shell": ["./browser/shims/tauri-plugin-shell.ts"],
+      "@tauri-apps/plugin-updater": [
+        "./browser/shims/tauri-plugin-updater.ts"
+      ],
+      "tauri-plugin-mihomo-api": [
+        "./browser/shims/tauri-plugin-mihomo-api.ts"
+      ]
+    }
+  },
+  "include": ["./browser", "./vendor/clash-verge-rev/src"]
+}
