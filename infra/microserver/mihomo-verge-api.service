@@ -1,0 +1,20 @@
+[Unit]
+Description=Mihomo Verge API Sidecar
+After=network-online.target mihomo.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=VERGE_API_BIND=172.18.0.1:9091
+Environment=VERGE_API_SECRET_FILE=/etc/mihomo/verge-api.secret
+Environment=MIHOMO_VERGE_APP_VERSION=2.4.7-webport.0
+ExecStart=/usr/bin/env python3 /usr/local/lib/lzc-mihomo/mihomo-verge-api.py
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
