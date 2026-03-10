@@ -15,9 +15,6 @@ This repository adapts the `clash-verge-rev` / `metacubexd` ecosystem to LazyCat
 
 ## Upstream Credit | 上游致谢
 
-这不是一个“从零原创”的代理面板实现。  
-This is not an original proxy dashboard implementation.
-
 它直接建立在这些上游项目之上：  
 It stands directly on top of these upstream projects:
 
@@ -28,11 +25,6 @@ It stands directly on top of these upstream projects:
 - [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo): 本仓库部署和管理的代理核心  
   The proxy core deployed and managed by this repository
 
-如果你需要原始桌面客户端或上游 Dashboard，请优先使用上游仓库。  
-If you want the original desktop client or the upstream dashboard itself, use the upstream repositories first.
-
-这个仓库的价值不在于重写上游，而在于解决 LazyCat 专属的部署、Ingress 和运维问题。  
-The value of this repository is not rewriting upstream, but solving LazyCat-specific deployment, ingress, and operational problems.
 
 ## What This Repo Adds | 本仓库增加了什么
 
