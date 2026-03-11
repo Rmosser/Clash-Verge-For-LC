@@ -16,7 +16,15 @@ export type Rule = {
 };
 export type RulesResponse = { rules: Rule[] };
 export type Traffic = { up: number; down: number };
-export type ProxyDelay = { delay: number };
+export type DelayProbeResult = {
+  target: string;
+  status: "success" | "timeout" | "network_error" | "target_unreachable";
+  latencyMs?: number;
+  delay: number;
+  errorCode?: string;
+  errorMessage?: string;
+};
+export type ProxyDelay = DelayProbeResult;
 export type LogLevel = "debug" | "info" | "warning" | "error" | "silent";
 export type Message = { type: "Text"; data: string };
 
@@ -33,14 +41,6 @@ const deleteReq = (path: string) =>
   controllerFetch(path, {
     method: "DELETE"
   });
-
-const readJsonOk = async <T>(promise: Promise<Response>) => {
-  const response = await promise;
-  if (!response.ok) {
-    throw new Error(await response.text());
-  }
-  return (await response.json()) as T;
-};
 
 const wsBase = () => {
   const { mihomoBaseUrl, secret } = getLzcConfig();
@@ -186,11 +186,19 @@ export const delayProxyByName = async (
   url = "http://cp.cloudflare.com",
   timeout = 10000
 ): Promise<ProxyDelay> =>
-  readJsonOk<ProxyDelay>(
-    controllerFetch(
-      `/proxies/${encodeName(name)}/delay?timeout=${timeout}&url=${encodeURIComponent(url)}`
-    )
-  );
+  vergeInvoke<DelayProbeResult>("clash_api_get_proxy_delay", {
+    name,
+    url,
+    timeout
+  }).then((result) => ({
+    ...result,
+    delay:
+      typeof result.delay === "number"
+        ? result.delay
+        : typeof result.latencyMs === "number"
+          ? result.latencyMs
+          : 1_000_000
+  }));
 export const delayGroup = delayProxyByName;
 export const updateGeo = async () => {
   await vergeInvoke("update_geo", {});

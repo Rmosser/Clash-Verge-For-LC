@@ -1,5 +1,10 @@
 export {};
 
+import type {
+  RuntimeContractWarning,
+  RuntimeInfo,
+} from "./runtime";
+
 declare global {
   interface IConfigData {
     mixedPort?: number;
@@ -16,6 +21,8 @@ declare global {
       mihomoBaseUrl?: string;
       vergeApiBaseUrl?: string;
       appVersion?: string;
+      runtimeInfo?: RuntimeInfo | null;
+      runtimeWarning?: RuntimeContractWarning | null;
     };
     __VERGE_INITIAL_THEME_MODE?: "light" | "dark" | "system";
   }
