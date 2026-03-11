@@ -31,6 +31,7 @@ from typing import Any
 
 APP_VERSION = os.environ.get("MIHOMO_VERGE_APP_VERSION", "2.4.7-webport.0")
 APP_START = time.time()
+ENSURING_EMPTY_RUNTIME = False
 
 BIND = os.environ.get("VERGE_API_BIND", "172.18.0.1:9091")
 if ":" in BIND:
@@ -61,6 +62,7 @@ MIHOMO_CONFIG_PATH = Path("/etc/mihomo/config.yaml")
 MIHOMO_STATE_DIR = Path("/var/lib/mihomo")
 MIHOMO_BIN = Path("/usr/local/bin/mihomo")
 MMDB_PATH = MIHOMO_STATE_DIR / "Country.mmdb"
+EMPTY_RESET_SENTINEL_PATH = MIHOMO_STATE_DIR / ".verge-clean-reset"
 CONTROLLER_URL = "http://172.18.0.1:9090"
 
 DEFAULT_CONTROLLER_CORS = {
@@ -247,6 +249,16 @@ def save_json(path: Path, data: Any, mode: int | None = None) -> None:
         json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         mode,
     )
+
+
+def ensure_mihomo_config_owner(path: Path) -> None:
+    gid = 0
+    try:
+        gid = grp.getgrnam("mihomo").gr_gid
+    except KeyError:
+        if path.exists():
+            gid = path.stat().st_gid
+    os.chown(path, 0, gid)
 
 
 def deep_merge(base: Any, patch: Any) -> Any:
@@ -732,8 +744,10 @@ def normalize_verge_config_state(raw: Any) -> tuple[dict[str, Any], bool]:
 
 
 def ensure_state() -> None:
+    global ENSURING_EMPTY_RUNTIME
     ensure_dirs()
     verge_api_secret()
+    initialized_empty_state = False
 
     if not VERGE_CONFIG_PATH.exists():
         save_json(VERGE_CONFIG_PATH, detect_bootstrap_verge_config())
@@ -748,30 +762,50 @@ def ensure_state() -> None:
         save_json(PROXY_CHAIN_PATH, {"items": []})
 
     if not PROFILES_CONFIG_PATH.exists():
-        uid = "bootstrap-" + uuid.uuid4().hex[:8]
-        source_text = (
-            MIHOMO_CONFIG_PATH.read_text(encoding="utf-8")
-            if MIHOMO_CONFIG_PATH.exists()
-            else "mixed-port: 7890\nmode: rule\n"
-        )
-        atomic_write_text(profile_path(uid), source_text)
-        save_profiles_state(
-            {
-                "current": uid,
-                "items": [
-                    {
-                        "uid": uid,
-                        "type": "local",
-                        "name": "Migrated Profile",
-                        "desc": "Imported from current /etc/mihomo/config.yaml",
-                        "file": str(profile_path(uid)),
-                        "updated": now_ms(),
-                        "selected": [],
-                        "option": default_profile_option(),
-                    }
-                ],
-            }
-        )
+        if EMPTY_RESET_SENTINEL_PATH.exists():
+            save_profiles_state({"current": "", "items": []})
+            EMPTY_RESET_SENTINEL_PATH.unlink(missing_ok=True)
+            append_operation_log("initialized empty verge state after clean reset")
+            initialized_empty_state = True
+        else:
+            uid = "bootstrap-" + uuid.uuid4().hex[:8]
+            source_text = (
+                MIHOMO_CONFIG_PATH.read_text(encoding="utf-8")
+                if MIHOMO_CONFIG_PATH.exists()
+                else "mixed-port: 7890\nmode: rule\n"
+            )
+            atomic_write_text(profile_path(uid), source_text)
+            save_profiles_state(
+                {
+                    "current": uid,
+                    "items": [
+                        {
+                            "uid": uid,
+                            "type": "local",
+                            "name": "Migrated Profile",
+                            "desc": "Imported from current /etc/mihomo/config.yaml",
+                            "file": str(profile_path(uid)),
+                            "updated": now_ms(),
+                            "selected": [],
+                            "option": default_profile_option(),
+                        }
+                    ],
+                }
+            )
+
+    profiles = get_profiles_state()
+    if (
+        not profiles.get("current")
+        and not ENSURING_EMPTY_RUNTIME
+        and empty_runtime_requires_repair()
+    ):
+        ENSURING_EMPTY_RUNTIME = True
+        try:
+            apply_empty_profile_runtime()
+            if initialized_empty_state:
+                append_operation_log("repaired empty runtime controller after clean reset")
+        finally:
+            ENSURING_EMPTY_RUNTIME = False
 
 
 def get_verge_config_state() -> dict[str, Any]:
@@ -963,6 +997,23 @@ def empty_profile_runtime_text() -> str:
     )
 
 
+def empty_runtime_requires_repair() -> bool:
+    if not MIHOMO_CONFIG_PATH.exists():
+        return True
+
+    runtime_text = MIHOMO_CONFIG_PATH.read_text(encoding="utf-8")
+    controller = extract_scalar(runtime_text, "external-controller")
+    secret = extract_scalar(runtime_text, "secret")
+    if controller != "172.18.0.1:9090" or not secret:
+        return True
+
+    try:
+        controller_request("GET", "/version", timeout=3)
+    except Exception:
+        return True
+    return False
+
+
 def build_runtime_text(
     item: dict[str, Any] | None = None,
     base_text: str | None = None,
@@ -1045,13 +1096,7 @@ def apply_runtime_text(new_text: str, log_message: str) -> None:
     previous = MIHOMO_CONFIG_PATH.read_text(encoding="utf-8") if MIHOMO_CONFIG_PATH.exists() else ""
     previous_stat = MIHOMO_CONFIG_PATH.stat() if MIHOMO_CONFIG_PATH.exists() else None
     atomic_write_text(MIHOMO_CONFIG_PATH, new_text, 0o640)
-    if previous_stat is not None:
-        os.chown(MIHOMO_CONFIG_PATH, previous_stat.st_uid, previous_stat.st_gid)
-    else:
-        try:
-            os.chown(MIHOMO_CONFIG_PATH, 0, grp.getgrnam("mihomo").gr_gid)
-        except KeyError:
-            pass
+    ensure_mihomo_config_owner(MIHOMO_CONFIG_PATH)
     try:
         if MIHOMO_BIN.exists():
             run_command(
@@ -1070,7 +1115,7 @@ def apply_runtime_text(new_text: str, log_message: str) -> None:
     except Exception:
         atomic_write_text(MIHOMO_CONFIG_PATH, previous, 0o640)
         if previous_stat is not None:
-            os.chown(MIHOMO_CONFIG_PATH, previous_stat.st_uid, previous_stat.st_gid)
+            ensure_mihomo_config_owner(MIHOMO_CONFIG_PATH)
         run_command(["systemctl", "restart", "mihomo"], check=False)
         raise
 
