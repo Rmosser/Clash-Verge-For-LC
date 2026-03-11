@@ -4,13 +4,14 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 
-import { DialogRef, TooltipIcon } from "@/components/base";
+import { DialogRef } from "@/components/base";
 import { useVerge } from "@/hooks/use-verge";
 import { navItems } from "@/pages/_routers";
 import { copyClashEnv } from "@/services/cmds";
 import { supportedLanguages } from "@/services/i18n";
 import { showNotice } from "@/services/notice-service";
 import getSystem from "@/utils/get-system";
+import { isWebCommandResult } from "@root/browser/runtime";
 
 import { BackupViewer } from "./mods/backup-viewer";
 import { ConfigViewer } from "./mods/config-viewer";
@@ -18,7 +19,11 @@ import { GuardState } from "./mods/guard-state";
 import { HotkeyViewer } from "./mods/hotkey-viewer";
 import { LayoutViewer } from "./mods/layout-viewer";
 import { MiscViewer } from "./mods/misc-viewer";
-import { SettingItem, SettingList } from "./mods/setting-comp";
+import {
+  SettingExtraAction,
+  SettingItem,
+  SettingList,
+} from "./mods/setting-comp";
 import { ThemeModeSwitch } from "./mods/theme-mode-switch";
 import { ThemeViewer } from "./mods/theme-viewer";
 import { UpdateViewer } from "./mods/update-viewer";
@@ -74,11 +79,28 @@ const SettingVergeBasic = ({ onError }: Props) => {
   };
 
   const onCopyClashEnv = useCallback(async () => {
-    await copyClashEnv();
-    showNotice.success(
-      "shared.feedback.notifications.common.copySuccess",
-      1000,
-    );
+    try {
+      const result = await copyClashEnv();
+      if (isWebCommandResult(result)) {
+        if (result.kind === "success" || result.kind === "degraded") {
+          showNotice.success(
+            result.message ||
+              "shared.feedback.notifications.common.copySuccess",
+            1000,
+          );
+          return;
+        }
+        showNotice.error(result.message || "复制环境变量失败。");
+        return;
+      }
+
+      showNotice.success(
+        "shared.feedback.notifications.common.copySuccess",
+        1000,
+      );
+    } catch (error) {
+      showNotice.error(error);
+    }
   }, []);
 
   return (
@@ -159,7 +181,11 @@ const SettingVergeBasic = ({ onError }: Props) => {
       <SettingItem
         label={t("settings.components.verge.basic.fields.copyEnvType")}
         extra={
-          <TooltipIcon icon={ContentCopyRounded} onClick={onCopyClashEnv} />
+          <SettingExtraAction
+            icon={ContentCopyRounded}
+            onClick={onCopyClashEnv}
+            title={t("settings.components.verge.basic.fields.copyEnvType")}
+          />
         }
       >
         <GuardState
@@ -233,6 +259,7 @@ const SettingVergeBasic = ({ onError }: Props) => {
                     if (selected) {
                       onChangeData({ startup_script: `${selected}` });
                       patchVerge({ startup_script: `${selected}` });
+                      showNotice.success("启动脚本已应用。", 1000);
                     }
                   }}
                 >

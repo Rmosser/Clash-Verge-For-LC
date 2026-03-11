@@ -65,6 +65,29 @@ const getCountryFlag = (countryCode: string | undefined) => {
   return String.fromCodePoint(...codePoints);
 };
 
+const getIpInfoErrorMessage = (
+  error: unknown,
+  fallback: string,
+) => {
+  if (!(error instanceof Error)) {
+    return fallback;
+  }
+
+  const code = (error as Error & { code?: string }).code;
+  switch (code) {
+    case "timeout":
+      return "通过 Mihomo 获取出口 IP 超时。";
+    case "proxy_connect_error":
+      return "无法通过 Mihomo 获取出口 IP。";
+    case "upstream_http_error":
+      return "IP 检测服务暂时不可用。";
+    case "network_error":
+      return "当前网络环境下无法获取出口 IP。";
+    default:
+      return fallback;
+  }
+};
+
 type CountDownState = XOR<
   {
     type: "countdown";
@@ -254,9 +277,10 @@ export const IpInfoCard = () => {
           }}
         >
           <Typography variant="body1" color="error">
-            {error instanceof Error
-              ? error.message
-              : t("home.components.ipInfo.errors.load")}
+            {getIpInfoErrorMessage(
+              error,
+              t("home.components.ipInfo.errors.load"),
+            )}
           </Typography>
           <Button onClick={() => mutate()} sx={{ mt: 2 }}>
             {t("shared.actions.retry")}

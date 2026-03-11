@@ -15,6 +15,11 @@ import {
 import { showNotice } from "@/services/notice-service";
 import { checkUpdateSafe as checkUpdate } from "@/services/update";
 import { version } from "@root/package.json";
+import {
+  getWebActionPolicy,
+  isLzcWebRuntime,
+  isWebCommandResult,
+} from "@root/browser/runtime";
 
 import { BackupViewer } from "./mods/backup-viewer";
 import { ConfigViewer } from "./mods/config-viewer";
@@ -22,7 +27,11 @@ import { HotkeyViewer } from "./mods/hotkey-viewer";
 import { LayoutViewer } from "./mods/layout-viewer";
 import { LiteModeViewer } from "./mods/lite-mode-viewer";
 import { MiscViewer } from "./mods/misc-viewer";
-import { SettingItem, SettingList } from "./mods/setting-comp";
+import {
+  SettingExtraAction,
+  SettingItem,
+  SettingList,
+} from "./mods/setting-comp";
 import { ThemeViewer } from "./mods/theme-viewer";
 import { UpdateViewer } from "./mods/update-viewer";
 
@@ -58,21 +67,35 @@ const SettingVergeAdvanced = ({ onError: _ }: Props) => {
   };
 
   const onExportDiagnosticInfo = useCallback(async () => {
-    await exportDiagnosticInfo();
-    showNotice.success(
-      "shared.feedback.notifications.common.copySuccess",
-      1000,
-    );
+    try {
+      const result = await exportDiagnosticInfo();
+      if (isWebCommandResult(result)) {
+        if (result.kind === "error" || result.kind === "unsupported") {
+          showNotice.error(result.message || "导出诊断信息失败。");
+        }
+        return;
+      }
+      showNotice.success("已开始下载诊断文件。", 1000);
+    } catch (error) {
+      showNotice.error(error);
+    }
   }, []);
 
   const copyVersion = useCallback(() => {
-    navigator.clipboard.writeText(`v${version}`).then(() => {
-      showNotice.success(
-        "settings.components.verge.advanced.notifications.versionCopied",
-        1000,
-      );
-    });
+    navigator.clipboard
+      .writeText(`v${version}`)
+      .then(() => {
+        showNotice.success(
+          "settings.components.verge.advanced.notifications.versionCopied",
+          1000,
+        );
+      })
+      .catch((error) => showNotice.error(error));
   }, []);
+
+  const directoryPolicy = getWebActionPolicy("directoryOpen");
+  const devtoolsPolicy = getWebActionPolicy("devtools");
+  const isWebRuntime = isLzcWebRuntime();
 
   return (
     <SettingList title={t("settings.components.verge.advanced.title")}>
@@ -104,9 +127,14 @@ const SettingVergeAdvanced = ({ onError: _ }: Props) => {
       <SettingItem
         onClick={openAppDir}
         label={t("settings.components.verge.advanced.fields.openConfDir")}
+        secondary={isWebRuntime ? directoryPolicy.label : undefined}
         extra={
           <TooltipIcon
-            title={t("settings.components.verge.advanced.tooltips.openConfDir")}
+            title={
+              isWebRuntime
+                ? directoryPolicy.reason
+                : t("settings.components.verge.advanced.tooltips.openConfDir")
+            }
             sx={{ opacity: "0.7" }}
           />
         }
@@ -115,11 +143,13 @@ const SettingVergeAdvanced = ({ onError: _ }: Props) => {
       <SettingItem
         onClick={openCoreDir}
         label={t("settings.components.verge.advanced.fields.openCoreDir")}
+        secondary={isWebRuntime ? directoryPolicy.label : undefined}
       />
 
       <SettingItem
         onClick={openLogsDir}
         label={t("settings.components.verge.advanced.fields.openLogsDir")}
+        secondary={isWebRuntime ? directoryPolicy.label : undefined}
       />
 
       <SettingItem
@@ -130,6 +160,9 @@ const SettingVergeAdvanced = ({ onError: _ }: Props) => {
       <SettingItem
         onClick={openDevTools}
         label={t("settings.components.verge.advanced.fields.openDevTools")}
+        disabled={isWebRuntime}
+        disabledReason={devtoolsPolicy.reason}
+        secondary={isWebRuntime ? devtoolsPolicy.label : undefined}
       />
 
       <SettingItem
@@ -153,9 +186,10 @@ const SettingVergeAdvanced = ({ onError: _ }: Props) => {
       <SettingItem
         label={t("settings.components.verge.advanced.fields.exportDiagnostics")}
         extra={
-          <TooltipIcon
+          <SettingExtraAction
             icon={ContentCopyRounded}
             onClick={onExportDiagnosticInfo}
+            title={t("settings.components.verge.advanced.fields.exportDiagnostics")}
           />
         }
       ></SettingItem>
@@ -163,7 +197,7 @@ const SettingVergeAdvanced = ({ onError: _ }: Props) => {
       <SettingItem
         label={t("settings.components.verge.advanced.fields.vergeVersion")}
         extra={
-          <TooltipIcon
+          <SettingExtraAction
             icon={ContentCopyRounded}
             onClick={copyVersion}
             title={t("settings.components.verge.advanced.actions.copyVersion")}

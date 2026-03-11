@@ -15,6 +15,7 @@ import {
   patchClashMode,
   updateProxyChainConfigInRuntime,
 } from "@/services/cmds";
+import { showNotice } from "@/services/notice-service";
 import { debugLog } from "@/utils/debug";
 
 const MODES = ["rule", "global", "direct"] as const;
@@ -22,6 +23,12 @@ type Mode = (typeof MODES)[number];
 const MODE_SET = new Set<string>(MODES);
 const isMode = (value: unknown): value is Mode =>
   typeof value === "string" && MODE_SET.has(value);
+const PROXY_CHAIN_STORAGE_KEYS = [
+  "proxy-chain-mode-enabled",
+  "proxy-chain-group",
+  "proxy-chain-exit-node",
+  "proxy-chain-items",
+];
 
 const ProxyPage = () => {
   const { t } = useTranslation();
@@ -81,6 +88,16 @@ const ProxyPage = () => {
     }
   });
 
+  const resetBrokenChainState = useCallback(
+    (reason: string) => {
+      PROXY_CHAIN_STORAGE_KEYS.forEach((key) => localStorage.removeItem(key));
+      setIsChainMode(false);
+      updateChainConfigData(null);
+      showNotice.info(reason, 2500);
+    },
+    [updateChainConfigData],
+  );
+
   // 当开启链式代理模式时，获取配置数据
   useEffect(() => {
     if (!isChainMode) {
@@ -95,21 +112,24 @@ const ProxyPage = () => {
         const exitNode = localStorage.getItem("proxy-chain-exit-node");
 
         if (!exitNode) {
-          console.error("No proxy chain exit node found in localStorage");
           if (!cancelled) {
-            updateChainConfigData("");
+            resetBrokenChainState("链式代理配置缺失，已自动回退到普通模式。");
           }
           return;
         }
 
         const configData = await getRuntimeProxyChainConfig(exitNode);
         if (!cancelled) {
-          updateChainConfigData(configData || "");
+          if (!configData) {
+            resetBrokenChainState("链式代理运行态无效，已自动清理本地缓存。");
+            return;
+          }
+          updateChainConfigData(configData);
         }
       } catch (error) {
-        console.error("Failed to get runtime proxy chain config:", error);
         if (!cancelled) {
-          updateChainConfigData("");
+          console.warn("Failed to get runtime proxy chain config:", error);
+          resetBrokenChainState("链式代理状态异常，已回退到普通模式。");
         }
       }
     };
@@ -119,7 +139,7 @@ const ProxyPage = () => {
     return () => {
       cancelled = true;
     };
-  }, [isChainMode, updateChainConfigData]);
+  }, [isChainMode, resetBrokenChainState, updateChainConfigData]);
 
   useEffect(() => {
     if (normalizedMode && !isMode(normalizedMode)) {
