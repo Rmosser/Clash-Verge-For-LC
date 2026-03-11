@@ -8,6 +8,8 @@ export interface DelayUpdate {
   delay: number;
   elapsed?: number;
   updatedAt: number;
+  status?: string;
+  errorMessage?: string;
 }
 
 const CACHE_TTL = 30 * 60 * 1000;
@@ -149,7 +151,7 @@ class DelayManager {
     name: string,
     group: string,
     delay: number,
-    meta?: { elapsed?: number },
+    meta?: { elapsed?: number; status?: string; errorMessage?: string },
   ): DelayUpdate {
     const key = hashKey(name, group);
     debugLog(
@@ -159,6 +161,8 @@ class DelayManager {
       delay,
       elapsed: meta?.elapsed,
       updatedAt: Date.now(),
+      status: meta?.status,
+      errorMessage: meta?.errorMessage,
     };
 
     this.cache.set(key, update);
@@ -229,7 +233,17 @@ class DelayManager {
 
       // 设置超时处理, delay = 0 为超时
       const timeoutPromise = new Promise<ProxyDelay>((resolve) => {
-        setTimeout(() => resolve({ delay: 0 }), timeout);
+        setTimeout(
+          () =>
+            resolve({
+              target: name,
+              status: "timeout",
+              delay: 0,
+              errorCode: "timeout",
+              errorMessage: "延迟测试超时",
+            }),
+          timeout,
+        );
       });
 
       // 使用Promise.race来实现超时控制
@@ -248,7 +262,11 @@ class DelayManager {
       const elapsed = elapsedTime;
       debugLog(`[DelayManager] 延迟测试完成，代理: ${name}, 结果: ${delay}ms`);
 
-      return this.setDelay(name, group, delay, { elapsed });
+      return this.setDelay(name, group, delay, {
+        elapsed,
+        status: result.status,
+        errorMessage: result.errorMessage,
+      });
     } catch (error) {
       // 确保至少显示500ms的加载动画
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -256,7 +274,11 @@ class DelayManager {
       const delay = 1e6; // error
       const elapsed = Date.now() - startTime;
 
-      return this.setDelay(name, group, delay, { elapsed });
+      return this.setDelay(name, group, delay, {
+        elapsed,
+        status: "network_error",
+        errorMessage: error instanceof Error ? error.message : "延迟测试失败",
+      });
     }
   }
 

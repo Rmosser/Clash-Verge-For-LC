@@ -3,10 +3,84 @@ import dayjs from "dayjs";
 import { getProxies, getProxyProviders } from "tauri-plugin-mihomo-api";
 
 import { showNotice } from "@/services/notice-service";
+import type { ProbeEnvelope } from "@/services/runtime-probe";
+import { probeRuntime } from "@/services/runtime-probe";
 import { debugLog } from "@/utils/debug";
+import type {
+  WebActionPolicy,
+  WebCommandResult,
+} from "@root/browser/runtime";
+
+type CommandResultData = Record<string, unknown> | undefined;
+type UrlProbeData = {
+  target: string;
+  status: "success" | "failed" | "timeout";
+  latencyMs?: number;
+  errorCode?: string;
+  errorMessage?: string;
+};
+
+const isWebCommandResult = <T = unknown>(
+  value: unknown,
+): value is WebCommandResult<T> => {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    typeof (value as { kind?: unknown }).kind === "string"
+  );
+};
+
+const invokeWebCommand = async <T = unknown>(
+  cmd: string,
+  args?: Record<string, unknown>,
+): Promise<WebCommandResult<T>> => {
+  const result = await invoke<WebCommandResult<T> | T>(cmd, args);
+  if (isWebCommandResult<T>(result)) {
+    return result;
+  }
+  return {
+    kind: "success",
+    data: result as T,
+  };
+};
+
+const getResultMessage = (
+  result: WebCommandResult<CommandResultData>,
+  fallback: string,
+) => {
+  if (result.message) {
+    return result.message;
+  }
+  return fallback;
+};
+
+const showCommandNotice = (
+  result: WebCommandResult<CommandResultData>,
+  options: {
+    success?: string;
+    degraded?: string;
+  } = {},
+) => {
+  if (result.kind === "error" || result.kind === "unsupported") {
+    showNotice.error(getResultMessage(result, "操作失败。"));
+    return;
+  }
+
+  if (result.kind === "degraded") {
+    showNotice.info(
+      options.degraded || getResultMessage(result, "已按 Web 版降级方式处理。"),
+      2500,
+    );
+    return;
+  }
+
+  if (options.success) {
+    showNotice.success(options.success, 1500);
+  }
+};
 
 export async function copyClashEnv() {
-  return invoke<void>("copy_clash_env");
+  return invokeWebCommand<{ text?: string }>("copy_clash_env");
 }
 
 export async function getProfiles() {
@@ -315,22 +389,77 @@ export async function getAppDir() {
 }
 
 export async function openAppDir() {
-  return invoke<void>("open_app_dir").catch((err) => showNotice.error(err));
+  try {
+    const result = await invokeWebCommand<{ path?: string; policy?: WebActionPolicy }>(
+      "open_app_dir",
+    );
+    showCommandNotice(result as WebCommandResult<CommandResultData>, {
+      degraded:
+        typeof result.data?.path === "string"
+          ? `已复制配置目录路径：${result.data.path}`
+          : "已复制配置目录路径。",
+    });
+    return result;
+  } catch (err) {
+    showNotice.error(err);
+    return {
+      kind: "error",
+      message: err instanceof Error ? err.message : String(err),
+    } satisfies WebCommandResult;
+  }
 }
 
 export async function openCoreDir() {
-  return invoke<void>("open_core_dir").catch((err) => showNotice.error(err));
+  try {
+    const result = await invokeWebCommand<{ path?: string; policy?: WebActionPolicy }>(
+      "open_core_dir",
+    );
+    showCommandNotice(result as WebCommandResult<CommandResultData>, {
+      degraded:
+        typeof result.data?.path === "string"
+          ? `已复制内核目录路径：${result.data.path}`
+          : "已复制内核目录路径。",
+    });
+    return result;
+  } catch (err) {
+    showNotice.error(err);
+    return {
+      kind: "error",
+      message: err instanceof Error ? err.message : String(err),
+    } satisfies WebCommandResult;
+  }
 }
 
 export async function openLogsDir() {
-  return invoke<void>("open_logs_dir").catch((err) => showNotice.error(err));
+  try {
+    const result = await invokeWebCommand<{ path?: string; policy?: WebActionPolicy }>(
+      "open_logs_dir",
+    );
+    showCommandNotice(result as WebCommandResult<CommandResultData>, {
+      degraded:
+        typeof result.data?.path === "string"
+          ? `已复制日志目录路径：${result.data.path}`
+          : "已复制日志目录路径。",
+    });
+    return result;
+  } catch (err) {
+    showNotice.error(err);
+    return {
+      kind: "error",
+      message: err instanceof Error ? err.message : String(err),
+    } satisfies WebCommandResult;
+  }
 }
 
 export const openWebUrl = async (url: string) => {
   try {
-    await invoke("open_web_url", { url });
+    return await invokeWebCommand("open_web_url", { url });
   } catch (err: any) {
     showNotice.error(err);
+    return {
+      kind: "error",
+      message: err instanceof Error ? err.message : String(err),
+    } satisfies WebCommandResult;
   }
 };
 
@@ -367,7 +496,45 @@ export async function cmdGetProxyDelay(
 }
 
 export async function cmdTestDelay(url: string) {
-  return invoke<number>("test_delay", { url });
+  const hasWebPortRuntime =
+    typeof window !== "undefined" &&
+    !!window.__LZCAPP_MIHOMO__?.vergeApiBaseUrl;
+
+  if (hasWebPortRuntime) {
+    return probeRuntime<UrlProbeData>({
+      kind: "url",
+      target: url,
+      timeoutMs: 12000,
+    });
+  }
+
+  const legacyResult = await invoke<number | UrlProbeData>("test_delay", { url });
+  const latencyMs =
+    typeof legacyResult === "number"
+      ? legacyResult
+      : legacyResult?.latencyMs;
+  const legacyStatus =
+    typeof legacyResult === "number"
+      ? "success"
+      : legacyResult?.status || "success";
+  return {
+    ok: true,
+    code: "OK",
+    message: "ok",
+    durationMs: typeof latencyMs === "number" ? latencyMs : 0,
+    fromCache: false,
+    data: {
+      target: url,
+      status: legacyStatus,
+      latencyMs,
+      errorCode:
+        typeof legacyResult === "number" ? undefined : legacyResult?.errorCode,
+      errorMessage:
+        typeof legacyResult === "number"
+          ? undefined
+          : legacyResult?.errorMessage,
+    },
+  } satisfies ProbeEnvelope<UrlProbeData>;
 }
 
 export async function invoke_uwp_tool() {
@@ -381,7 +548,9 @@ export async function getPortableFlag() {
 }
 
 export async function openDevTools() {
-  return invoke("open_devtools");
+  const result = await invokeWebCommand("open_devtools");
+  showCommandNotice(result as WebCommandResult<CommandResultData>);
+  return result;
 }
 
 export async function exitApp() {
@@ -389,7 +558,11 @@ export async function exitApp() {
 }
 
 export async function exportDiagnosticInfo() {
-  return invoke("export_diagnostic_info");
+  const result = await invokeWebCommand("export_diagnostic_info");
+  showCommandNotice(result as WebCommandResult<CommandResultData>, {
+    success: "已开始下载诊断文件。",
+  });
+  return result;
 }
 
 export async function getSystemInfo() {
@@ -404,7 +577,6 @@ export async function copyIconFile(
   const previousTime = localStorage.getItem(key) || "";
 
   const currentTime = String(Date.now());
-  localStorage.setItem(key, currentTime);
 
   const iconInfo = {
     name,
@@ -412,7 +584,18 @@ export async function copyIconFile(
     current_t: currentTime,
   };
 
-  return invoke<void>("copy_icon_file", { path, iconInfo });
+  try {
+    const result = await invoke<string>("copy_icon_file", { path, iconInfo });
+    localStorage.setItem(key, currentTime);
+    return result;
+  } catch (error) {
+    if (previousTime) {
+      localStorage.setItem(key, previousTime);
+    } else {
+      localStorage.removeItem(key);
+    }
+    throw error;
+  }
 }
 
 export async function downloadIconCache(url: string, name: string) {

@@ -1,11 +1,12 @@
 import { getName, getVersion } from "@tauri-apps/api/app";
-import { invoke } from "@tauri-apps/api/core";
 import { fetch } from "@tauri-apps/plugin-http";
 import { asyncRetry } from "foxts/async-retry";
 import { extractErrorMessage } from "foxts/extract-error-message";
 import { once } from "foxts/once";
 
 import { debugLog } from "@/utils/debug";
+
+import { probeRuntime } from "./runtime-probe";
 
 const getUserAgentPromise = once(async () => {
   try {
@@ -30,6 +31,14 @@ interface IpInfo {
   latitude: number;
   timezone: string;
 }
+
+type IpInfoResponse = {
+  status: "success" | "error";
+  payload?: IpInfo;
+  errorCode?: string;
+  errorMessage?: string;
+  lastFetchTs?: number;
+};
 
 // IP检测服务配置
 interface ServiceConfig {
@@ -147,7 +156,21 @@ export const getIpInfo = async (): Promise<
   IpInfo & { lastFetchTs: number }
 > => {
   if (hasWebPortRuntime()) {
-    return invoke<IpInfo & { lastFetchTs: number }>("get_ip_info");
+    const probe = await probeRuntime<IpInfoResponse>({
+      kind: "ip_info",
+      timeoutMs: 5000,
+    });
+    const result = probe.data;
+    if (result?.status === "success" && result.payload) {
+      return {
+        ...result.payload,
+        lastFetchTs: result.lastFetchTs || Date.now(),
+      };
+    }
+
+    const error = new Error(result?.errorMessage || probe.message || "IP 信息加载失败");
+    (error as Error & { code?: string }).code = result?.errorCode || probe.code;
+    throw error;
   }
 
   // 配置参数

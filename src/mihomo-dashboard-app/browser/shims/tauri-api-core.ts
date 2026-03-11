@@ -1,9 +1,12 @@
 import {
   basename,
+  createWebCommandResult,
   dispatchAppEvent,
+  getWebActionPolicy,
   getUnsupportedWebFeatureMessage,
   getRegisteredFile,
   getLzcConfig,
+  isWebCommandResult,
   isLzcWebRuntime,
   readRegisteredBuffer,
   resolveAppFileUrl,
@@ -45,15 +48,28 @@ export const invoke = async <T>(
   cmd: string,
   args?: Record<string, unknown>
 ): Promise<T> => {
-  if (cmd === "notify_ui_ready" || cmd === "update_ui_stage" || cmd === "open_devtools") {
+  if (cmd === "notify_ui_ready" || cmd === "update_ui_stage") {
     return undefined as T;
+  }
+  if (cmd === "open_devtools") {
+    const policy = getWebActionPolicy("devtools");
+    return createWebCommandResult(
+      "unsupported",
+      policy.reason,
+      { policy }
+    ) as T;
   }
   if (cmd === "open_web_url") {
     const url = typeof args?.url === "string" ? args.url : "";
     if (url) {
       window.open(url, "_blank", "noopener,noreferrer");
+      return createWebCommandResult(
+        "success",
+        getWebActionPolicy("externalOpen").reason,
+        { url }
+      ) as T;
     }
-    return undefined as T;
+    return createWebCommandResult("error", "URL is required.") as T;
   }
   if (cmd === "exit_app" || cmd === "restart_app" || cmd === "exit_lightweight_mode") {
     window.location.reload();
@@ -81,6 +97,9 @@ export const invoke = async <T>(
     unknown
   >;
   const result = await vergeInvoke<any>(cmd, payload);
+  if (isWebCommandResult(result)) {
+    return result as T;
+  }
 
   if (cmd === "export_local_backup" && result?.filename && result?.content_b64) {
     const buffer = Uint8Array.from(atob(result.content_b64), (char) =>
@@ -90,7 +109,11 @@ export const invoke = async <T>(
       new Blob([buffer], { type: result.content_type ?? "application/gzip" }),
       result.download_name ?? basename(result.filename)
     );
-    return undefined as T;
+    return createWebCommandResult(
+      "success",
+      "已开始下载备份文件。",
+      { filename: result.download_name ?? basename(result.filename) }
+    ) as T;
   }
 
   if (cmd === "view_profile" && result?.filename && result?.content) {
@@ -100,12 +123,29 @@ export const invoke = async <T>(
       }),
       basename(result.filename)
     );
-    return undefined as T;
+    return createWebCommandResult(
+      "success",
+      "已开始下载配置文件。",
+      { filename: basename(result.filename) }
+    ) as T;
   }
 
-  if (cmd === "copy_clash_env" && typeof result === "string") {
-    await navigator.clipboard.writeText(result);
-    return undefined as T;
+  if (cmd === "copy_clash_env") {
+    const text =
+      typeof result === "string"
+        ? result
+        : typeof result?.text === "string"
+          ? result.text
+          : "";
+    if (!text) {
+      return createWebCommandResult("error", "未返回可复制的环境变量内容。") as T;
+    }
+    await navigator.clipboard.writeText(text);
+    return createWebCommandResult(
+      "success",
+      "环境变量已复制到剪贴板。",
+      { text, policy: getWebActionPolicy("clipboard") }
+    ) as T;
   }
 
   if (
@@ -114,7 +154,14 @@ export const invoke = async <T>(
     typeof result.path === "string"
   ) {
     await navigator.clipboard.writeText(result.path);
-    return undefined as T;
+    return createWebCommandResult(
+      "degraded",
+      getWebActionPolicy("directoryOpen").reason,
+      {
+        path: result.path,
+        policy: getWebActionPolicy("directoryOpen")
+      }
+    ) as T;
   }
 
   if (cmd === "export_diagnostic_info" && result?.filename && result?.content_b64) {
@@ -127,7 +174,11 @@ export const invoke = async <T>(
       }),
       result.download_name ?? basename(result.filename)
     );
-    return undefined as T;
+    return createWebCommandResult(
+      "success",
+      "已开始下载诊断文件。",
+      { filename: result.download_name ?? basename(result.filename) }
+    ) as T;
   }
 
   if (cmd === "copy_icon_file" && result?.path && typeof result.path === "string") {
