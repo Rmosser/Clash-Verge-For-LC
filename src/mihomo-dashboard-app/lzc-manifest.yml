@@ -1,6 +1,6 @@
-name: mihomo-dashboard
-package: cloud.lazycat.app.mihomo-dashboard
-version: 0.1.0
+name: Clash Verge For LC
+package: cloud.lazycat.app.clash-verge-for-lc
+version: 0.2.0
 description: Clash Verge Rev web port for Mihomo (Clash Meta), proxied via LazyCat.
 license: https://choosealicense.com/licenses/mit/
 homepage:
