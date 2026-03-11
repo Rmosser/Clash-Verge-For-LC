@@ -138,6 +138,13 @@ scripts/deploy_microserver.sh
 scripts/deploy_dashboard.sh
 ```
 
+如果需要像新安装一样清掉旧 dashboard 残留和 Verge 本地状态，再重新安装：  
+If you want a first-install-like reset before reinstalling the dashboard:
+
+```bash
+scripts/deploy_dashboard.sh --clean-reset
+```
+
 6. 或者一键执行两步。  
    Or run both steps at once.
 
@@ -167,6 +174,15 @@ scripts/selfcheck.sh
 - 不要把需要懒猫登录的 SubHub 页面地址直接粘贴到 Mihomo Dashboard 的订阅导入框
 - `clash.yaml?profile=lazycat` 与 `providers/*.yaml` 应返回 `200 + application/x-yaml`，无效 token 返回 `401/404`，不要跳登录页
 - 如果微服经 `*.heiyu.space` 回拉同机大订阅超时，先在浏览器下载 YAML，再通过本地文件导入；长期方案是在 SubHub 侧提供免登录的 token 化导出端点
+
+## Dashboard Domain And Reset | 面板域名与重置
+
+- 当前正式入口：`https://clash.rainierserver.heiyu.space`
+- `scripts/deploy_dashboard.sh` 安装后会校验 `https://clash...` 公网入口是否可达，并对 `LAZYCAT_APP_DOMAIN` 漂移给出告警
+- 若平台既没有把入口接到 `clash`，又把容器环境回退成 `clash1...` 之类的 fallback 域名，脚本会直接失败并提示冲突
+- 若需要恢复到“第一次安装”的状态，使用 `scripts/deploy_dashboard.sh --clean-reset`
+  - 该模式会清理旧 dashboard 残留、当前包的 LazyCat deploy 映射、以及 `/var/lib/mihomo/verge/`
+  - 不会删除 `/etc/mihomo/config.yaml`、`Country.mmdb` 或 TUN/DNS/bypass 主配置
 
 ## Local Runtime Contract | 本地运行入口
 
