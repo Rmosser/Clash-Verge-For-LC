@@ -205,6 +205,7 @@ export const ProxyItem = (props: Props) => {
             // 显示延迟
             <Widget
               className="the-delay"
+              title={delayState.errorMessage || delayState.status || ""}
               onClick={(e) => {
                 if (proxy.provider) return;
                 e.preventDefault();

@@ -21,6 +21,7 @@ import { useVerge } from "@/hooks/use-verge";
 import { useAppData } from "@/providers/app-data-context";
 import { updateProxyChainConfigInRuntime } from "@/services/cmds";
 import delayManager from "@/services/delay";
+import { showNotice } from "@/services/notice-service";
 import { debugLog } from "@/utils/debug";
 
 import { ScrollTopButton } from "../layout/scroll-top-button";
@@ -334,9 +335,12 @@ export const ProxyGroups = (props: Props) => {
         delayManager.checkListDelay(names, groupName, timeout),
         delayGroup(groupName, url, timeout).then((result) => {
           debugLog(
-            `[ProxyGroups] getGroupProxyDelays返回结果数量:`,
-            Object.keys(result || {}).length,
+            `[ProxyGroups] 代理组延迟结果:`,
+            result,
           );
+          if (result.status !== "success" && result.errorMessage) {
+            showNotice.info(result.errorMessage, 2500);
+          }
         }), // 查询group delays 将清除fixed(不关注调用结果)
       ]);
       debugLog(`[ProxyGroups] 延迟测试完成，组: ${groupName}`);

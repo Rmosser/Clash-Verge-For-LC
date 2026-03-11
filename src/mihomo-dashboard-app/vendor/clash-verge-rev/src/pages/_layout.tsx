@@ -13,6 +13,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
+  Alert,
   Box,
   List,
   Menu,
@@ -43,6 +44,7 @@ import { useVerge } from "@/hooks/use-verge";
 import { useWindowDecorations } from "@/hooks/use-window";
 import { useThemeMode } from "@/services/states";
 import getSystem from "@/utils/get-system";
+import { getRuntimeContractWarning } from "../../../../browser/runtime";
 
 import {
   useAppInitialization,
@@ -121,6 +123,7 @@ const Layout = () => {
   const { switchLanguage } = useI18n();
   const navigate = useNavigate();
   const themeReady = useMemo(() => Boolean(theme), [theme]);
+  const runtimeWarning = useMemo(() => getRuntimeContractWarning(), []);
 
   const [menuUnlocked, setMenuUnlocked] = useState(false);
   const [menuContextPosition, setMenuContextPosition] =
@@ -478,6 +481,15 @@ const Layout = () => {
             <div className="layout-content__right">
               <div className="the-bar"></div>
               <div className="the-content">
+                {runtimeWarning && (
+                  <Alert
+                    severity="warning"
+                    sx={{ mb: 1.5, borderRadius: 1.5 }}
+                  >
+                    {runtimeWarning.message}
+                    {` 前端期望 ${runtimeWarning.expected.buildId} (${runtimeWarning.expected.gitCommit})，当前后端为 ${runtimeWarning.actual.buildId} (${runtimeWarning.actual.gitCommit})。`}
+                  </Alert>
+                )}
                 <BaseErrorBoundary>
                   <Outlet />
                 </BaseErrorBoundary>

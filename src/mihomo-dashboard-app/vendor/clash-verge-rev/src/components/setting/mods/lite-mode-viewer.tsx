@@ -62,6 +62,7 @@ export function LiteModeViewer({ ref }: { ref?: Ref<DialogRef> }) {
       contentSx={{ width: 450 }}
       okBtn={t("shared.actions.save")}
       cancelBtn={t("shared.actions.cancel")}
+      disableOk={lightweightModeDisabled}
       onClose={() => setOpen(false)}
       onCancel={() => setOpen(false)}
       onOk={onSave}
@@ -115,6 +116,7 @@ export function LiteModeViewer({ ref }: { ref?: Ref<DialogRef> }) {
           <Switch
             edge="end"
             checked={values.autoEnterLiteMode}
+            disabled={lightweightModeDisabled}
             onChange={(_, c) =>
               setValues((v) => ({ ...v, autoEnterLiteMode: c }))
             }
@@ -136,6 +138,7 @@ export function LiteModeViewer({ ref }: { ref?: Ref<DialogRef> }) {
                 autoCapitalize="off"
                 spellCheck="false"
                 sx={{ width: 150 }}
+                disabled={lightweightModeDisabled}
                 value={values.autoEnterLiteModeDelay}
                 onChange={(e) =>
                   setValues((v) => ({
@@ -161,9 +164,11 @@ export function LiteModeViewer({ ref }: { ref?: Ref<DialogRef> }) {
                 color="text.secondary"
                 sx={{ fontStyle: "italic" }}
               >
-                {t("settings.modals.liteMode.messages.autoEnterHint", {
-                  n: values.autoEnterLiteModeDelay,
-                })}
+                {lightweightModeDisabled
+                  ? getUnsupportedWebFeatureMessage("lightweight-mode")
+                  : t("settings.modals.liteMode.messages.autoEnterHint", {
+                      n: values.autoEnterLiteModeDelay,
+                    })}
               </Typography>
             </ListItem>
           </>

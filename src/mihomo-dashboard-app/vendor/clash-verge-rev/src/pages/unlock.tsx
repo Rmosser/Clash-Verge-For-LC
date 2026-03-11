@@ -7,6 +7,7 @@ import {
   RefreshRounded,
 } from "@mui/icons-material";
 import {
+  Alert,
   Box,
   Button,
   Card,
@@ -19,19 +20,34 @@ import {
   alpha,
   useTheme,
 } from "@mui/material";
-import { invoke } from "@tauri-apps/api/core";
 import { useLockFn } from "ahooks";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { BaseEmpty, BasePage } from "@/components/base";
 import { showNotice } from "@/services/notice-service";
+import { probeRuntime } from "@/services/runtime-probe";
 
 interface UnlockItem {
   name: string;
   status: string;
   region?: string | null;
   check_time?: string | null;
+  probe_status?: "success" | "failed" | "timeout" | null;
+  message?: string | null;
+}
+
+interface UnlockSummary {
+  total: number;
+  success: number;
+  failed: number;
+  timeout: number;
+  checkedAt?: string | null;
+}
+
+interface UnlockResponse {
+  items: UnlockItem[];
+  summary?: UnlockSummary;
 }
 
 const UNLOCK_RESULTS_STORAGE_KEY = "clash_verge_unlock_results";
@@ -90,11 +106,69 @@ const dedupeUnlockItems = (items: UnlockItem[]) => {
   return Array.from(map.values());
 };
 
+const normalizeUnlockResponse = (
+  payload: UnlockResponse | UnlockItem[],
+): UnlockResponse => {
+  if (Array.isArray(payload)) {
+    return { items: payload };
+  }
+  return payload;
+};
+
+const buildTimeoutItems = (
+  items: UnlockItem[],
+  names?: string[],
+): UnlockItem[] => {
+  const targets = names ? new Set(names.map((name) => normalizeUnlockName(name))) : null;
+  const currentTime = new Date().toLocaleString();
+
+  return items.map((item) => {
+    const matched = !targets || targets.has(normalizeUnlockName(item.name));
+    if (!matched) {
+      return item;
+    }
+    return {
+      ...item,
+      status: "Failed",
+      probe_status: "timeout" as const,
+      message: "检测超时或失败",
+      check_time: currentTime,
+    };
+  });
+};
+
+const summarizeUnlockItems = (items: UnlockItem[]): UnlockSummary => {
+  const summary = {
+    total: items.length,
+    success: 0,
+    failed: 0,
+    timeout: 0,
+    checkedAt: new Date().toLocaleString(),
+  };
+
+  items.forEach((item) => {
+    if (item.probe_status === "success" || item.status === "Yes") {
+      summary.success += 1;
+      return;
+    }
+    if (item.probe_status === "timeout") {
+      summary.timeout += 1;
+      return;
+    }
+    if (item.status !== "Pending") {
+      summary.failed += 1;
+    }
+  });
+
+  return summary;
+};
+
 const UnlockPage = () => {
   const { t } = useTranslation();
   const theme = useTheme();
 
   const [unlockItems, setUnlockItems] = useState<UnlockItem[]>([]);
+  const [summary, setSummary] = useState<UnlockSummary | null>(null);
   const [isCheckingAll, setIsCheckingAll] = useState(false);
   const [loadingItems, setLoadingItems] = useState<string[]>([]);
 
@@ -188,6 +262,7 @@ const UnlockPage = () => {
         const sortedItems = sortItemsByName(mergedItems);
 
         setUnlockItems(sortedItems);
+        setSummary(existingItems?.length ? summarizeUnlockItems(sortedItems) : null);
         saveResultsToStorage(
           sortedItems,
           existingItems && existingItems.length > 0 ? existingTime : null,
@@ -212,38 +287,39 @@ const UnlockPage = () => {
     })();
   }, [getUnlockItems, loadResultsFromStorage, sortItemsByName]);
 
-  const invokeWithTimeout = async <T,>(
-    cmd: string,
-    args?: any,
-    timeout = 15000,
-  ): Promise<T> => {
-    return Promise.race([
-      invoke<T>(cmd, args),
-      new Promise<T>((_, reject) =>
-        setTimeout(
-          () =>
-            reject(new Error(t("tests.unlock.page.messages.detectionTimeout"))),
-          timeout,
-        ),
-      ),
-    ]);
-  };
+  const probeUnlock = useCallback(
+    async (target?: string) => {
+      const probe = await probeRuntime<UnlockResponse | UnlockItem[]>({
+        kind: "unlock",
+        target,
+        timeoutMs: 15000,
+      });
+      return normalizeUnlockResponse(probe.data ?? { items: [] });
+    },
+    [],
+  );
 
   // 执行全部项目检测
   const checkAllMedia = useLockFn(async () => {
     try {
       setIsCheckingAll(true);
-      const result =
-        await invokeWithTimeout<UnlockItem[]>("check_media_unlock");
-      const sortedItems = sortItemsByName(dedupeUnlockItems(result));
+      const result = await probeUnlock();
+      const sortedItems = sortItemsByName(dedupeUnlockItems(result.items));
 
       setUnlockItems(sortedItems);
+      setSummary(result.summary ?? summarizeUnlockItems(sortedItems));
       const currentTime = new Date().toLocaleString();
 
       saveResultsToStorage(sortedItems, currentTime);
 
       setIsCheckingAll(false);
     } catch (err: any) {
+      const timedOutItems = sortItemsByName(
+        dedupeUnlockItems(buildTimeoutItems(unlockItems)),
+      );
+      setUnlockItems(timedOutItems);
+      setSummary(summarizeUnlockItems(timedOutItems));
+      saveResultsToStorage(timedOutItems, new Date().toLocaleString());
       setIsCheckingAll(false);
       showNotice.error("tests.unlock.page.messages.detectionTimeout", err);
       console.error("Failed to check media unlock:", err);
@@ -254,9 +330,8 @@ const UnlockPage = () => {
   const checkSingleMedia = useLockFn(async (name: string) => {
     try {
       setLoadingItems((prev) => [...prev, name]);
-      const result =
-        await invokeWithTimeout<UnlockItem[]>("check_media_unlock");
-      const dedupedResult = dedupeUnlockItems(result);
+      const result = await probeUnlock(name);
+      const dedupedResult = dedupeUnlockItems(result.items);
 
       const normalizedTargetName = normalizeUnlockName(name);
       const targetItem = dedupedResult.find(
@@ -276,6 +351,7 @@ const UnlockPage = () => {
         );
 
         setUnlockItems(updatedItems);
+        setSummary(result.summary ?? summarizeUnlockItems(updatedItems));
         const currentTime = new Date().toLocaleString();
 
         saveResultsToStorage(updatedItems, currentTime);
@@ -284,6 +360,12 @@ const UnlockPage = () => {
       setLoadingItems((prev) => prev.filter((item) => item !== name));
     } catch (err: any) {
       setLoadingItems((prev) => prev.filter((item) => item !== name));
+      const updatedItems = sortItemsByName(
+        dedupeUnlockItems(buildTimeoutItems(unlockItems, [name])),
+      );
+      setUnlockItems(updatedItems);
+      setSummary(summarizeUnlockItems(updatedItems));
+      saveResultsToStorage(updatedItems, new Date().toLocaleString());
       showNotice.error(
         "tests.unlock.page.messages.detectionFailedWithName",
         { name },
@@ -294,7 +376,8 @@ const UnlockPage = () => {
   });
 
   // 状态颜色
-  const getStatusColor = (status: string) => {
+  const getStatusColor = (status: string, probeStatus?: string | null) => {
+    if (probeStatus === "timeout") return "warning";
     if (status === "Pending") return "default";
     if (status === "Yes") return "success";
     if (status === "No") return "error";
@@ -312,7 +395,8 @@ const UnlockPage = () => {
   };
 
   // 状态图标
-  const getStatusIcon = (status: string) => {
+  const getStatusIcon = (status: string, probeStatus?: string | null) => {
+    if (probeStatus === "timeout") return <AccessTimeOutlined />;
     if (status === "Pending") return <PendingOutlined />;
     if (status === "Yes") return <CheckCircleOutlined />;
     if (status === "No") return <CancelOutlined />;
@@ -322,7 +406,8 @@ const UnlockPage = () => {
   };
 
   // 边框色
-  const getStatusBorderColor = (status: string) => {
+  const getStatusBorderColor = (status: string, probeStatus?: string | null) => {
+    if (probeStatus === "timeout") return theme.palette.warning.main;
     if (status === "Yes") return theme.palette.success.main;
     if (status === "No") return theme.palette.error.main;
     if (status === "Soon") return theme.palette.warning.main;
@@ -358,6 +443,11 @@ const UnlockPage = () => {
         </Box>
       }
     >
+      {summary && (
+        <Alert severity={summary.timeout > 0 || summary.failed > 0 ? "warning" : "success"} sx={{ mb: 2 }}>
+          {`本次检测共 ${summary.total} 项，成功 ${summary.success} 项，超时 ${summary.timeout} 项，失败 ${summary.failed} 项。`}
+        </Alert>
+      )}
       {unlockItems.length === 0 ? (
         <Box
           sx={{
@@ -378,7 +468,7 @@ const UnlockPage = () => {
                 sx={{
                   height: "100%",
                   borderRadius: 2,
-                  borderLeft: `4px solid ${getStatusBorderColor(item.status)}`,
+                  borderLeft: `4px solid ${getStatusBorderColor(item.status, item.probe_status)}`,
                   backgroundColor: isDark ? "#282a36" : "#ffffff",
                   position: "relative",
                   overflow: "hidden",
@@ -452,9 +542,9 @@ const UnlockPage = () => {
                   >
                     <Chip
                       label={t(STATUS_LABEL_KEYS[item.status] ?? item.status)}
-                      color={getStatusColor(item.status)}
+                      color={getStatusColor(item.status, item.probe_status)}
                       size="small"
-                      icon={getStatusIcon(item.status)}
+                      icon={getStatusIcon(item.status, item.probe_status)}
                       sx={{
                         fontWeight:
                           item.status === "Pending" ? "normal" : "bold",
@@ -470,6 +560,20 @@ const UnlockPage = () => {
                       />
                     )}
                   </Box>
+
+                  {item.message && (
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        mt: 1,
+                        display: "block",
+                        color: "text.secondary",
+                        wordBreak: "break-word",
+                      }}
+                    >
+                      {item.message}
+                    </Typography>
+                  )}
                 </Box>
 
                 <Divider

@@ -26,6 +26,7 @@ import { showNotice } from "@/services/notice-service";
 import getSystem from "@/utils/get-system";
 
 import { GuardState } from "./guard-state";
+import { buildTrayIconFileNames } from "./icon-paths";
 
 const OS = getSystem();
 
@@ -36,16 +37,19 @@ const clampHoverDelay = (value: number) => {
   return Math.min(5000, Math.max(0, Math.round(value)));
 };
 
-const getIcons = async (icon_dir: string, name: string) => {
+const resolveIconPath = async (iconDir: string, name: string) => {
   const updateTime = localStorage.getItem(`icon_${name}_update_time`) || "";
+  const candidates = buildTrayIconFileNames(name, updateTime);
+  const fallbackCandidates = updateTime ? buildTrayIconFileNames(name) : [];
 
-  const icon_png = await join(icon_dir, `${name}-${updateTime}.png`);
-  const icon_ico = await join(icon_dir, `${name}-${updateTime}.ico`);
+  for (const filename of [...candidates, ...fallbackCandidates]) {
+    const candidate = await join(iconDir, filename);
+    if (await exists(candidate)) {
+      return candidate;
+    }
+  }
 
-  return {
-    icon_png,
-    icon_ico,
-  };
+  return "";
 };
 
 export const LayoutViewer = forwardRef<DialogRef>((_, ref) => {
@@ -68,32 +72,15 @@ export const LayoutViewer = forwardRef<DialogRef>((_, ref) => {
 
     const icon_dir = await join(appDir, "icons");
 
-    const { icon_png: common_icon_png, icon_ico: common_icon_ico } =
-      await getIcons(icon_dir, "common");
+    const [commonPath, sysproxyPath, tunPath] = await Promise.all([
+      resolveIconPath(icon_dir, "common"),
+      resolveIconPath(icon_dir, "sysproxy"),
+      resolveIconPath(icon_dir, "tun"),
+    ]);
 
-    const { icon_png: sysproxy_icon_png, icon_ico: sysproxy_icon_ico } =
-      await getIcons(icon_dir, "sysproxy");
-
-    const { icon_png: tun_icon_png, icon_ico: tun_icon_ico } = await getIcons(
-      icon_dir,
-      "tun",
-    );
-
-    if (await exists(common_icon_ico)) {
-      setCommonIcon(common_icon_ico);
-    } else {
-      setCommonIcon(common_icon_png);
-    }
-    if (await exists(sysproxy_icon_ico)) {
-      setSysproxyIcon(sysproxy_icon_ico);
-    } else {
-      setSysproxyIcon(sysproxy_icon_png);
-    }
-    if (await exists(tun_icon_ico)) {
-      setTunIcon(tun_icon_ico);
-    } else {
-      setTunIcon(tun_icon_png);
-    }
+    setCommonIcon(commonPath);
+    setSysproxyIcon(sysproxyPath);
+    setTunIcon(tunPath);
   }
 
   useImperativeHandle(ref, () => ({
@@ -514,6 +501,7 @@ export const LayoutViewer = forwardRef<DialogRef>((_, ref) => {
                     await initIconPath();
                     onChangeData({ common_tray_icon: true });
                     patchVerge({ common_tray_icon: true });
+                    showNotice.success("图标已应用。", 1000);
                   }
                 }
               }}
@@ -566,6 +554,7 @@ export const LayoutViewer = forwardRef<DialogRef>((_, ref) => {
                     await initIconPath();
                     onChangeData({ sysproxy_tray_icon: true });
                     patchVerge({ sysproxy_tray_icon: true });
+                    showNotice.success("图标已应用。", 1000);
                   }
                 }
               }}
@@ -614,6 +603,7 @@ export const LayoutViewer = forwardRef<DialogRef>((_, ref) => {
                     await initIconPath();
                     onChangeData({ tun_tray_icon: true });
                     patchVerge({ tun_tray_icon: true });
+                    showNotice.success("图标已应用。", 1000);
                   }
                 }
               }}

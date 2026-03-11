@@ -44,6 +44,7 @@ import { useProxySelection } from "@/hooks/use-proxy-selection";
 import { useVerge } from "@/hooks/use-verge";
 import { useAppData } from "@/providers/app-data-context";
 import delayManager from "@/services/delay";
+import { showNotice } from "@/services/notice-service";
 import { debugLog } from "@/utils/debug";
 
 // 本地存储的键名
@@ -725,7 +726,12 @@ export const CurrentProxyCard = () => {
       try {
         await Promise.race([
           delayManager.checkListDelay(proxyNames, groupName, timeout),
-          delayGroup(groupName, url, timeout),
+          delayGroup(groupName, url, timeout).then((result) => {
+            if (result.status !== "success" && result.errorMessage) {
+              showNotice.info(result.errorMessage, 2500);
+            }
+            return result;
+          }),
         ]);
         debugLog(`[CurrentProxyCard] 延迟测试完成，组: ${groupName}`);
       } catch (error) {

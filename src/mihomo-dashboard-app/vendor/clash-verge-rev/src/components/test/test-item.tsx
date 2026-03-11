@@ -24,6 +24,16 @@ interface Props {
   onDelete: (uid: string) => void;
 }
 
+type ProbeDisplayState =
+  | { type: "idle" }
+  | { type: "loading" }
+  | {
+      type: "result";
+      label: string;
+      color?: string;
+      message?: string;
+    };
+
 export const TestItem = ({
   id,
   itemData,
@@ -44,15 +54,46 @@ export const TestItem = ({
   const { t } = useTranslation();
   const [anchorEl, setAnchorEl] = useState<any>(null);
   const [position, setPosition] = useState({ left: 0, top: 0 });
-  const [delay, setDelay] = useState(-1);
+  const [probeState, setProbeState] = useState<ProbeDisplayState>({
+    type: "idle",
+  });
   const { uid, name, icon, url } = itemData;
   const iconCachePath = useIconCache({ icon, cacheKey: uid });
   const { addListener } = useListen();
 
   const onDelay = useCallback(async () => {
-    setDelay(-2);
-    const result = await cmdTestDelay(url);
-    setDelay(result);
+    setProbeState({ type: "loading" });
+
+    try {
+      const probe = await cmdTestDelay(url);
+      const latencyMs = probe.data?.latencyMs;
+
+      if (
+        probe.data?.status === "success" &&
+        typeof latencyMs === "number"
+      ) {
+        setProbeState({
+          type: "result",
+          label: delayManager.formatDelay(latencyMs),
+          color: delayManager.formatDelayColor(latencyMs),
+        });
+        return;
+      }
+
+      setProbeState({
+        type: "result",
+        label: probe.code === "TIMEOUT" ? "Timeout" : "Failed",
+        color: probe.code === "TIMEOUT" ? "warning.main" : "error.main",
+        message: probe.data?.errorMessage || probe.message,
+      });
+    } catch (error) {
+      setProbeState({
+        type: "result",
+        label: "Failed",
+        color: "error.main",
+        message: error instanceof Error ? error.message : "检测失败",
+      });
+    }
   }, [url]);
 
   const onEditTest = () => {
@@ -157,13 +198,13 @@ export const TestItem = ({
             color: "primary.main",
           }}
         >
-          {delay === -2 && (
+          {probeState.type === "loading" && (
             <Widget>
               <BaseLoading />
             </Widget>
           )}
 
-          {delay === -1 && (
+          {probeState.type === "idle" && (
             <Widget
               className="the-check"
               onClick={(e) => {
@@ -179,26 +220,39 @@ export const TestItem = ({
             </Widget>
           )}
 
-          {delay >= 0 && (
-            // 显示延迟
+          {probeState.type === "result" && (
             <Widget
               className="the-delay"
+              title={probeState.message || ""}
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 onDelay();
               }}
-              color={delayManager.formatDelayColor(delay)}
+              color={probeState.color}
               sx={({ palette }) => ({
                 ":hover": {
                   bgcolor: alpha(palette.primary.main, 0.15),
                 },
               })}
             >
-              {delayManager.formatDelay(delay)}
+              {probeState.label}
             </Widget>
           )}
         </Box>
+        {probeState.type === "result" && probeState.message && (
+          <Box
+            sx={{
+              mt: 0.75,
+              color: "text.secondary",
+              fontSize: 12,
+              lineHeight: 1.4,
+              textAlign: "center",
+            }}
+          >
+            {probeState.message}
+          </Box>
+        )}
       </TestBox>
 
       <Menu

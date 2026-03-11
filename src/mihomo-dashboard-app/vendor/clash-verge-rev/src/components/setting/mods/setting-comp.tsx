@@ -1,15 +1,19 @@
 import { ChevronRightRounded } from "@mui/icons-material";
 import {
   Box,
+  type IconButtonProps,
   List,
   ListItem,
   ListItemButton,
   ListItemText,
   ListSubheader,
+  Tooltip,
+  type SvgIconProps,
 } from "@mui/material";
 import CircularProgress from "@mui/material/CircularProgress";
 import React, { ReactNode, useState } from "react";
 
+import { TooltipIcon } from "@/components/base";
 import isAsyncFunction from "@/utils/is-async-function";
 
 interface ItemProps {
@@ -18,6 +22,8 @@ interface ItemProps {
   children?: ReactNode;
   secondary?: ReactNode;
   onClick?: () => void | Promise<any>;
+  disabled?: boolean;
+  disabledReason?: ReactNode;
 }
 
 export const SettingItem: React.FC<ItemProps> = ({
@@ -26,6 +32,8 @@ export const SettingItem: React.FC<ItemProps> = ({
   children,
   secondary,
   onClick,
+  disabled = false,
+  disabledReason,
 }) => {
   const clickable = !!onClick;
 
@@ -38,6 +46,7 @@ export const SettingItem: React.FC<ItemProps> = ({
 
   const [isLoading, setIsLoading] = useState(false);
   const handleClick = () => {
+    if (disabled) return;
     if (onClick) {
       if (isAsyncFunction(onClick)) {
         setIsLoading(true);
@@ -50,14 +59,22 @@ export const SettingItem: React.FC<ItemProps> = ({
 
   return clickable ? (
     <ListItem disablePadding>
-      <ListItemButton onClick={handleClick} disabled={isLoading}>
-        <ListItemText primary={primary} secondary={secondary} />
-        {isLoading ? (
-          <CircularProgress color="inherit" size={20} />
-        ) : (
-          <ChevronRightRounded />
-        )}
-      </ListItemButton>
+      <Tooltip
+        title={disabled ? disabledReason ?? "" : ""}
+        placement="top"
+        disableHoverListener={!disabled || !disabledReason}
+      >
+        <span style={{ display: "block", width: "100%" }}>
+          <ListItemButton onClick={handleClick} disabled={disabled || isLoading}>
+            <ListItemText primary={primary} secondary={secondary} />
+            {isLoading ? (
+              <CircularProgress color="inherit" size={20} />
+            ) : !disabled ? (
+              <ChevronRightRounded />
+            ) : null}
+          </ListItemButton>
+        </span>
+      </Tooltip>
     </ListItem>
   ) : (
     <ListItem sx={{ pt: "5px", pb: "5px" }}>
@@ -88,4 +105,27 @@ export const SettingList: React.FC<{
 
     {children}
   </List>
+);
+
+interface SettingExtraActionProps extends IconButtonProps {
+  title?: string;
+  icon?: React.ElementType<SvgIconProps>;
+}
+
+export const SettingExtraAction: React.FC<SettingExtraActionProps> = ({
+  onClick,
+  ...props
+}) => (
+  <Box
+    sx={{ ml: 0.5, display: "inline-flex", alignItems: "center" }}
+    onClick={(event) => event.stopPropagation()}
+  >
+    <TooltipIcon
+      {...props}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick?.(event);
+      }}
+    />
+  </Box>
 );
