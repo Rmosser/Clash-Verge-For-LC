@@ -5,6 +5,7 @@ import base64
 import copy
 import datetime as dt
 import gzip
+import grp
 import json
 import mimetypes
 import os
@@ -114,13 +115,20 @@ DEFAULT_DNS_CONFIG = {
 }
 
 DEFAULT_HOME_CARDS = {
-    "clash": True,
+    "profile": True,
     "proxy": True,
+    "network": True,
+    "mode": True,
     "traffic": True,
-    "memory": True,
-    "connections": True,
-    "system": True,
+    "test": True,
     "ip": True,
+    "clashinfo": True,
+    "systeminfo": True,
+}
+
+HOME_CARD_ALIASES = {
+    "clash": "clashinfo",
+    "system": "systeminfo",
 }
 
 DEFAULT_VERGE_CONFIG = {
@@ -165,6 +173,15 @@ UNLOCK_TEST_URLS = {
     "YouTube Premium": "https://www.youtube.com/premium",
     "Spotify": "https://open.spotify.com/",
 }
+
+IP_INFO_SERVICES = [
+    {"name": "ip.sb", "url": "https://api.ip.sb/geoip"},
+    {"name": "ipapi.co", "url": "https://ipapi.co/json"},
+    {"name": "ipapi.is", "url": "https://api.ipapi.is/"},
+    {"name": "ipwho.is", "url": "https://ipwho.is/"},
+    {"name": "skk.moe", "url": "https://ip.api.skk.moe/cf-geoip"},
+    {"name": "geojs", "url": "https://get.geojs.io/v1/ip/geo.json"},
+]
 
 RUNTIME_RELEVANT_VERGE_KEYS = {
     "enable_dns_settings",
@@ -486,6 +503,23 @@ def current_system_info_text() -> str:
     )
 
 
+def parse_int(value: Any, default: int = 0) -> int:
+    try:
+        if isinstance(value, str):
+            digits = re.sub(r"^[A-Za-z]+", "", value)
+            return int(digits)
+        return int(value)
+    except Exception:
+        return default
+
+
+def parse_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
 def file_is_allowed(path: Path) -> bool:
     resolved = path.resolve()
     allowed_prefixes = [
@@ -579,8 +613,45 @@ def default_profile_option() -> dict[str, Any]:
     }
 
 
+def normalize_profiles_state(raw: Any) -> tuple[dict[str, Any], bool]:
+    if not isinstance(raw, dict):
+        return {"current": "", "items": []}, True
+
+    normalized = copy.deepcopy(raw)
+    changed = False
+    items = normalized.get("items")
+    if not isinstance(items, list):
+        items = []
+        changed = True
+    normalized["items"] = items
+
+    current = normalized.get("current")
+    if not isinstance(current, str):
+        current = str(current or "")
+        changed = True
+
+    valid_ids = [
+        str(item.get("uid"))
+        for item in items
+        if isinstance(item, dict) and item.get("uid")
+    ]
+    if current and current not in valid_ids:
+        current = valid_ids[0] if valid_ids else ""
+        changed = True
+    elif not current and valid_ids:
+        current = valid_ids[0]
+        changed = True
+
+    normalized["current"] = current
+    return normalized, changed
+
+
 def get_profiles_state() -> dict[str, Any]:
-    return load_json(PROFILES_CONFIG_PATH, {"current": "", "items": []})
+    loaded = load_json(PROFILES_CONFIG_PATH, {"current": "", "items": []})
+    normalized, changed = normalize_profiles_state(loaded)
+    if changed:
+        save_json(PROFILES_CONFIG_PATH, normalized)
+    return normalized
 
 
 def save_profiles_state(data: dict[str, Any]) -> None:
@@ -619,6 +690,45 @@ def detect_bootstrap_verge_config() -> dict[str, Any]:
         }
     )
     return detected
+
+
+def normalize_home_cards(value: Any) -> tuple[dict[str, bool], bool]:
+    changed = False
+    normalized: dict[str, bool] = {}
+
+    if isinstance(value, dict):
+        for raw_key, raw_value in value.items():
+            key = HOME_CARD_ALIASES.get(str(raw_key), str(raw_key))
+            if key not in DEFAULT_HOME_CARDS:
+                changed = True
+                continue
+            if key != raw_key:
+                changed = True
+            normalized[key] = bool(raw_value)
+    else:
+        changed = value is not None
+
+    for key, default in DEFAULT_HOME_CARDS.items():
+        if key not in normalized:
+            normalized[key] = default
+            changed = True
+
+    if normalized != value:
+        changed = True
+
+    return normalized, changed
+
+
+def normalize_verge_config_state(raw: Any) -> tuple[dict[str, Any], bool]:
+    if not isinstance(raw, dict):
+        return copy.deepcopy(DEFAULT_VERGE_CONFIG), True
+
+    normalized = copy.deepcopy(raw)
+    changed = False
+    home_cards, home_cards_changed = normalize_home_cards(normalized.get("home_cards"))
+    normalized["home_cards"] = home_cards
+    changed = changed or home_cards_changed
+    return normalized, changed
 
 
 def ensure_state() -> None:
@@ -666,11 +776,152 @@ def ensure_state() -> None:
 
 def get_verge_config_state() -> dict[str, Any]:
     ensure_state()
-    return load_json(VERGE_CONFIG_PATH, DEFAULT_VERGE_CONFIG)
+    loaded = load_json(VERGE_CONFIG_PATH, DEFAULT_VERGE_CONFIG)
+    normalized, changed = normalize_verge_config_state(loaded)
+    if changed:
+        save_json(VERGE_CONFIG_PATH, normalized)
+    return normalized
 
 
 def save_verge_config_state(data: dict[str, Any]) -> None:
-    save_json(VERGE_CONFIG_PATH, data)
+    normalized, _ = normalize_verge_config_state(data)
+    save_json(VERGE_CONFIG_PATH, normalized)
+
+
+def current_mixed_port() -> int:
+    try:
+        runtime = controller_request("GET", "/configs", timeout=6)
+    except Exception:
+        runtime = {}
+    return parse_int(runtime.get("mixed-port") or get_verge_config_state().get("verge_mixed_port") or 7890, 7890)
+
+
+def map_ip_info(service_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if service_name == "ip.sb":
+        return {
+            "ip": payload.get("ip") or "",
+            "country_code": payload.get("country_code") or "",
+            "country": payload.get("country") or "",
+            "region": payload.get("region") or "",
+            "city": payload.get("city") or "",
+            "organization": payload.get("organization") or payload.get("isp") or "",
+            "asn": parse_int(payload.get("asn")),
+            "asn_organization": payload.get("asn_organization") or "",
+            "longitude": parse_float(payload.get("longitude")),
+            "latitude": parse_float(payload.get("latitude")),
+            "timezone": payload.get("timezone") or "",
+        }
+    if service_name == "ipapi.co":
+        return {
+            "ip": payload.get("ip") or "",
+            "country_code": payload.get("country_code") or "",
+            "country": payload.get("country_name") or "",
+            "region": payload.get("region") or "",
+            "city": payload.get("city") or "",
+            "organization": payload.get("org") or "",
+            "asn": parse_int(payload.get("asn")),
+            "asn_organization": payload.get("org") or "",
+            "longitude": parse_float(payload.get("longitude")),
+            "latitude": parse_float(payload.get("latitude")),
+            "timezone": payload.get("timezone") or "",
+        }
+    if service_name == "ipapi.is":
+        location = payload.get("location") or {}
+        asn = payload.get("asn") or {}
+        company = payload.get("company") or {}
+        return {
+            "ip": payload.get("ip") or "",
+            "country_code": location.get("country_code") or "",
+            "country": location.get("country") or "",
+            "region": location.get("state") or "",
+            "city": location.get("city") or "",
+            "organization": asn.get("org") or company.get("name") or "",
+            "asn": parse_int(asn.get("asn")),
+            "asn_organization": asn.get("org") or "",
+            "longitude": parse_float(location.get("longitude")),
+            "latitude": parse_float(location.get("latitude")),
+            "timezone": location.get("timezone") or "",
+        }
+    if service_name == "ipwho.is":
+        connection = payload.get("connection") or {}
+        timezone = payload.get("timezone") or {}
+        return {
+            "ip": payload.get("ip") or "",
+            "country_code": payload.get("country_code") or "",
+            "country": payload.get("country") or "",
+            "region": payload.get("region") or "",
+            "city": payload.get("city") or "",
+            "organization": connection.get("org") or connection.get("isp") or "",
+            "asn": parse_int(connection.get("asn")),
+            "asn_organization": connection.get("isp") or "",
+            "longitude": parse_float(payload.get("longitude")),
+            "latitude": parse_float(payload.get("latitude")),
+            "timezone": timezone.get("id") or "",
+        }
+    if service_name == "skk.moe":
+        return {
+            "ip": payload.get("ip") or "",
+            "country_code": payload.get("country") or "",
+            "country": payload.get("country") or "",
+            "region": payload.get("region") or "",
+            "city": payload.get("city") or "",
+            "organization": payload.get("asOrg") or "",
+            "asn": parse_int(payload.get("asn")),
+            "asn_organization": payload.get("asOrg") or "",
+            "longitude": parse_float(payload.get("longitude")),
+            "latitude": parse_float(payload.get("latitude")),
+            "timezone": payload.get("timezone") or "",
+        }
+    return {
+        "ip": payload.get("ip") or "",
+        "country_code": payload.get("country_code") or "",
+        "country": payload.get("country") or "",
+        "region": payload.get("region") or "",
+        "city": payload.get("city") or "",
+        "organization": payload.get("organization_name") or "",
+        "asn": parse_int(payload.get("asn")),
+        "asn_organization": payload.get("organization_name") or "",
+        "longitude": parse_float(payload.get("longitude")),
+        "latitude": parse_float(payload.get("latitude")),
+        "timezone": payload.get("timezone") or "",
+    }
+
+
+def get_ip_info() -> dict[str, Any]:
+    proxy_port = current_mixed_port()
+    proxy_url = f"http://127.0.0.1:{proxy_port}"
+    handlers = [
+        urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}),
+        urllib.request.HTTPSHandler(),
+        urllib.request.HTTPHandler(),
+    ]
+    opener = urllib.request.build_opener(*handlers)
+    last_error: Exception | None = None
+
+    for service in IP_INFO_SERVICES:
+        request = urllib.request.Request(
+            service["url"],
+            headers={
+                "User-Agent": f"clash-verge-for-lc/{APP_VERSION}",
+                "Accept": "application/json,text/plain,*/*",
+            },
+        )
+        try:
+            with opener.open(request, timeout=12) as response:
+                status_code = response.getcode() or 0
+                if status_code < 200 or status_code >= 300:
+                    raise RuntimeError(f"IP service {service['url']} returned {status_code}")
+                payload = json.loads(response.read().decode("utf-8"))
+            mapped = map_ip_info(str(service["name"]), payload)
+            if not mapped.get("ip"):
+                raise RuntimeError(f"IP service {service['url']} returned no ip")
+            mapped["lastFetchTs"] = now_ms()
+            return mapped
+        except Exception as exc:
+            last_error = exc
+
+    message = str(last_error) if last_error else "no ip service available"
+    raise RuntimeError(f"Failed to fetch IP info through Mihomo proxy: {message}")
 
 
 def current_profile_item() -> dict[str, Any]:
@@ -687,13 +938,42 @@ def render_proxy_chain_yaml(items: list[str]) -> str:
     return render_top_level_yaml(block)
 
 
-def build_runtime_text(item: dict[str, Any] | None = None) -> tuple[str, str]:
+def empty_profile_runtime_text() -> str:
+    return render_top_level_yaml(
+        {
+            "mixed-port": 7890,
+            "allow-lan": False,
+            "bind-address": "127.0.0.1",
+            "mode": "rule",
+            "log-level": "info",
+            "ipv6": True,
+            "proxy-groups": [
+                {
+                    "name": "PROXY",
+                    "type": "select",
+                    "proxies": ["DIRECT"],
+                }
+            ],
+            "rules": [
+                "DOMAIN-SUFFIX,heiyu.space,DIRECT",
+                "DOMAIN-SUFFIX,lazycat.cloud,DIRECT",
+                "MATCH,DIRECT",
+            ],
+        }
+    )
+
+
+def build_runtime_text(
+    item: dict[str, Any] | None = None,
+    base_text: str | None = None,
+) -> tuple[str, str]:
     ensure_state()
-    item = item or current_profile_item()
-    base = profile_path(str(item["uid"])).read_text(encoding="utf-8")
+    if base_text is None:
+        item = item or current_profile_item()
+        base_text = profile_path(str(item["uid"])).read_text(encoding="utf-8")
     overlay = load_overlay()
     verge = get_verge_config_state()
-    text = base if base.endswith("\n") else base + "\n"
+    text = base_text if base_text.endswith("\n") else base_text + "\n"
 
     for key in (
         "mode",
@@ -761,11 +1041,17 @@ def wait_for_controller(timeout: int = 12) -> None:
     raise RuntimeError(f"mihomo controller probe failed: {last_error}")
 
 
-def apply_current_profile() -> None:
-    item = current_profile_item()
-    new_text, _ = build_runtime_text(item)
+def apply_runtime_text(new_text: str, log_message: str) -> None:
     previous = MIHOMO_CONFIG_PATH.read_text(encoding="utf-8") if MIHOMO_CONFIG_PATH.exists() else ""
+    previous_stat = MIHOMO_CONFIG_PATH.stat() if MIHOMO_CONFIG_PATH.exists() else None
     atomic_write_text(MIHOMO_CONFIG_PATH, new_text, 0o640)
+    if previous_stat is not None:
+        os.chown(MIHOMO_CONFIG_PATH, previous_stat.st_uid, previous_stat.st_gid)
+    else:
+        try:
+            os.chown(MIHOMO_CONFIG_PATH, 0, grp.getgrnam("mihomo").gr_gid)
+        except KeyError:
+            pass
     try:
         if MIHOMO_BIN.exists():
             run_command(
@@ -780,11 +1066,24 @@ def apply_current_profile() -> None:
             )
         run_command(["systemctl", "restart", "mihomo"])
         wait_for_controller()
-        append_operation_log(f"applied profile {item['uid']}")
+        append_operation_log(log_message)
     except Exception:
         atomic_write_text(MIHOMO_CONFIG_PATH, previous, 0o640)
+        if previous_stat is not None:
+            os.chown(MIHOMO_CONFIG_PATH, previous_stat.st_uid, previous_stat.st_gid)
         run_command(["systemctl", "restart", "mihomo"], check=False)
         raise
+
+
+def apply_current_profile() -> None:
+    item = current_profile_item()
+    new_text, _ = build_runtime_text(item)
+    apply_runtime_text(new_text, f"applied profile {item['uid']}")
+
+
+def apply_empty_profile_runtime() -> None:
+    new_text, _ = build_runtime_text(base_text=empty_profile_runtime_text())
+    apply_runtime_text(new_text, "applied empty runtime profile")
 
 
 def fetch_remote_profile(url: str, option: dict[str, Any] | None = None) -> tuple[str, dict[str, int]]:
@@ -891,15 +1190,20 @@ def patch_profile_record(uid: str, patch: dict[str, Any]) -> dict[str, Any]:
 
 def delete_profile_record(uid: str) -> None:
     profiles = get_profiles_state()
+    previous_current = str(profiles.get("current") or "")
     items = [item for item in profiles.get("items") or [] if item.get("uid") != uid]
     profiles["items"] = items
     if profile_path(uid).exists():
         profile_path(uid).unlink()
-    if profiles.get("current") == uid:
+    if previous_current == uid:
         profiles["current"] = items[0]["uid"] if items else ""
+    profiles, _ = normalize_profiles_state(profiles)
     save_profiles_state(profiles)
     if profiles.get("current"):
-        apply_current_profile()
+        if previous_current == uid:
+            apply_current_profile()
+    elif previous_current == uid:
+        apply_empty_profile_runtime()
 
 
 def list_local_backups() -> list[dict[str, Any]]:
@@ -1261,20 +1565,27 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
     if cmd == "patch_profiles_config":
         profiles = get_profiles_state()
         patch = args.get("profiles") or {}
+        previous_current = str(profiles.get("current") or "")
         if "items" in patch and isinstance(patch["items"], list):
             profiles["items"] = patch["items"]
-        changed_current = False
         if "current" in patch and patch["current"] != profiles.get("current"):
             profiles["current"] = patch["current"]
-            changed_current = True
+        profiles, _ = normalize_profiles_state(profiles)
         save_profiles_state(profiles)
-        if changed_current:
-            apply_current_profile()
+        if profiles.get("current") != previous_current:
+            if profiles.get("current"):
+                apply_current_profile()
+            else:
+                apply_empty_profile_runtime()
+        elif not profiles.get("current"):
+            apply_empty_profile_runtime()
         return True
 
     if cmd == "enhance_profiles":
         if get_profiles_state().get("current"):
             apply_current_profile()
+        else:
+            apply_empty_profile_runtime()
         return None
 
     if cmd == "get_clash_info":
@@ -1293,7 +1604,13 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
         return controller_request("GET", "/configs")
 
     if cmd == "get_runtime_yaml":
-        text, _ = build_runtime_text()
+        profiles = get_profiles_state()
+        if profiles.get("current"):
+            text, _ = build_runtime_text()
+            return text
+        if MIHOMO_CONFIG_PATH.exists():
+            return MIHOMO_CONFIG_PATH.read_text(encoding="utf-8")
+        text, _ = build_runtime_text(base_text=empty_profile_runtime_text())
         return text
 
     if cmd == "get_runtime_exists":
@@ -1469,6 +1786,9 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
 
     if cmd == "get_system_info":
         return current_system_info_text()
+
+    if cmd == "get_ip_info":
+        return get_ip_info()
 
     if cmd == "copy_icon_file":
         icon_info = args.get("iconInfo") or {}
