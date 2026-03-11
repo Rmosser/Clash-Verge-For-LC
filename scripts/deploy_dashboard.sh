@@ -285,6 +285,145 @@ REMOTE
   fi
 }
 
+validate_dist_config() {
+  local config_file="$APP_DIR/dist/lzcapp-config.js"
+
+  python3 - <<'PY' "$config_file"
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+for key in ("secret", "vergeApiSecret"):
+    match = re.search(rf"{key}:\s*\"([^\"]*)\"", text)
+    if not match:
+        raise SystemExit(f"ERROR: {path} missing {key} in lzcapp-config.js")
+    if match.group(1):
+        raise SystemExit(f"ERROR: {path} still embeds non-empty {key}")
+print("Verified dist/lzcapp-config.js uses runtime bootstrap only.")
+PY
+}
+
+validate_remote_runtime_apis() {
+  echo "Validating remote verge-api/controller chain ..."
+  ssh_remote CONTROLLER_URL="http://172.18.0.1:9090" VERGE_API_URL="http://172.18.0.1:9091" bash -s <<'REMOTE'
+set -euo pipefail
+
+controller_secret="$(
+  grep -E '^[[:space:]]*secret:' /etc/mihomo/config.yaml \
+    | head -n 1 \
+    | sed -E "s/^[[:space:]]*secret:[[:space:]]*//" \
+    | sed -E "s/^'(.*)'\$|^\"(.*)\"\$/\\1\\2/" \
+    | tr -d '\r\n'
+)"
+verge_secret="$(tr -d '\r\n' </etc/mihomo/verge-api.secret)"
+
+if [[ -z "$controller_secret" ]]; then
+  echo "ERROR: missing controller secret on remote microserver" >&2
+  exit 1
+fi
+
+if [[ -z "$verge_secret" ]]; then
+  echo "ERROR: missing verge-api secret on remote microserver" >&2
+  exit 1
+fi
+
+curl -fsS "${VERGE_API_URL%/}/healthz" >/dev/null
+public_config="$(curl -fsS "${VERGE_API_URL%/}/public-config?token=${verge_secret}")"
+python3 - <<'PY' "$public_config"
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+if not payload.get("secret"):
+    raise SystemExit("ERROR: /public-config did not return controller secret")
+if payload.get("mihomoBaseUrl") != "/api":
+    raise SystemExit(f"ERROR: unexpected mihomoBaseUrl: {payload.get('mihomoBaseUrl')!r}")
+if payload.get("vergeApiBaseUrl") != "/verge-api":
+    raise SystemExit(f"ERROR: unexpected vergeApiBaseUrl: {payload.get('vergeApiBaseUrl')!r}")
+PY
+
+curl -fsS -H "Authorization: Bearer ${controller_secret}" "${CONTROLLER_URL%/}/version" >/dev/null
+curl -fsS -H "Authorization: Bearer ${controller_secret}" "${CONTROLLER_URL%/}/configs" >/dev/null
+curl -fsS -H "Authorization: Bearer ${controller_secret}" "${CONTROLLER_URL%/}/proxies" >/dev/null
+
+python3 - <<'PY' "$CONTROLLER_URL" "$controller_secret" "/traffic"
+import base64
+import hashlib
+import os
+import socket
+import sys
+from urllib.parse import urlparse
+
+url, secret, path = sys.argv[1:]
+parsed = urlparse(url)
+host = parsed.hostname or "127.0.0.1"
+port = parsed.port or (443 if parsed.scheme == "https" else 80)
+key = base64.b64encode(os.urandom(16)).decode("ascii")
+request = (
+    f"GET {path} HTTP/1.1\r\n"
+    f"Host: {host}:{port}\r\n"
+    "Upgrade: websocket\r\n"
+    "Connection: Upgrade\r\n"
+    f"Sec-WebSocket-Key: {key}\r\n"
+    "Sec-WebSocket-Version: 13\r\n"
+    f"Authorization: Bearer {secret}\r\n"
+    "\r\n"
+)
+expected_accept = base64.b64encode(
+    hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()
+).decode("ascii")
+
+with socket.create_connection((host, port), timeout=5) as conn:
+    conn.sendall(request.encode("ascii"))
+    response = conn.recv(4096).decode("utf-8", errors="replace")
+
+if "101" not in response.splitlines()[0]:
+    raise SystemExit(f"ERROR: websocket handshake failed for {path}: {response.splitlines()[0]}")
+if f"sec-websocket-accept: {expected_accept}".lower() not in response.lower():
+    raise SystemExit(f"ERROR: websocket accept mismatch for {path}")
+PY
+
+python3 - <<'PY' "$CONTROLLER_URL" "$controller_secret" "/memory"
+import base64
+import hashlib
+import os
+import socket
+import sys
+from urllib.parse import urlparse
+
+url, secret, path = sys.argv[1:]
+parsed = urlparse(url)
+host = parsed.hostname or "127.0.0.1"
+port = parsed.port or (443 if parsed.scheme == "https" else 80)
+key = base64.b64encode(os.urandom(16)).decode("ascii")
+request = (
+    f"GET {path} HTTP/1.1\r\n"
+    f"Host: {host}:{port}\r\n"
+    "Upgrade: websocket\r\n"
+    "Connection: Upgrade\r\n"
+    f"Sec-WebSocket-Key: {key}\r\n"
+    "Sec-WebSocket-Version: 13\r\n"
+    f"Authorization: Bearer {secret}\r\n"
+    "\r\n"
+)
+expected_accept = base64.b64encode(
+    hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()
+).decode("ascii")
+
+with socket.create_connection((host, port), timeout=5) as conn:
+    conn.sendall(request.encode("ascii"))
+    response = conn.recv(4096).decode("utf-8", errors="replace")
+
+if "101" not in response.splitlines()[0]:
+    raise SystemExit(f"ERROR: websocket handshake failed for {path}: {response.splitlines()[0]}")
+if f"sec-websocket-accept: {expected_accept}".lower() not in response.lower():
+    raise SystemExit(f"ERROR: websocket accept mismatch for {path}")
+PY
+REMOTE
+}
+
 if [[ "$CLEAN_RESET" == "1" ]]; then
   clean_reset_remote
 fi
@@ -298,60 +437,7 @@ if [[ ! -f "$APP_DIR/dist/index.html" ]]; then
   echo "ERROR: missing dashboard assets under $APP_DIR/dist (pnpm build failed or produced no index.html)" >&2
   exit 1
 fi
-
-SECRET_LOCAL_FILE="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_SECRET_FILE_LOCAL:-var/private/mihomo.secret}")"
-VERGE_SECRET_LOCAL_FILE="$(lzc_resolve_path_from_root "$ROOT" "${VERGE_API_SECRET_FILE_LOCAL:-var/private/verge-api.secret}")"
-if [[ -n "${MIHOMO_SECRET:-}" ]]; then
-  secret="$MIHOMO_SECRET"
-elif [[ -f "$SECRET_LOCAL_FILE" ]]; then
-  secret="$(tr -d '\r\n' <"$SECRET_LOCAL_FILE")"
-else
-  secret=""
-fi
-
-if [[ -n "${VERGE_API_SECRET:-}" ]]; then
-  verge_secret="$VERGE_API_SECRET"
-elif [[ -f "$VERGE_SECRET_LOCAL_FILE" ]]; then
-  verge_secret="$(tr -d '\r\n' <"$VERGE_SECRET_LOCAL_FILE")"
-else
-  verge_secret=""
-fi
-
-cat >"$APP_DIR/dist/lzcapp-config.js" <<EOF
-(function () {
-  var config = {
-    secret: ${secret@Q},
-    vergeApiSecret: ${verge_secret@Q},
-    mihomoBaseUrl: "/api",
-    vergeApiBaseUrl: "/verge-api",
-    appVersion: "2.4.7-webport.0"
-  };
-
-  try {
-    if (config.vergeApiSecret) {
-      var request = new XMLHttpRequest();
-      request.open(
-        "GET",
-        config.vergeApiBaseUrl +
-          "/public-config?token=" +
-          encodeURIComponent(config.vergeApiSecret),
-        false
-      );
-      request.send(null);
-      if (request.status >= 200 && request.status < 300) {
-        var remote = JSON.parse(request.responseText || "{}");
-        config.secret = remote.secret || config.secret;
-        config.vergeApiSecret = remote.vergeApiSecret || config.vergeApiSecret;
-        config.mihomoBaseUrl = remote.mihomoBaseUrl || config.mihomoBaseUrl;
-        config.vergeApiBaseUrl = remote.vergeApiBaseUrl || config.vergeApiBaseUrl;
-        config.appVersion = remote.appVersion || config.appVersion;
-      }
-    }
-  } catch (_error) {}
-
-  window.__LZCAPP_MIHOMO__ = config;
-})();
-EOF
+validate_dist_config
 
 # Ensure lzc-cli connected.
 lzc-cli box list >/dev/null
@@ -372,3 +458,4 @@ echo "Installing dashboard app ..."
 lzc-cli app install "$LPK"
 
 validate_actual_domain
+validate_remote_runtime_apis
