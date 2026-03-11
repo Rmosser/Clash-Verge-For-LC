@@ -24,6 +24,7 @@ import uuid
 import xml.etree.ElementTree as ET
 import zipfile
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -115,6 +116,13 @@ DEFAULT_DNS_CONFIG = {
         "+.lazycat.cloud": ["192.168.1.1", "fe80::1"],
     },
 }
+
+DEFAULT_DNS_STATE = {
+    "dns": DEFAULT_DNS_CONFIG,
+    "hosts": {},
+}
+
+LAZYCAT_AUTH_COOKIE_NAMES = ("HC-Auth-Token",)
 
 DEFAULT_HOME_CARDS = {
     "profile": True,
@@ -577,12 +585,59 @@ def load_overlay() -> dict[str, Any]:
 
 
 def load_dns_config() -> dict[str, Any]:
-    return load_json(DNS_CONFIG_PATH, DEFAULT_DNS_CONFIG)
+    return load_dns_state()["dns"]
+
+
+def normalize_dns_state(raw: Any) -> tuple[dict[str, Any], bool]:
+    changed = False
+    dns_raw: Any = {}
+    hosts_raw: Any = {}
+
+    if isinstance(raw, dict) and ("dns" in raw or "hosts" in raw):
+        dns_raw = raw.get("dns")
+        hosts_raw = raw.get("hosts")
+        if dns_raw is None:
+            dns_raw = {}
+        if hosts_raw is None:
+            hosts_raw = {}
+        if not isinstance(dns_raw, dict) or not isinstance(hosts_raw, dict):
+            changed = True
+    elif isinstance(raw, dict):
+        dns_raw = raw
+        hosts_raw = {}
+        changed = True
+    elif raw is not None:
+        changed = True
+
+    if not isinstance(dns_raw, dict):
+        dns_raw = {}
+    if not isinstance(hosts_raw, dict):
+        hosts_raw = {}
+
+    normalized = {
+        "dns": deep_merge(DEFAULT_DNS_CONFIG, dns_raw),
+        "hosts": copy.deepcopy(hosts_raw),
+    }
+    if raw != normalized:
+        changed = True
+    return normalized, changed
+
+
+def load_dns_state() -> dict[str, Any]:
+    loaded = load_json(DNS_CONFIG_PATH, DEFAULT_DNS_STATE)
+    normalized, changed = normalize_dns_state(loaded)
+    if changed:
+        save_json(DNS_CONFIG_PATH, normalized)
+    return normalized
+
+
+def load_dns_hosts() -> dict[str, Any]:
+    return load_dns_state()["hosts"]
 
 
 def save_dns_config_state(data: dict[str, Any]) -> None:
-    merged = deep_merge(DEFAULT_DNS_CONFIG, data)
-    save_json(DNS_CONFIG_PATH, merged)
+    normalized, _ = normalize_dns_state(data)
+    save_json(DNS_CONFIG_PATH, normalized)
 
 
 def normalize_dns_config(data: dict[str, Any], enabled: bool) -> dict[str, Any]:
@@ -753,7 +808,7 @@ def ensure_state() -> None:
         save_json(VERGE_CONFIG_PATH, detect_bootstrap_verge_config())
 
     if not DNS_CONFIG_PATH.exists():
-        save_json(DNS_CONFIG_PATH, DEFAULT_DNS_CONFIG)
+        save_json(DNS_CONFIG_PATH, DEFAULT_DNS_STATE)
 
     if not OVERLAY_JSON_PATH.exists():
         save_overlay({})
@@ -1017,13 +1072,16 @@ def empty_runtime_requires_repair() -> bool:
 def build_runtime_text(
     item: dict[str, Any] | None = None,
     base_text: str | None = None,
+    overlay_state: dict[str, Any] | None = None,
+    verge_state: dict[str, Any] | None = None,
+    dns_state: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     ensure_state()
     if base_text is None:
         item = item or current_profile_item()
         base_text = profile_path(str(item["uid"])).read_text(encoding="utf-8")
-    overlay = load_overlay()
-    verge = get_verge_config_state()
+    overlay = copy.deepcopy(overlay_state) if overlay_state is not None else load_overlay()
+    verge = copy.deepcopy(verge_state) if verge_state is not None else get_verge_config_state()
     text = base_text if base_text.endswith("\n") else base_text + "\n"
 
     for key in (
@@ -1073,8 +1131,18 @@ def build_runtime_text(
     tun_enabled = bool(verge.get("enable_tun_mode", True))
     text = set_top_level_value(text, "tun", normalize_tun_config(tun_overlay, tun_enabled))
 
-    dns_config = normalize_dns_config(load_dns_config(), bool(verge.get("enable_dns_settings", True)))
+    raw_dns_state = dns_state if dns_state is not None else load_dns_state()
+    effective_dns_state, _ = normalize_dns_state(raw_dns_state)
+    dns_config = normalize_dns_config(
+        effective_dns_state.get("dns") or {},
+        bool(verge.get("enable_dns_settings", True)),
+    )
     text = set_top_level_value(text, "dns", dns_config)
+    hosts_config = copy.deepcopy(effective_dns_state.get("hosts") or {})
+    if hosts_config:
+        text = set_top_level_value(text, "hosts", hosts_config)
+    else:
+        text = remove_top_level_key(text, "hosts")
 
     return text if text.endswith("\n") else text + "\n", controller_secret_value
 
@@ -1522,10 +1590,56 @@ def update_geo_data() -> None:
     atomic_write_bytes(MMDB_PATH, payload, 0o644)
 
 
+def render_dns_config_content(state: dict[str, Any]) -> str:
+    normalized, _ = normalize_dns_state(state)
+    payload = {"dns": normalized["dns"]}
+    hosts = normalized.get("hosts") or {}
+    if hosts:
+        payload["hosts"] = hosts
+    return render_top_level_yaml(payload)
+
+
+def validate_dns_state(state: dict[str, Any]) -> tuple[bool, str]:
+    normalized, _ = normalize_dns_state(state)
+    profiles = get_profiles_state()
+    if profiles.get("current"):
+        runtime_text, _ = build_runtime_text(dns_state=normalized)
+    else:
+        runtime_text, _ = build_runtime_text(
+            base_text=empty_profile_runtime_text(),
+            dns_state=normalized,
+        )
+
+    temp_path = Path(tempfile.mkstemp(prefix="mihomo-dns-validate-", suffix=".yaml")[1])
+    try:
+        atomic_write_text(temp_path, runtime_text, 0o600)
+        if not MIHOMO_BIN.exists():
+            return True, "mihomo binary missing; skipped validation"
+        result = run_command(
+            [
+                str(MIHOMO_BIN),
+                "-t",
+                "-d",
+                str(MIHOMO_STATE_DIR),
+                "-f",
+                str(temp_path),
+            ],
+            check=False,
+        )
+        output = "\n".join(
+            part for part in (result.stdout.strip(), result.stderr.strip()) if part
+        ).strip()
+        if result.returncode == 0:
+            return True, output or "ok"
+        return False, output or f"mihomo config test failed: {result.returncode}"
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
 def public_config_payload() -> dict[str, Any]:
     return {
         "secret": controller_secret(),
-        "vergeApiSecret": verge_api_secret(),
+        "vergeApiSecret": "",
         "mihomoBaseUrl": "/api",
         "vergeApiBaseUrl": "/verge-api",
         "appVersion": APP_VERSION,
@@ -1735,6 +1849,15 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
     if cmd == "save_dns_config":
         save_dns_config_state(args.get("dnsConfig") or {})
         return None
+
+    if cmd == "check_dns_config_exists":
+        return DNS_CONFIG_PATH.exists()
+
+    if cmd == "get_dns_config_content":
+        return render_dns_config_content(load_dns_state())
+
+    if cmd == "validate_dns_config":
+        return list(validate_dns_state(load_dns_state()))
 
     if cmd == "apply_dns_config":
         verge = get_verge_config_state()
@@ -2063,7 +2186,26 @@ class VergeApiHandler(BaseHTTPRequestHandler):
     def send_text(self, text: str, status: int = 200) -> None:
         self.send_bytes(text.encode("utf-8"), "text/plain; charset=utf-8", status)
 
-    def authenticate(self, allow_query_token: bool = False) -> bool:
+    def has_lazycat_session(self) -> bool:
+        cookie_header = self.headers.get("Cookie", "")
+        if not cookie_header:
+            return False
+        try:
+            cookies = SimpleCookie()
+            cookies.load(cookie_header)
+        except Exception:
+            return False
+        for name in LAZYCAT_AUTH_COOKIE_NAMES:
+            morsel = cookies.get(name)
+            if morsel and morsel.value.strip():
+                return True
+        return False
+
+    def authenticate(
+        self,
+        allow_query_token: bool = False,
+        allow_lazycat_session: bool = False,
+    ) -> bool:
         expected = verge_api_secret()
         auth = self.headers.get("Authorization", "")
         if auth.startswith("Bearer ") and auth[7:].strip() == expected:
@@ -2073,6 +2215,8 @@ class VergeApiHandler(BaseHTTPRequestHandler):
             token = urllib.parse.parse_qs(parsed.query).get("token", [""])[0]
             if token == expected:
                 return True
+        if allow_lazycat_session and self.has_lazycat_session():
+            return True
         return False
 
     def route_request(self, head_only: bool = False) -> None:
@@ -2083,14 +2227,14 @@ class VergeApiHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/public-config":
-            if not self.authenticate(allow_query_token=True):
+            if not self.authenticate(allow_query_token=True, allow_lazycat_session=True):
                 self.send_json({"error": "unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
                 return
             self.send_json(public_config_payload())
             return
 
         if parsed.path == "/file":
-            if not self.authenticate(allow_query_token=True):
+            if not self.authenticate(allow_query_token=True, allow_lazycat_session=True):
                 self.send_json({"error": "unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
                 return
             raw_path = urllib.parse.parse_qs(parsed.query).get("path", [""])[0]
@@ -2103,7 +2247,7 @@ class VergeApiHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/invoke" and self.command == "POST":
-            if not self.authenticate():
+            if not self.authenticate(allow_lazycat_session=True):
                 self.send_json({"error": "unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
                 return
             try:

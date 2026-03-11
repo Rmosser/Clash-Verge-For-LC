@@ -10,7 +10,9 @@
 - Always set a non-empty `secret:` in `/etc/mihomo/config.yaml`.
 - `scripts/deploy_microserver.sh` auto-generates one if empty and saves it locally to `var/private/mihomo.secret`.
 - Use `scripts/mihomo-manager secret show` to retrieve the current secret when configuring metacubexd.
-  - `scripts/deploy_dashboard.sh` can optionally embed the secret into the dashboard package (behind LazyCat login) to make first-time setup zero-config.
+- The LazyCat dashboard no longer embeds runtime secrets into `lzcapp-config.js`.
+  - Browsers bootstrap runtime config from `/verge-api/public-config` behind the LazyCat login session.
+  - `/api/*` still uses the Mihomo Bearer secret, but the secret is resolved on the microserver at runtime instead of being baked into the LPK.
 
 ## TUN / transparent proxy risk
 
