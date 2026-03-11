@@ -20,6 +20,7 @@ import {
   alpha,
   useTheme,
 } from "@mui/material";
+import { invoke } from "@tauri-apps/api/core";
 import { useLockFn } from "ahooks";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
