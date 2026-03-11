@@ -1,0 +1,56 @@
+{
+  "platform": "lazycat-web",
+  "appVersion": "2.4.7-webport.0",
+  "buildId": "20260311.94cd383",
+  "gitCommit": "94cd383",
+  "apiSchemaVersion": "2026.03-lzc-v1",
+  "uiSchemaVersion": "2026.03-lzc-v1",
+  "packageFingerprint": "cloud.lazycat.app.clash-verge-for-lc/2.4.7-webport.0",
+  "capabilities": {
+    "externalOpen": {
+      "mode": "enabled",
+      "reason": "LazyCat Web 版会在浏览器新标签页中打开外部链接。"
+    },
+    "clipboard": {
+      "mode": "enabled",
+      "reason": "LazyCat Web 版支持复制内容到浏览器剪贴板。"
+    },
+    "download": {
+      "mode": "enabled",
+      "reason": "LazyCat Web 版会通过浏览器下载文件。"
+    },
+    "filePicker": {
+      "mode": "degraded",
+      "reason": "LazyCat Web 版使用浏览器文件选择器代替桌面文件对话框。",
+      "label": "浏览器文件选择器",
+      "fallback": "browser-file-picker"
+    },
+    "directoryOpen": {
+      "mode": "degraded",
+      "reason": "LazyCat Web 版无法直接打开宿主机目录，将改为复制目录路径。",
+      "label": "复制路径",
+      "fallback": "copy-path"
+    },
+    "devtools": {
+      "mode": "disabled",
+      "reason": "请使用浏览器 DevTools。",
+      "label": "浏览器 DevTools"
+    },
+    "lightweightMode": {
+      "mode": "disabled",
+      "reason": "LazyCat Web 版不支持桌面轻量模式，请使用桌面版 Clash Verge。"
+    },
+    "systemService": {
+      "mode": "disabled",
+      "reason": "LazyCat Web 版不支持安装、卸载或修复本机系统服务。"
+    },
+    "windowDecorations": {
+      "mode": "disabled",
+      "reason": "LazyCat Web 版不支持原生窗口装饰。"
+    },
+    "tray": {
+      "mode": "disabled",
+      "reason": "LazyCat Web 版不支持系统托盘能力。"
+    }
+  }
+}

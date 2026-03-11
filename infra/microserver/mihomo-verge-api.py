@@ -31,8 +31,13 @@ from typing import Any
 
 
 APP_VERSION = os.environ.get("MIHOMO_VERGE_APP_VERSION", "2.4.7-webport.0")
+BUILD_ID = os.environ.get("MIHOMO_VERGE_BUILD_ID", "")
+GIT_COMMIT = os.environ.get("MIHOMO_VERGE_GIT_COMMIT", "")
+PACKAGE_FINGERPRINT = os.environ.get("MIHOMO_VERGE_PACKAGE_FINGERPRINT", "")
+RUNTIME_CONTRACT_ENV_PATH = os.environ.get("MIHOMO_VERGE_RUNTIME_CONTRACT_PATH", "")
 APP_START = time.time()
 ENSURING_EMPTY_RUNTIME = False
+RUNTIME_CONTRACT_CACHE: dict[str, Any] | None = None
 
 BIND = os.environ.get("VERGE_API_BIND", "172.18.0.1:9091")
 if ":" in BIND:
@@ -208,6 +213,64 @@ RUNTIME_RELEVANT_VERGE_KEYS = {
     "verge_tproxy_enabled",
 }
 
+DEFAULT_RUNTIME_CONTRACT = {
+    "platform": "lazycat-web",
+    "appVersion": APP_VERSION,
+    "buildId": BUILD_ID or APP_VERSION,
+    "gitCommit": GIT_COMMIT or "unknown",
+    "apiSchemaVersion": "2026.03-lzc-v1",
+    "uiSchemaVersion": "2026.03-lzc-v1",
+    "packageFingerprint": PACKAGE_FINGERPRINT
+    or f"cloud.lazycat.app.clash-verge-for-lc/{APP_VERSION}",
+    "capabilities": {
+        "externalOpen": {
+            "mode": "enabled",
+            "reason": "LazyCat Web 版会在浏览器新标签页中打开外部链接。",
+        },
+        "clipboard": {
+            "mode": "enabled",
+            "reason": "LazyCat Web 版支持复制内容到浏览器剪贴板。",
+        },
+        "download": {
+            "mode": "enabled",
+            "reason": "LazyCat Web 版会通过浏览器下载文件。",
+        },
+        "filePicker": {
+            "mode": "degraded",
+            "reason": "LazyCat Web 版使用浏览器文件选择器代替桌面文件对话框。",
+            "label": "浏览器文件选择器",
+            "fallback": "browser-file-picker",
+        },
+        "directoryOpen": {
+            "mode": "degraded",
+            "reason": "LazyCat Web 版无法直接打开宿主机目录，将改为复制目录路径。",
+            "label": "复制路径",
+            "fallback": "copy-path",
+        },
+        "devtools": {
+            "mode": "disabled",
+            "reason": "请使用浏览器 DevTools。",
+            "label": "浏览器 DevTools",
+        },
+        "lightweightMode": {
+            "mode": "disabled",
+            "reason": "LazyCat Web 版不支持桌面轻量模式，请使用桌面版 Clash Verge。",
+        },
+        "systemService": {
+            "mode": "disabled",
+            "reason": "LazyCat Web 版不支持安装、卸载或修复本机系统服务。",
+        },
+        "windowDecorations": {
+            "mode": "disabled",
+            "reason": "LazyCat Web 版不支持原生窗口装饰。",
+        },
+        "tray": {
+            "mode": "disabled",
+            "reason": "LazyCat Web 版不支持系统托盘能力。",
+        },
+    },
+}
+
 
 def now_ms() -> int:
     return int(time.time() * 1000)
@@ -215,6 +278,62 @@ def now_ms() -> int:
 
 def iso_now() -> str:
     return dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def runtime_contract_candidate_paths() -> list[Path]:
+    paths: list[Path] = []
+    if RUNTIME_CONTRACT_ENV_PATH:
+        paths.append(Path(RUNTIME_CONTRACT_ENV_PATH))
+    paths.append(Path(__file__).with_name("runtime-contract.json"))
+    paths.append(
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "mihomo-dashboard-app"
+        / "runtime-contract.json"
+    )
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        marker = str(path)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        unique.append(path)
+    return unique
+
+
+def load_runtime_contract() -> dict[str, Any]:
+    global RUNTIME_CONTRACT_CACHE
+    if RUNTIME_CONTRACT_CACHE is not None:
+        return copy.deepcopy(RUNTIME_CONTRACT_CACHE)
+
+    contract = copy.deepcopy(DEFAULT_RUNTIME_CONTRACT)
+    for path in runtime_contract_candidate_paths():
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            append_operation_log(f"failed to read runtime contract from {path}: {exc}")
+            continue
+        if isinstance(payload, dict):
+            contract.update(payload)
+            capabilities = payload.get("capabilities")
+            if isinstance(capabilities, dict):
+                contract["capabilities"] = capabilities
+            break
+
+    if BUILD_ID:
+        contract["buildId"] = BUILD_ID
+    if GIT_COMMIT:
+        contract["gitCommit"] = GIT_COMMIT
+    if PACKAGE_FINGERPRINT:
+        contract["packageFingerprint"] = PACKAGE_FINGERPRINT
+    if APP_VERSION:
+        contract["appVersion"] = APP_VERSION
+
+    RUNTIME_CONTRACT_CACHE = contract
+    return copy.deepcopy(contract)
 
 
 def ensure_dirs() -> None:
@@ -256,6 +375,66 @@ def save_json(path: Path, data: Any, mode: int | None = None) -> None:
         path,
         json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         mode,
+    )
+
+
+class ApiError(RuntimeError):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        status: int = HTTPStatus.BAD_REQUEST,
+        layer: str = "verge-api",
+        recoverable: bool = False,
+        warning: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.status = status
+        self.layer = layer
+        self.recoverable = recoverable
+        self.warning = warning
+
+
+def error_envelope(
+    code: str,
+    message: str,
+    *,
+    layer: str = "verge-api",
+    recoverable: bool = False,
+    warning: dict[str, Any] | None = None,
+    data: Any = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "code": code,
+        "message": message,
+        "layer": layer,
+        "recoverable": recoverable,
+    }
+    if warning is not None:
+        payload["warning"] = warning
+    if data is not None:
+        payload["data"] = data
+    return payload
+
+
+def exception_envelope(exc: Exception, default_code: str = "COMMAND_FAILED") -> tuple[dict[str, Any], int]:
+    if isinstance(exc, ApiError):
+        return (
+            error_envelope(
+                exc.code,
+                exc.message,
+                layer=exc.layer,
+                recoverable=exc.recoverable,
+                warning=exc.warning,
+            ),
+            int(exc.status),
+        )
+    return (
+        error_envelope(default_code, str(exc), layer="verge-api", recoverable=False),
+        int(HTTPStatus.BAD_REQUEST),
     )
 
 
@@ -697,11 +876,23 @@ def normalize_profiles_state(raw: Any) -> tuple[dict[str, Any], bool]:
         current = str(current or "")
         changed = True
 
-    valid_ids = [
-        str(item.get("uid"))
-        for item in items
-        if isinstance(item, dict) and item.get("uid")
-    ]
+    filtered_items: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict) or not item.get("uid"):
+            changed = True
+            continue
+        uid = str(item.get("uid"))
+        if not profile_path(uid).exists():
+            changed = True
+            continue
+        filtered_items.append(item)
+
+    if filtered_items != items:
+        normalized["items"] = filtered_items
+        items = filtered_items
+        changed = True
+
+    valid_ids = [str(item.get("uid")) for item in items]
     if current and current not in valid_ids:
         current = valid_ids[0] if valid_ids else ""
         changed = True
@@ -885,6 +1076,33 @@ def current_mixed_port() -> int:
     return parse_int(runtime.get("mixed-port") or get_verge_config_state().get("verge_mixed_port") or 7890, 7890)
 
 
+def mihomo_proxy_url() -> str:
+    return f"http://127.0.0.1:{current_mixed_port()}"
+
+
+def build_mihomo_proxy_opener() -> urllib.request.OpenerDirector:
+    proxy_url = mihomo_proxy_url()
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+    )
+
+
+def proxy_request(
+    url: str,
+    *,
+    timeout: int = 12,
+    headers: dict[str, str] | None = None,
+) -> tuple[int, bytes]:
+    request = urllib.request.Request(
+        url,
+        headers=headers
+        or {"User-Agent": "clash-verge-webport/1.0"},
+    )
+    opener = build_mihomo_proxy_opener()
+    with opener.open(request, timeout=timeout) as response:
+        return int(response.status or 0), response.read()
+
+
 def map_ip_info(service_name: str, payload: dict[str, Any]) -> dict[str, Any]:
     if service_name == "ip.sb":
         return {
@@ -976,6 +1194,195 @@ def map_ip_info(service_name: str, payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def classify_network_error(exc: Exception) -> tuple[str, str]:
+    message = str(exc).lower()
+    if isinstance(exc, urllib.error.HTTPError):
+        return "upstream_http_error", f"上游 IP 服务返回 HTTP {exc.code}"
+    if isinstance(exc, (socket.timeout, TimeoutError)) or "timed out" in message:
+        return "timeout", "通过 Mihomo 获取出口 IP 超时"
+    if "eof" in message or "ssl" in message or "handshake" in message:
+        return "proxy_connect_error", "通过 Mihomo 获取出口 IP 失败"
+    return "network_error", "无法通过 Mihomo 获取出口 IP"
+
+
+def classify_delay_error(exc: Exception) -> tuple[str, str]:
+    message = str(exc).lower()
+    if isinstance(exc, urllib.error.HTTPError):
+        if exc.code == 504:
+            return "timeout", "延迟测试超时"
+        if 400 <= exc.code < 500:
+            return "target_unreachable", f"测试目标不可达（HTTP {exc.code}）"
+        return "network_error", f"延迟测试失败（HTTP {exc.code}）"
+    if isinstance(exc, (socket.timeout, TimeoutError)) or "timed out" in message:
+        return "timeout", "延迟测试超时"
+    if "name or service not known" in message or "no address associated" in message:
+        return "target_unreachable", "测试目标不可达"
+    return "network_error", "延迟测试失败"
+
+
+def classify_probe_error(exc: Exception) -> tuple[str, str]:
+    message = str(exc).lower()
+    if isinstance(exc, urllib.error.HTTPError):
+        if exc.code == 504:
+            return "timeout", "检测超时"
+        return "failed", f"检测失败（HTTP {exc.code}）"
+    if isinstance(exc, (socket.timeout, TimeoutError)) or "timed out" in message:
+        return "timeout", "检测超时"
+    return "failed", "网络请求失败"
+
+
+def to_public_probe_code(code: str) -> str:
+    mapping = {
+        "success": "OK",
+        "timeout": "TIMEOUT",
+        "proxy_connect_error": "UPSTREAM_TLS",
+        "upstream_http_error": "TARGET_BLOCKED",
+        "network_error": "PROXY_UNREACHABLE",
+        "target_unreachable": "TARGET_BLOCKED",
+        "failed": "UNKNOWN",
+    }
+    return mapping.get(code, "UNKNOWN")
+
+
+def classify_public_probe_error(exc: Exception) -> tuple[str, str]:
+    message = str(exc).lower()
+    if isinstance(exc, urllib.error.HTTPError):
+        if exc.code in (401, 403, 451):
+            return "TARGET_BLOCKED", f"检测目标返回 HTTP {exc.code}"
+        if exc.code == 504:
+            return "TIMEOUT", "检测超时"
+        if 400 <= exc.code < 500:
+            return "TARGET_BLOCKED", f"检测目标返回 HTTP {exc.code}"
+        return "UNKNOWN", f"检测目标返回 HTTP {exc.code}"
+    if isinstance(exc, (socket.timeout, TimeoutError)) or "timed out" in message:
+        return "TIMEOUT", "检测超时"
+    if "eof" in message or "ssl" in message or "handshake" in message:
+        return "UPSTREAM_TLS", "通过 Mihomo 建立 TLS 连接失败"
+    if "refused" in message or "unreachable" in message or "reset" in message:
+        return "PROXY_UNREACHABLE", "当前代理链路不可达"
+    return "UNKNOWN", "网络请求失败"
+
+
+def runtime_probe_health() -> dict[str, Any]:
+    try:
+        controller_request("GET", "/version", timeout=4)
+    except Exception as exc:
+        return {
+            "status": "degraded",
+            "checkedAt": iso_now(),
+            "details": str(exc),
+        }
+    return {"status": "ok", "checkedAt": iso_now()}
+
+
+def runtime_info_payload() -> dict[str, Any]:
+    contract = load_runtime_contract()
+    return {
+        "platform": str(contract.get("platform") or DEFAULT_RUNTIME_CONTRACT["platform"]),
+        "appVersion": str(contract.get("appVersion") or APP_VERSION),
+        "buildId": str(contract.get("buildId") or APP_VERSION),
+        "gitCommit": str(contract.get("gitCommit") or "unknown"),
+        "apiSchemaVersion": str(contract.get("apiSchemaVersion") or DEFAULT_RUNTIME_CONTRACT["apiSchemaVersion"]),
+        "uiSchemaVersion": str(contract.get("uiSchemaVersion") or DEFAULT_RUNTIME_CONTRACT["uiSchemaVersion"]),
+        "packageFingerprint": str(
+            contract.get("packageFingerprint")
+            or DEFAULT_RUNTIME_CONTRACT["packageFingerprint"]
+        ),
+        "capabilities": copy.deepcopy(
+            contract.get("capabilities") or DEFAULT_RUNTIME_CONTRACT["capabilities"]
+        ),
+        "probeHealth": runtime_probe_health(),
+    }
+
+
+def run_url_probe(target: str, timeout_ms: int = 12000) -> dict[str, Any]:
+    started = time.time()
+    try:
+        status_code, _ = proxy_request(
+            target,
+            timeout=max(1, int(timeout_ms / 1000)),
+            headers={"User-Agent": f"clash-verge-webport/{APP_VERSION}"},
+        )
+        duration_ms = int((time.time() - started) * 1000)
+        return {
+            "ok": True,
+            "code": "OK",
+            "message": "ok",
+            "durationMs": duration_ms,
+            "fromCache": False,
+            "data": {
+                "target": target,
+                "status": "success",
+                "latencyMs": duration_ms,
+                "httpStatus": status_code,
+            },
+        }
+    except Exception as exc:
+        code, message = classify_public_probe_error(exc)
+        duration_ms = int((time.time() - started) * 1000)
+        status = "timeout" if code == "TIMEOUT" else "failed"
+        return {
+            "ok": True,
+            "code": code,
+            "message": message,
+            "durationMs": duration_ms,
+            "fromCache": False,
+            "data": {
+                "target": target,
+                "status": status,
+                "errorCode": code,
+                "errorMessage": message,
+            },
+        }
+
+
+def run_ip_info_probe() -> dict[str, Any]:
+    started = time.time()
+    result = get_ip_info()
+    duration_ms = int((time.time() - started) * 1000)
+    if result.get("status") == "success":
+        return {
+            "ok": True,
+            "code": "OK",
+            "message": "ok",
+            "durationMs": duration_ms,
+            "fromCache": False,
+            "data": result,
+        }
+    public_code = to_public_probe_code(str(result.get("errorCode") or "network_error"))
+    return {
+        "ok": True,
+        "code": public_code,
+        "message": str(result.get("errorMessage") or "IP 信息加载失败"),
+        "durationMs": duration_ms,
+        "fromCache": False,
+        "data": result,
+    }
+
+
+def run_unlock_probe(target: str | None = None) -> dict[str, Any]:
+    started = time.time()
+    result = check_unlock_status([target] if target else None)
+    duration_ms = int((time.time() - started) * 1000)
+    summary = result.get("summary") or {}
+    code = "OK"
+    message = "ok"
+    if summary.get("timeout"):
+        code = "TIMEOUT"
+        message = "部分解锁检测超时"
+    elif summary.get("failed"):
+        code = "UNKNOWN"
+        message = "部分解锁检测失败"
+    return {
+        "ok": True,
+        "code": code,
+        "message": message,
+        "durationMs": duration_ms,
+        "fromCache": False,
+        "data": result,
+    }
+
+
 def get_ip_info() -> dict[str, Any]:
     proxy_port = current_mixed_port()
     proxy_url = f"http://127.0.0.1:{proxy_port}"
@@ -1004,22 +1411,47 @@ def get_ip_info() -> dict[str, Any]:
             mapped = map_ip_info(str(service["name"]), payload)
             if not mapped.get("ip"):
                 raise RuntimeError(f"IP service {service['url']} returned no ip")
-            mapped["lastFetchTs"] = now_ms()
-            return mapped
+            return {
+                "status": "success",
+                "payload": mapped,
+                "lastFetchTs": now_ms(),
+            }
         except Exception as exc:
             last_error = exc
 
-    message = str(last_error) if last_error else "no ip service available"
-    raise RuntimeError(f"Failed to fetch IP info through Mihomo proxy: {message}")
+    if last_error:
+        error_code, error_message = classify_network_error(last_error)
+    else:
+        error_code, error_message = ("network_error", "没有可用的 IP 检测服务")
+    return {
+        "status": "error",
+        "errorCode": error_code,
+        "errorMessage": error_message,
+    }
 
 
 def current_profile_item() -> dict[str, Any]:
     profiles = get_profiles_state()
     current = profiles.get("current")
-    for item in profiles.get("items") or []:
+    items = profiles.get("items") or []
+    for item in items:
         if item.get("uid") == current:
             return item
-    raise RuntimeError("current profile not found")
+
+    if items:
+        recovered = items[0]
+        profiles["current"] = str(recovered.get("uid") or "")
+        save_profiles_state(profiles)
+        append_operation_log(
+            f"recovered missing current profile -> {profiles['current']}"
+        )
+        return recovered
+
+    raise ApiError(
+        "NO_PROFILE_AVAILABLE",
+        "当前没有可用的配置文件，已切换为空配置运行态。",
+        recoverable=True,
+    )
 
 
 def render_proxy_chain_yaml(items: list[str]) -> str:
@@ -1468,38 +1900,79 @@ def list_webdav_backups() -> list[dict[str, Any]]:
 
 def current_region() -> str | None:
     try:
-        request = urllib.request.Request(
-            "https://ipinfo.io/json",
-            headers={"User-Agent": "clash-verge-webport/1.0"},
-        )
-        with urllib.request.urlopen(request, timeout=10) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-            return payload.get("country")
+        result = get_ip_info()
+        if result.get("status") == "success":
+            payload = result.get("payload") or {}
+            country = payload.get("country_code") or payload.get("country")
+            if isinstance(country, str) and country:
+                return country
     except Exception:
         return None
 
 
-def check_unlock_status() -> list[dict[str, Any]]:
+def check_unlock_status(targets: list[str] | None = None) -> dict[str, Any]:
     region = current_region()
+    normalized_targets = (
+        {item.strip().lower() for item in targets if item and item.strip()}
+        if targets
+        else None
+    )
     results = []
+    summary = {
+        "total": 0,
+        "success": 0,
+        "failed": 0,
+        "timeout": 0,
+        "checkedAt": iso_now(),
+    }
     for item in DEFAULT_UNLOCK_ITEMS:
+        item_name = str(item["name"])
+        if normalized_targets and item_name.strip().lower() not in normalized_targets:
+            continue
         url = UNLOCK_TEST_URLS.get(item["name"], "https://example.com/")
         status = "Failed"
+        probe_status = "failed"
+        message = ""
         try:
-            request = urllib.request.Request(url, headers={"User-Agent": "clash-verge-webport/1.0"})
-            with urllib.request.urlopen(request, timeout=12) as response:
-                status = "Yes" if response.status < 400 else "No"
-        except Exception:
-            status = "Failed (Network Connection)"
+            response_status, _ = proxy_request(
+                url,
+                timeout=12,
+                headers={"User-Agent": f"clash-verge-webport/{APP_VERSION}"},
+            )
+            if response_status < 400:
+                status = "Yes"
+                probe_status = "success"
+            else:
+                status = "No"
+                probe_status = "failed"
+                message = f"HTTP {response_status}"
+        except Exception as exc:
+            public_code, error_message = classify_public_probe_error(exc)
+            if public_code == "TIMEOUT":
+                probe_status = "timeout"
+                summary["timeout"] += 1
+            else:
+                probe_status = "failed"
+                summary["failed"] += 1
+            message = error_message
+            status = "Failed"
+        else:
+            if probe_status == "success":
+                summary["success"] += 1
+            else:
+                summary["failed"] += 1
+        summary["total"] += 1
         results.append(
             {
-                "name": item["name"],
+                "name": item_name,
                 "status": status,
+                "probe_status": probe_status,
                 "region": region,
                 "check_time": iso_now(),
+                "message": message,
             }
         )
-    return results
+    return {"items": results, "summary": summary}
 
 
 def network_interfaces_info() -> list[dict[str, Any]]:
@@ -1637,12 +2110,14 @@ def validate_dns_state(state: dict[str, Any]) -> tuple[bool, str]:
 
 
 def public_config_payload() -> dict[str, Any]:
+    runtime_info = runtime_info_payload()
     return {
         "secret": controller_secret(),
         "vergeApiSecret": "",
         "mihomoBaseUrl": "/api",
         "vergeApiBaseUrl": "/verge-api",
-        "appVersion": APP_VERSION,
+        "appVersion": runtime_info["appVersion"],
+        "runtimeInfo": runtime_info,
     }
 
 
@@ -2125,17 +2600,39 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
         return port_in_use(int(args.get("port") or 0))
 
     if cmd == "clash_api_get_proxy_delay":
-        name = urllib.parse.quote(str(args.get("name") or ""))
+        raw_name = str(args.get("name") or "")
+        name = urllib.parse.quote(raw_name)
         url = urllib.parse.quote(str(args.get("url") or "http://cp.cloudflare.com"), safe="")
         timeout = int(args.get("timeout") or 10000)
-        return controller_request("GET", f"/proxies/{name}/delay?timeout={timeout}&url={url}")
+        try:
+            result = controller_request("GET", f"/proxies/{name}/delay?timeout={timeout}&url={url}")
+            delay = int((result or {}).get("delay") or 0)
+            return {
+                "target": raw_name,
+                "status": "success",
+                "latencyMs": delay,
+                "delay": delay,
+            }
+        except Exception as exc:
+            error_code, error_message = classify_delay_error(exc)
+            return {
+                "target": raw_name,
+                "status": error_code,
+                "delay": timeout if error_code == "timeout" else 1_000_000,
+                "errorCode": error_code,
+                "errorMessage": error_message,
+            }
 
     if cmd == "test_delay":
-        started = time.time()
-        request = urllib.request.Request(str(args.get("url") or "http://cp.cloudflare.com"))
-        with urllib.request.urlopen(request, timeout=12):
-            pass
-        return int((time.time() - started) * 1000)
+        target = str(args.get("url") or "http://cp.cloudflare.com")
+        result = run_url_probe(target)
+        return {
+            "target": target,
+            "status": "success" if result["code"] == "OK" else result["data"].get("status"),
+            "latencyMs": result.get("data", {}).get("latencyMs"),
+            "errorCode": None if result["code"] == "OK" else result["code"],
+            "errorMessage": None if result["code"] == "OK" else result["message"],
+        }
 
     if cmd == "get_unlock_items":
         return DEFAULT_UNLOCK_ITEMS
@@ -2228,27 +2725,112 @@ class VergeApiHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/public-config":
             if not self.authenticate(allow_query_token=True, allow_lazycat_session=True):
-                self.send_json({"error": "unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
+                self.send_json(
+                    error_envelope(
+                        "UNAUTHORIZED",
+                        "缺少有效的 LazyCat 登录态或 API token。",
+                        recoverable=False,
+                    ),
+                    status=HTTPStatus.UNAUTHORIZED,
+                )
                 return
             self.send_json(public_config_payload())
             return
 
+        if parsed.path == "/runtime-info":
+            if not self.authenticate(allow_query_token=True, allow_lazycat_session=True):
+                self.send_json(
+                    error_envelope(
+                        "UNAUTHORIZED",
+                        "缺少有效的 LazyCat 登录态或 API token。",
+                        recoverable=False,
+                    ),
+                    status=HTTPStatus.UNAUTHORIZED,
+                )
+                return
+            self.send_json(runtime_info_payload())
+            return
+
         if parsed.path == "/file":
             if not self.authenticate(allow_query_token=True, allow_lazycat_session=True):
-                self.send_json({"error": "unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
+                self.send_json(
+                    error_envelope(
+                        "UNAUTHORIZED",
+                        "缺少有效的 LazyCat 登录态或 API token。",
+                        recoverable=False,
+                    ),
+                    status=HTTPStatus.UNAUTHORIZED,
+                )
                 return
             raw_path = urllib.parse.parse_qs(parsed.query).get("path", [""])[0]
             target = Path(raw_path)
             if not target.exists() or not file_is_allowed(target):
-                self.send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
+                self.send_json(
+                    error_envelope(
+                        "NOT_FOUND",
+                        "请求的文件不存在或不在允许范围内。",
+                        recoverable=False,
+                    ),
+                    status=HTTPStatus.NOT_FOUND,
+                )
                 return
             content_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
             self.send_bytes(target.read_bytes(), content_type, head_only=head_only)
             return
 
+        if parsed.path == "/probe" and self.command == "POST":
+            if not self.authenticate(allow_lazycat_session=True):
+                self.send_json(
+                    error_envelope(
+                        "UNAUTHORIZED",
+                        "缺少有效的 LazyCat 登录态。",
+                        recoverable=False,
+                        layer="probe",
+                    ),
+                    status=HTTPStatus.UNAUTHORIZED,
+                )
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                kind = str(payload.get("kind") or "").strip().lower()
+                target = str(payload.get("target") or "").strip()
+                timeout_ms = int(payload.get("timeoutMs") or 12000)
+                if kind == "ip_info":
+                    result = run_ip_info_probe()
+                elif kind == "unlock":
+                    result = run_unlock_probe(target or None)
+                elif kind == "url":
+                    if not target:
+                        raise ApiError(
+                            "INVALID_REQUEST",
+                            "probe url 缺少 target。",
+                            layer="probe",
+                        )
+                    result = run_url_probe(target, timeout_ms)
+                else:
+                    raise ApiError(
+                        "INVALID_REQUEST",
+                        f"不支持的 probe kind: {kind or '<empty>'}",
+                        layer="probe",
+                    )
+                self.send_json(result)
+            except Exception as exc:
+                append_operation_log(f"probe error: {exc}")
+                payload, status = exception_envelope(exc, default_code="PROBE_FAILED")
+                self.send_json(payload, status=status)
+            return
+
         if parsed.path == "/invoke" and self.command == "POST":
             if not self.authenticate(allow_lazycat_session=True):
-                self.send_json({"error": "unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
+                self.send_json(
+                    error_envelope(
+                        "UNAUTHORIZED",
+                        "缺少有效的 LazyCat 登录态。",
+                        recoverable=False,
+                    ),
+                    status=HTTPStatus.UNAUTHORIZED,
+                )
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -2257,10 +2839,18 @@ class VergeApiHandler(BaseHTTPRequestHandler):
                 self.send_json(result if result is not None else None)
             except Exception as exc:
                 append_operation_log(f"invoke error: {exc}")
-                self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                payload, status = exception_envelope(exc)
+                self.send_json(payload, status=status)
             return
 
-        self.send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
+        self.send_json(
+            error_envelope(
+                "NOT_FOUND",
+                "请求的接口不存在。",
+                recoverable=False,
+            ),
+            status=HTTPStatus.NOT_FOUND,
+        )
 
     def log_message(self, format: str, *args: Any) -> None:
         append_operation_log(format % args)
