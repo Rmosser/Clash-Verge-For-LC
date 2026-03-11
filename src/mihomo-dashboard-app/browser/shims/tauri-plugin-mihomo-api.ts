@@ -84,9 +84,16 @@ export class MihomoWebSocket {
     this.socket.close();
   }
 
-  private static async connect(pathname: string) {
+  private static async connect(pathWithQuery: string) {
+    const [pathname, rawQuery = ""] = pathWithQuery.split("?", 2);
     const url = wsBase();
     url.pathname = `${url.pathname.replace(/\/$/, "")}${pathname}`;
+    if (rawQuery) {
+      const query = new URLSearchParams(rawQuery);
+      query.forEach((value, key) => {
+        url.searchParams.set(key, value);
+      });
+    }
     const socket = new WebSocket(url.toString());
     await new Promise<void>((resolve, reject) => {
       socket.addEventListener("open", () => resolve(), { once: true });

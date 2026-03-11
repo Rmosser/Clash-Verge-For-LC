@@ -11,6 +11,7 @@ declare global {
   interface Window {
     __LZCAPP_MIHOMO__?: {
       secret?: string;
+      // Deprecated: browser runtime now trusts the LazyCat login session.
       vergeApiSecret?: string;
       mihomoBaseUrl?: string;
       vergeApiBaseUrl?: string;

@@ -1,8 +1,10 @@
 import {
   basename,
   dispatchAppEvent,
+  getUnsupportedWebFeatureMessage,
   getRegisteredFile,
   getLzcConfig,
+  isLzcWebRuntime,
   readRegisteredBuffer,
   resolveAppFileUrl,
   saveBlob,
@@ -56,6 +58,22 @@ export const invoke = async <T>(
   if (cmd === "exit_app" || cmd === "restart_app" || cmd === "exit_lightweight_mode") {
     window.location.reload();
     return undefined as T;
+  }
+  if (isLzcWebRuntime()) {
+    if (cmd === "entry_lightweight_mode") {
+      throw new Error(getUnsupportedWebFeatureMessage("lightweight-mode"));
+    }
+    if (
+      cmd === "install_service" ||
+      cmd === "uninstall_service" ||
+      cmd === "reinstall_service" ||
+      cmd === "repair_service"
+    ) {
+      throw new Error(getUnsupportedWebFeatureMessage("system-service"));
+    }
+    if (cmd === "invoke_uwp_tool") {
+      throw new Error(getUnsupportedWebFeatureMessage("uwp-tool"));
+    }
   }
 
   const payload = (await maybeSerializeRegisteredPath(args ?? {})) as Record<

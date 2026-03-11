@@ -14,6 +14,11 @@ type LzcConfig = {
   appVersion: string;
 };
 
+export type UnsupportedWebFeature =
+  | "lightweight-mode"
+  | "system-service"
+  | "uwp-tool";
+
 type RegisteredFile = {
   file: File;
   objectUrl: string;
@@ -30,6 +35,7 @@ export const getLzcConfig = (): LzcConfig => {
   const raw = window.__LZCAPP_MIHOMO__ ?? {};
   return {
     secret: raw.secret ?? "",
+    // Deprecated: the web port relies on the current LazyCat login session.
     vergeApiSecret: raw.vergeApiSecret ?? "",
     mihomoBaseUrl: normalizeBaseUrl(raw.mihomoBaseUrl, "/api"),
     vergeApiBaseUrl: normalizeBaseUrl(raw.vergeApiBaseUrl, "/verge-api"),
@@ -38,6 +44,22 @@ export const getLzcConfig = (): LzcConfig => {
 };
 
 export const getAppVersion = () => getLzcConfig().appVersion;
+export const isLzcWebRuntime = () => typeof window !== "undefined";
+
+export const getUnsupportedWebFeatureMessage = (
+  feature: UnsupportedWebFeature
+) => {
+  switch (feature) {
+    case "lightweight-mode":
+      return "LazyCat Web 版不支持桌面轻量模式，请使用桌面版 Clash Verge。";
+    case "system-service":
+      return "LazyCat Web 版不支持安装、卸载或修复本机系统服务。";
+    case "uwp-tool":
+      return "LazyCat Web 版不支持 UWP Tool。";
+    default:
+      return "LazyCat Web 版不支持该桌面专属功能。";
+  }
+};
 
 const buildHeaders = (
   initHeaders: HeadersInit | undefined,
@@ -69,6 +91,7 @@ export const controllerFetch = async (
   const { mihomoBaseUrl, secret } = getLzcConfig();
   return fetch(`${mihomoBaseUrl}${input}`, {
     ...init,
+    credentials: init?.credentials ?? "same-origin",
     headers: buildHeaders(init?.headers, secret)
   });
 };
@@ -82,6 +105,7 @@ export const vergeFetch = async (input: string, init?: RequestInit) => {
   const { vergeApiBaseUrl, vergeApiSecret } = getLzcConfig();
   return fetch(`${vergeApiBaseUrl}${input}`, {
     ...init,
+    credentials: init?.credentials ?? "same-origin",
     headers: buildHeaders(init?.headers, vergeApiSecret)
   });
 };
@@ -189,12 +213,9 @@ export const resolveAppFileUrl = (path: string) => {
   if (/^(blob:|data:|https?:)/i.test(path)) return path;
   const local = getRegisteredFileUrl(path);
   if (local) return local;
-  const { vergeApiBaseUrl, vergeApiSecret } = getLzcConfig();
+  const { vergeApiBaseUrl } = getLzcConfig();
   const url = new URL(`${vergeApiBaseUrl}/file`, window.location.origin);
   url.searchParams.set("path", path);
-  if (vergeApiSecret) {
-    url.searchParams.set("token", vergeApiSecret);
-  }
   return url.toString();
 };
 
