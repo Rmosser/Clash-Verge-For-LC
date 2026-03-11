@@ -161,6 +161,13 @@ scripts/mihomo-manager reload
 scripts/selfcheck.sh
 ```
 
+## SubHub Import Notes | SubHub 导入说明
+
+- 同机场景请使用 SubHub 的直出 YAML 订阅链接，例如：`/sub/device/<token>/clash.yaml?profile=lazycat`
+- 不要把需要懒猫登录的 SubHub 页面地址直接粘贴到 Mihomo Dashboard 的订阅导入框
+- `clash.yaml?profile=lazycat` 与 `providers/*.yaml` 应返回 `200 + application/x-yaml`，无效 token 返回 `401/404`，不要跳登录页
+- 如果微服经 `*.heiyu.space` 回拉同机大订阅超时，先在浏览器下载 YAML，再通过本地文件导入；长期方案是在 SubHub 侧提供免登录的 token 化导出端点
+
 ## Local Runtime Contract | 本地运行入口
 
 这个仓库偏部署和运维，不提供常驻本地 daemon，但保留统一入口。  

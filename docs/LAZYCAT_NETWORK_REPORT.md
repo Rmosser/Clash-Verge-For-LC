@@ -315,3 +315,74 @@ Node.js（`fetch`）额外注意：
 - `mihomo.config.yaml`（本次生成并部署到微服的配置副本）
 
 建议按“密码文件”级别对待，不要随意分享/上传。
+
+---
+
+## 11. 2026-02-25 迁移实施记录（Docker -> Linux 原生 + 防自动删）
+
+本节为本次“从 Docker 迁移到 Linux 原生部署”的实操落地记录。
+
+### 11.1 实施结果（最终状态）
+
+- `mihomo` 以 `systemd` 原生运行，且开机自动拉起：
+  - `systemctl is-enabled mihomo = enabled`
+  - `systemctl is-active mihomo = active`
+- 代理入口与控制入口恢复并稳定：
+  - `127.0.0.1:7890`（mixed-port）
+  - `172.18.0.1:9090`（controller）
+  - `172.18.0.1:17890`（container proxy socket）
+- TUN 绕行验证通过（关键地址保持直连）：
+  - `6.6.6.6/32`
+  - `2000::6666/128`
+  - `fc03:1136:3800::/40`
+
+### 11.2 关键发现（为什么之前“重启后自动删”）
+
+在该机型当前启动链路下，直接写入 `/etc/systemd/system`、`/usr/local/bin`、`/etc/mihomo`、`/var/lib/mihomo` 的 host 改动，重启后可能丢失。  
+因此单纯 `systemctl enable` 不足以保证跨重启保留，必须加“启动期自举恢复”机制。
+
+### 11.3 最终防自动删方案
+
+采用“持久根 + 启动钩子自举”：
+
+- 持久根（放在稳定分区）：`/lzcsys/var/custom/mihomo-host-native`
+  - `bin/mihomo`
+  - `etc-mihomo/`
+  - `var-lib-mihomo/`
+  - `systemd/`（`mihomo.service`、container-proxy、backup timer 等）
+  - `bootstrap-apply.sh`
+- 启动钩子：
+  - `/lzcsys/var/custom/hooks/lzc-os-starting/50-mihomo-host-native-bootstrap.sh`
+  - 兜底保留：`/lzcsys/var/custom/hooks/data-disk-ready/50-mihomo-host-native-bootstrap.sh`
+
+`bootstrap-apply.sh` 在每次启动时执行：
+
+1. 恢复二进制与脚本到 `/usr/local/bin`、`/usr/local/sbin`
+2. 将持久目录 bind 到运行路径：
+   - `/etc/mihomo -> /lzcsys/var/custom/mihomo-host-native/etc-mihomo`
+   - `/var/lib/mihomo -> /lzcsys/var/custom/mihomo-host-native/var-lib-mihomo`
+3. 重新下发 systemd units/tmpfiles
+4. `daemon-reload + enable --now` 拉起 `mihomo`、`mihomo-container-proxy.socket`、`mihomo-backup.timer`
+
+### 11.4 备份策略（保留 14 份）
+
+- 定时任务：`mihomo-backup.timer`（每日 `03:30`）
+- 执行脚本：`/usr/local/sbin/mihomo-backup.sh`
+- 备份目标：
+  - 优先：`/lzcsys/data/document/rainier/mihomo-backup`
+  - 若数据盘目录不可用，回退：`/lzcsys/var/custom/mihomo-backup`
+
+### 11.5 快照与回滚锚点
+
+- 迁移快照目录：`/var/lib/mihomo/migration-snapshots/`
+- 最新落地快照（本次）：`20260225-182008-postreboot`
+- 快照包含：配置、units、tmpfiles、`var-lib-mihomo.tgz`、基线验收输出
+
+### 11.6 补充说明
+
+- 本次深度清理已执行：
+  - `docker image prune -a -f`
+  - `docker volume prune -f`
+  - `docker network prune -f`
+  - `docker builder prune -a -f`
+- 清理后系统核心容器（`lzc-*`、`hext`）保持运行。
