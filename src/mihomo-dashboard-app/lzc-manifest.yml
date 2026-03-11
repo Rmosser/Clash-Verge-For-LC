@@ -6,7 +6,7 @@ license: https://choosealicense.com/licenses/mit/
 homepage:
 author:
 application:
-  subdomain: mihomo
+  subdomain: clash
   routes:
     # Proxy Mihomo controller API from the ingress container to the host network.
     # NOTE: keep the trailing slash so LazyCat trims the prefix correctly:
