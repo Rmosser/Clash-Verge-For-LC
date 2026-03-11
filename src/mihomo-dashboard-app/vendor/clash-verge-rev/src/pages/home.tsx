@@ -35,6 +35,10 @@ import { ProxyTunCard } from "@/components/home/proxy-tun-card";
 import { useProfiles } from "@/hooks/use-profiles";
 import { useVerge } from "@/hooks/use-verge";
 import { entry_lightweight_mode, openWebUrl } from "@/services/cmds";
+import {
+  getUnsupportedWebFeatureMessage,
+  isLzcWebRuntime,
+} from "@root/browser/runtime";
 
 const LazyTestCard = lazy(() =>
   import("@/components/home/test-card").then((module) => ({
@@ -362,20 +366,32 @@ const HomePage = () => {
     () => `${serializeCardFlags(effectiveHomeCards)}:${settingsOpen ? 1 : 0}`,
     [effectiveHomeCards, settingsOpen],
   );
+  const lightweightModeDisabled = isLzcWebRuntime();
+  const lightweightModeTooltip = lightweightModeDisabled
+    ? getUnsupportedWebFeatureMessage("lightweight-mode")
+    : t("home.page.tooltips.lightweightMode");
+
   return (
     <BasePage
       title={t("home.page.title")}
       contentStyle={{ padding: 2 }}
       header={
         <Box sx={{ display: "flex", alignItems: "center" }}>
-          <Tooltip title={t("home.page.tooltips.lightweightMode")} arrow>
-            <IconButton
-              onClick={async () => await entry_lightweight_mode()}
-              size="small"
-              color="inherit"
-            >
-              <HistoryEduOutlined />
-            </IconButton>
+          <Tooltip title={lightweightModeTooltip} arrow>
+            <span>
+              <IconButton
+                onClick={
+                  lightweightModeDisabled
+                    ? undefined
+                    : async () => await entry_lightweight_mode()
+                }
+                size="small"
+                color="inherit"
+                disabled={lightweightModeDisabled}
+              >
+                <HistoryEduOutlined />
+              </IconButton>
+            </span>
           </Tooltip>
           <Tooltip title={t("home.page.tooltips.manual")} arrow>
             <IconButton onClick={toGithubDoc} size="small" color="inherit">

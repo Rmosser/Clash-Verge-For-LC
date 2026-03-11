@@ -4,6 +4,7 @@ import {
   ListItem,
   ListItemText,
   TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import { useLockFn } from "ahooks";
@@ -15,10 +16,15 @@ import { BaseDialog, DialogRef, Switch, TooltipIcon } from "@/components/base";
 import { useVerge } from "@/hooks/use-verge";
 import { entry_lightweight_mode } from "@/services/cmds";
 import { showNotice } from "@/services/notice-service";
+import {
+  getUnsupportedWebFeatureMessage,
+  isLzcWebRuntime,
+} from "@root/browser/runtime";
 
 export function LiteModeViewer({ ref }: { ref?: Ref<DialogRef> }) {
   const { t } = useTranslation();
   const { verge, patchVerge } = useVerge();
+  const lightweightModeDisabled = isLzcWebRuntime();
 
   const [open, setOpen] = useState(false);
   const [values, setValues] = useState({
@@ -65,17 +71,36 @@ export function LiteModeViewer({ ref }: { ref?: Ref<DialogRef> }) {
           <ListItemText
             primary={t("settings.modals.liteMode.actions.enterNow")}
           />
-          <Typography
-            variant="button"
-            sx={{
-              cursor: "pointer",
-              color: "primary.main",
-              "&:hover": { textDecoration: "underline" },
-            }}
-            onClick={async () => await entry_lightweight_mode()}
+          <Tooltip
+            title={
+              lightweightModeDisabled
+                ? getUnsupportedWebFeatureMessage("lightweight-mode")
+                : ""
+            }
+            disableHoverListener={!lightweightModeDisabled}
           >
-            {t("shared.actions.enable")}
-          </Typography>
+            <span>
+              <Typography
+                variant="button"
+                sx={{
+                  cursor: lightweightModeDisabled ? "not-allowed" : "pointer",
+                  color: lightweightModeDisabled
+                    ? "text.disabled"
+                    : "primary.main",
+                  "&:hover": lightweightModeDisabled
+                    ? undefined
+                    : { textDecoration: "underline" },
+                }}
+                onClick={
+                  lightweightModeDisabled
+                    ? undefined
+                    : async () => await entry_lightweight_mode()
+                }
+              >
+                {t("shared.actions.enable")}
+              </Typography>
+            </span>
+          </Tooltip>
         </ListItem>
 
         <ListItem sx={{ padding: "5px 2px" }}>

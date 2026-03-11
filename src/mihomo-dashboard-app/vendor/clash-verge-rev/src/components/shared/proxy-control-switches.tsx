@@ -21,6 +21,10 @@ import { useSystemProxyState } from "@/hooks/use-system-proxy-state";
 import { useSystemState } from "@/hooks/use-system-state";
 import { useVerge } from "@/hooks/use-verge";
 import { showNotice } from "@/services/notice-service";
+import {
+  getUnsupportedWebFeatureMessage,
+  isLzcWebRuntime,
+} from "@root/browser/runtime";
 
 interface ProxySwitchProps {
   label?: string;
@@ -123,6 +127,7 @@ const ProxyControlSwitches = ({
   const tunRef = useRef<DialogRef>(null);
 
   const { enable_tun_mode } = verge ?? {};
+  const webRuntime = isLzcWebRuntime();
 
   const showErrorNotice = useCallback(
     (msg: string) => showNotice.error(msg),
@@ -199,18 +204,27 @@ const ProxyControlSwitches = ({
                     icon={WarningRounded}
                     sx={{ color: "warning.main", ml: 1 }}
                   />
-                  <TooltipIcon
-                    title={t(
-                      "settings.sections.proxyControl.actions.installService",
-                    )}
-                    icon={BuildRounded}
-                    color="primary"
-                    onClick={onInstallService}
-                    sx={{ ml: 1 }}
-                  />
+                  {!webRuntime && (
+                    <TooltipIcon
+                      title={t(
+                        "settings.sections.proxyControl.actions.installService",
+                      )}
+                      icon={BuildRounded}
+                      color="primary"
+                      onClick={onInstallService}
+                      sx={{ ml: 1 }}
+                    />
+                  )}
                 </>
               )}
-              {isServiceOk && (
+              {webRuntime && (
+                <TooltipIcon
+                  title={getUnsupportedWebFeatureMessage("system-service")}
+                  icon={WarningRounded}
+                  sx={{ color: "warning.main", ml: 1 }}
+                />
+              )}
+              {!webRuntime && isServiceOk && (
                 <TooltipIcon
                   title={t(
                     "settings.sections.proxyControl.actions.uninstallService",
