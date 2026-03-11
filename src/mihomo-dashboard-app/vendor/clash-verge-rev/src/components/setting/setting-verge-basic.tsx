@@ -3,6 +3,10 @@ import { Button, Input, MenuItem, Select } from "@mui/material";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import {
+  getWebActionPolicy,
+  isLzcWebRuntime,
+} from "@root/browser/runtime";
 
 import { DialogRef } from "@/components/base";
 import { useVerge } from "@/hooks/use-verge";
@@ -73,6 +77,9 @@ const SettingVergeBasic = ({ onError }: Props) => {
   const layoutRef = useRef<DialogRef>(null);
   const updateRef = useRef<DialogRef>(null);
   const backupRef = useRef<DialogRef>(null);
+  const webRuntime = isLzcWebRuntime();
+  const trayPolicy = getWebActionPolicy("tray");
+  const showTraySettings = !webRuntime || trayPolicy.mode !== "disabled";
 
   const onChangeData = (patch: any) => {
     mutateVerge({ ...verge, ...patch }, false);
@@ -144,7 +151,7 @@ const SettingVergeBasic = ({ onError }: Props) => {
         </GuardState>
       </SettingItem>
 
-      {OS !== "linux" && (
+      {OS !== "linux" && showTraySettings && (
         <SettingItem
           label={t("settings.components.verge.basic.fields.trayClickEvent")}
         >

@@ -8,7 +8,7 @@ import {
   type SxProps,
   type Theme,
 } from "@mui/material";
-import { ReactNode } from "react";
+import { ReactNode, useEffect } from "react";
 
 interface Props {
   title: ReactNode;
@@ -48,6 +48,17 @@ export const BaseDialog: React.FC<Props> = ({
   onCancel,
   onClose,
 }) => {
+  useEffect(() => {
+    if (!open || typeof document === "undefined") {
+      return;
+    }
+
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement) {
+      activeElement.blur();
+    }
+  }, [open]);
+
   return (
     <Dialog
       open={open}

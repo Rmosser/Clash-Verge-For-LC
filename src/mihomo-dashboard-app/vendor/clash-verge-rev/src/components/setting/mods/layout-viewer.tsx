@@ -16,6 +16,10 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { exists } from "@tauri-apps/plugin-fs";
 import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
 import { useTranslation } from "react-i18next";
+import {
+  getWebActionPolicy,
+  isLzcWebRuntime,
+} from "@root/browser/runtime";
 
 import { BaseDialog, DialogRef, Switch, TooltipIcon } from "@/components/base";
 import { DEFAULT_HOVER_DELAY } from "@/components/proxy/proxy-group-navigator";
@@ -55,6 +59,9 @@ const resolveIconPath = async (iconDir: string, name: string) => {
 export const LayoutViewer = forwardRef<DialogRef>((_, ref) => {
   const { t } = useTranslation();
   const { verge, patchVerge, mutateVerge } = useVerge();
+  const webRuntime = isLzcWebRuntime();
+  const trayPolicy = getWebActionPolicy("tray");
+  const showTraySettings = !webRuntime || trayPolicy.mode !== "disabled";
 
   const [open, setOpen] = useState(false);
   const [commonIcon, setCommonIcon] = useState("");
@@ -64,8 +71,15 @@ export const LayoutViewer = forwardRef<DialogRef>((_, ref) => {
   const { decorated, toggleDecorations } = useWindowDecorations();
 
   useEffect(() => {
+    if (!showTraySettings) {
+      setCommonIcon("");
+      setSysproxyIcon("");
+      setTunIcon("");
+      return;
+    }
+
     initIconPath();
-  }, []);
+  }, [showTraySettings]);
 
   async function initIconPath() {
     const appDir = await getAppDir();
@@ -342,7 +356,7 @@ export const LayoutViewer = forwardRef<DialogRef>((_, ref) => {
           </GuardState>
         </Item>
 
-        {OS === "macos" && (
+        {OS === "macos" && showTraySettings && (
           <Item>
             <ListItemText
               primary={t("settings.components.verge.layout.fields.trayIcon")}
@@ -405,215 +419,228 @@ export const LayoutViewer = forwardRef<DialogRef>((_, ref) => {
             </GuardState>
           </Item>
         )} */}
-        <Item>
-          <ListItemText
-            primary={t(
-              "settings.components.verge.layout.fields.proxyGroupsDisplayMode",
-            )}
-          />
-          <GuardState
-            value={verge?.tray_proxy_groups_display_mode ?? "default"}
-            onCatch={onError}
-            onFormat={(e: any) => e.target.value}
-            onChange={(value) =>
-              onChangeData({ tray_proxy_groups_display_mode: value })
-            }
-            onGuard={(value) =>
-              patchVerge({ tray_proxy_groups_display_mode: value })
-            }
-          >
-            <Select size="small" sx={{ width: 140, "> div": { py: "7.5px" } }}>
-              <MenuItem value="default">
-                {t(
-                  "settings.components.verge.layout.options.proxyGroupsDisplayMode.default",
+        {showTraySettings && (
+          <>
+            <Item>
+              <ListItemText
+                primary={t(
+                  "settings.components.verge.layout.fields.proxyGroupsDisplayMode",
                 )}
-              </MenuItem>
-              <MenuItem value="inline">
-                {t(
-                  "settings.components.verge.layout.options.proxyGroupsDisplayMode.inline",
+              />
+              <GuardState
+                value={verge?.tray_proxy_groups_display_mode ?? "default"}
+                onCatch={onError}
+                onFormat={(e: any) => e.target.value}
+                onChange={(value) =>
+                  onChangeData({ tray_proxy_groups_display_mode: value })
+                }
+                onGuard={(value) =>
+                  patchVerge({ tray_proxy_groups_display_mode: value })
+                }
+              >
+                <Select
+                  size="small"
+                  sx={{ width: 140, "> div": { py: "7.5px" } }}
+                >
+                  <MenuItem value="default">
+                    {t(
+                      "settings.components.verge.layout.options.proxyGroupsDisplayMode.default",
+                    )}
+                  </MenuItem>
+                  <MenuItem value="inline">
+                    {t(
+                      "settings.components.verge.layout.options.proxyGroupsDisplayMode.inline",
+                    )}
+                  </MenuItem>
+                  <MenuItem value="disable">
+                    {t(
+                      "settings.components.verge.layout.options.proxyGroupsDisplayMode.disable",
+                    )}
+                  </MenuItem>
+                </Select>
+              </GuardState>
+            </Item>
+            <Item>
+              <ListItemText
+                primary={t(
+                  "settings.components.verge.layout.fields.showOutboundModesInline",
                 )}
-              </MenuItem>
-              <MenuItem value="disable">
-                {t(
-                  "settings.components.verge.layout.options.proxyGroupsDisplayMode.disable",
+              />
+              <GuardState
+                value={verge?.tray_inline_outbound_modes ?? false}
+                valueProps="checked"
+                onCatch={onError}
+                onFormat={onSwitchFormat}
+                onChange={(e) =>
+                  onChangeData({ tray_inline_outbound_modes: e })
+                }
+                onGuard={(e) => patchVerge({ tray_inline_outbound_modes: e })}
+              >
+                <Switch edge="end" />
+              </GuardState>
+            </Item>
+
+            <Item>
+              <ListItemText
+                primary={t(
+                  "settings.components.verge.layout.fields.commonTrayIcon",
                 )}
-              </MenuItem>
-            </Select>
-          </GuardState>
-        </Item>
-        <Item>
-          <ListItemText
-            primary={t(
-              "settings.components.verge.layout.fields.showOutboundModesInline",
-            )}
-          />
-          <GuardState
-            value={verge?.tray_inline_outbound_modes ?? false}
-            valueProps="checked"
-            onCatch={onError}
-            onFormat={onSwitchFormat}
-            onChange={(e) => onChangeData({ tray_inline_outbound_modes: e })}
-            onGuard={(e) => patchVerge({ tray_inline_outbound_modes: e })}
-          >
-            <Switch edge="end" />
-          </GuardState>
-        </Item>
-
-        <Item>
-          <ListItemText
-            primary={t(
-              "settings.components.verge.layout.fields.commonTrayIcon",
-            )}
-          />
-          <GuardState
-            value={verge?.common_tray_icon}
-            onCatch={onError}
-            onChange={(e) => onChangeData({ common_tray_icon: e })}
-            onGuard={(e) => patchVerge({ common_tray_icon: e })}
-          >
-            <Button
-              variant="outlined"
-              size="small"
-              startIcon={
-                verge?.common_tray_icon &&
-                commonIcon && (
-                  <img height="20px" src={convertFileSrc(commonIcon)} />
-                )
-              }
-              onClick={async () => {
-                if (verge?.common_tray_icon) {
-                  onChangeData({ common_tray_icon: false });
-                  patchVerge({ common_tray_icon: false });
-                } else {
-                  const selected = await openDialog({
-                    directory: false,
-                    multiple: false,
-                    filters: [
-                      {
-                        name: "Tray Icon Image",
-                        extensions: ["png", "ico"],
-                      },
-                    ],
-                  });
-
-                  if (selected) {
-                    await copyIconFile(`${selected}`, "common");
-                    await initIconPath();
-                    onChangeData({ common_tray_icon: true });
-                    patchVerge({ common_tray_icon: true });
-                    showNotice.success("图标已应用。", 1000);
+              />
+              <GuardState
+                value={verge?.common_tray_icon}
+                onCatch={onError}
+                onChange={(e) => onChangeData({ common_tray_icon: e })}
+                onGuard={(e) => patchVerge({ common_tray_icon: e })}
+              >
+                <Button
+                  variant="outlined"
+                  size="small"
+                  startIcon={
+                    verge?.common_tray_icon &&
+                    commonIcon && (
+                      <img height="20px" src={convertFileSrc(commonIcon)} />
+                    )
                   }
-                }
-              }}
-            >
-              {verge?.common_tray_icon
-                ? t("shared.actions.clear")
-                : t("settings.components.verge.basic.actions.browse")}
-            </Button>
-          </GuardState>
-        </Item>
+                  onClick={async () => {
+                    if (verge?.common_tray_icon) {
+                      onChangeData({ common_tray_icon: false });
+                      patchVerge({ common_tray_icon: false });
+                    } else {
+                      const selected = await openDialog({
+                        directory: false,
+                        multiple: false,
+                        filters: [
+                          {
+                            name: "Tray Icon Image",
+                            extensions: ["png", "ico"],
+                          },
+                        ],
+                      });
 
-        <Item>
-          <ListItemText
-            primary={t(
-              "settings.components.verge.layout.fields.systemProxyTrayIcon",
-            )}
-          />
-          <GuardState
-            value={verge?.sysproxy_tray_icon}
-            onCatch={onError}
-            onChange={(e) => onChangeData({ sysproxy_tray_icon: e })}
-            onGuard={(e) => patchVerge({ sysproxy_tray_icon: e })}
-          >
-            <Button
-              variant="outlined"
-              size="small"
-              startIcon={
-                verge?.sysproxy_tray_icon &&
-                sysproxyIcon && (
-                  <img height="20px" src={convertFileSrc(sysproxyIcon)} />
-                )
-              }
-              onClick={async () => {
-                if (verge?.sysproxy_tray_icon) {
-                  onChangeData({ sysproxy_tray_icon: false });
-                  patchVerge({ sysproxy_tray_icon: false });
-                } else {
-                  const selected = await openDialog({
-                    directory: false,
-                    multiple: false,
-                    filters: [
-                      {
-                        name: "Tray Icon Image",
-                        extensions: ["png", "ico"],
-                      },
-                    ],
-                  });
-                  if (selected) {
-                    await copyIconFile(`${selected}`, "sysproxy");
-                    await initIconPath();
-                    onChangeData({ sysproxy_tray_icon: true });
-                    patchVerge({ sysproxy_tray_icon: true });
-                    showNotice.success("图标已应用。", 1000);
-                  }
-                }
-              }}
-            >
-              {verge?.sysproxy_tray_icon
-                ? t("shared.actions.clear")
-                : t("settings.components.verge.basic.actions.browse")}
-            </Button>
-          </GuardState>
-        </Item>
+                      if (selected) {
+                        await copyIconFile(`${selected}`, "common");
+                        await initIconPath();
+                        onChangeData({ common_tray_icon: true });
+                        patchVerge({ common_tray_icon: true });
+                        showNotice.success("图标已应用。", 1000);
+                      }
+                    }
+                  }}
+                >
+                  {verge?.common_tray_icon
+                    ? t("shared.actions.clear")
+                    : t("settings.components.verge.basic.actions.browse")}
+                </Button>
+              </GuardState>
+            </Item>
 
-        <Item>
-          <ListItemText
-            primary={t("settings.components.verge.layout.fields.tunTrayIcon")}
-          />
-          <GuardState
-            value={verge?.tun_tray_icon}
-            onCatch={onError}
-            onChange={(e) => onChangeData({ tun_tray_icon: e })}
-            onGuard={(e) => patchVerge({ tun_tray_icon: e })}
-          >
-            <Button
-              variant="outlined"
-              size="small"
-              startIcon={
-                verge?.tun_tray_icon &&
-                tunIcon && <img height="20px" src={convertFileSrc(tunIcon)} />
-              }
-              onClick={async () => {
-                if (verge?.tun_tray_icon) {
-                  onChangeData({ tun_tray_icon: false });
-                  patchVerge({ tun_tray_icon: false });
-                } else {
-                  const selected = await openDialog({
-                    directory: false,
-                    multiple: false,
-                    filters: [
-                      {
-                        name: "Tun Icon Image",
-                        extensions: ["png", "ico"],
-                      },
-                    ],
-                  });
-                  if (selected) {
-                    await copyIconFile(`${selected}`, "tun");
-                    await initIconPath();
-                    onChangeData({ tun_tray_icon: true });
-                    patchVerge({ tun_tray_icon: true });
-                    showNotice.success("图标已应用。", 1000);
+            <Item>
+              <ListItemText
+                primary={t(
+                  "settings.components.verge.layout.fields.systemProxyTrayIcon",
+                )}
+              />
+              <GuardState
+                value={verge?.sysproxy_tray_icon}
+                onCatch={onError}
+                onChange={(e) => onChangeData({ sysproxy_tray_icon: e })}
+                onGuard={(e) => patchVerge({ sysproxy_tray_icon: e })}
+              >
+                <Button
+                  variant="outlined"
+                  size="small"
+                  startIcon={
+                    verge?.sysproxy_tray_icon &&
+                    sysproxyIcon && (
+                      <img height="20px" src={convertFileSrc(sysproxyIcon)} />
+                    )
                   }
-                }
-              }}
-            >
-              {verge?.tun_tray_icon
-                ? t("shared.actions.clear")
-                : t("settings.components.verge.basic.actions.browse")}
-            </Button>
-          </GuardState>
-        </Item>
+                  onClick={async () => {
+                    if (verge?.sysproxy_tray_icon) {
+                      onChangeData({ sysproxy_tray_icon: false });
+                      patchVerge({ sysproxy_tray_icon: false });
+                    } else {
+                      const selected = await openDialog({
+                        directory: false,
+                        multiple: false,
+                        filters: [
+                          {
+                            name: "Tray Icon Image",
+                            extensions: ["png", "ico"],
+                          },
+                        ],
+                      });
+                      if (selected) {
+                        await copyIconFile(`${selected}`, "sysproxy");
+                        await initIconPath();
+                        onChangeData({ sysproxy_tray_icon: true });
+                        patchVerge({ sysproxy_tray_icon: true });
+                        showNotice.success("图标已应用。", 1000);
+                      }
+                    }
+                  }}
+                >
+                  {verge?.sysproxy_tray_icon
+                    ? t("shared.actions.clear")
+                    : t("settings.components.verge.basic.actions.browse")}
+                </Button>
+              </GuardState>
+            </Item>
+
+            <Item>
+              <ListItemText
+                primary={t(
+                  "settings.components.verge.layout.fields.tunTrayIcon",
+                )}
+              />
+              <GuardState
+                value={verge?.tun_tray_icon}
+                onCatch={onError}
+                onChange={(e) => onChangeData({ tun_tray_icon: e })}
+                onGuard={(e) => patchVerge({ tun_tray_icon: e })}
+              >
+                <Button
+                  variant="outlined"
+                  size="small"
+                  startIcon={
+                    verge?.tun_tray_icon &&
+                    tunIcon && (
+                      <img height="20px" src={convertFileSrc(tunIcon)} />
+                    )
+                  }
+                  onClick={async () => {
+                    if (verge?.tun_tray_icon) {
+                      onChangeData({ tun_tray_icon: false });
+                      patchVerge({ tun_tray_icon: false });
+                    } else {
+                      const selected = await openDialog({
+                        directory: false,
+                        multiple: false,
+                        filters: [
+                          {
+                            name: "Tun Icon Image",
+                            extensions: ["png", "ico"],
+                          },
+                        ],
+                      });
+                      if (selected) {
+                        await copyIconFile(`${selected}`, "tun");
+                        await initIconPath();
+                        onChangeData({ tun_tray_icon: true });
+                        patchVerge({ tun_tray_icon: true });
+                        showNotice.success("图标已应用。", 1000);
+                      }
+                    }
+                  }}
+                >
+                  {verge?.tun_tray_icon
+                    ? t("shared.actions.clear")
+                    : t("settings.components.verge.basic.actions.browse")}
+                </Button>
+              </GuardState>
+            </Item>
+          </>
+        )}
       </List>
     </BaseDialog>
   );
