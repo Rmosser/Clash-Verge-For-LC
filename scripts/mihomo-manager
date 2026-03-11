@@ -89,11 +89,29 @@ get_secret_remote() {
   ssh_remote "set -euo pipefail; grep -E '^[[:space:]]*secret:' /etc/mihomo/config.yaml | head -n 1 | sed -E \"s/^[[:space:]]*secret:[[:space:]]*//\" | sed -E \"s/^'(.*)'\\$|^\\\"(.*)\\\"\\$/\\1\\2/\" | tr -d '\r\n'"
 }
 
+get_secret_preferred() {
+  local secret
+
+  if [[ -n "${MIHOMO_SECRET:-}" ]]; then
+    printf '%s' "$MIHOMO_SECRET"
+    return 0
+  fi
+
+  secret="$(get_secret_remote)"
+  if [[ -n "$secret" ]]; then
+    printf '%s' "$secret"
+    return 0
+  fi
+
+  secret="$(get_secret_local)"
+  printf '%s' "$secret"
+}
+
 api_call() {
   local method="$1"
   local path="$2"
   local secret
-  secret="$(get_secret_local)"
+  secret="$(get_secret_preferred)"
 
   ssh_remote SECRET="$secret" CONTROLLER_URL="$CONTROLLER_URL" METHOD="$method" PATH="$path" bash -s <<'REMOTE'
 set -euo pipefail
@@ -161,7 +179,7 @@ case "$cmd" in
     ;;
 
   version)
-    secret="$(get_secret_local)"
+    secret="$(get_secret_preferred)"
     ssh_remote SECRET="$secret" CONTROLLER_URL="$CONTROLLER_URL" bash -s <<'REMOTE'
 set -euo pipefail
 url="${CONTROLLER_URL%/}/version"
@@ -178,10 +196,7 @@ REMOTE
     shift || true
     case "$sub" in
       show)
-        secret="$(get_secret_local)"
-        if [[ -z "$secret" ]]; then
-          secret="$(get_secret_remote)"
-        fi
+        secret="$(get_secret_preferred)"
         if [[ -z "$secret" ]]; then
           echo "ERROR: secret not found (set MIHOMO_SECRET or create $SECRET_LOCAL_FILE)" >&2
           exit 1

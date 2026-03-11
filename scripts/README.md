@@ -19,7 +19,8 @@ Operational scripts.
   - Builds the LazyCat dashboard LPK and installs it via `lzc-cli`.
   - `--clean-reset` removes legacy dashboard pkgm residues, purges the current app's LazyCat deploy mapping, and resets `/var/lib/mihomo/verge/` before reinstall.
   - Verifies that the expected public route is reachable after install, and warns if `LAZYCAT_APP_DOMAIN` drifts from the public ingress domain.
-  - Fetches the latest `metacubexd` release assets by default (can be pinned via env).
+  - Verifies the real runtime chain after install: `/verge-api/healthz`, `/verge-api/public-config`, controller `/version`/`/configs`/`/proxies`, and websocket handshakes for `/traffic` + `/memory`.
+  - Does not embed controller or verge-api secrets into `dist/lzcapp-config.js`; the browser bootstraps them at runtime behind LazyCat login.
 
 - `deploy_all.sh`
   - Runs both deploy steps.
@@ -36,9 +37,10 @@ Operational scripts.
     - `status` / `logs` / `config-test` / `reload` / `restart-core` / `update-geo` / `version` / `secret show`
     - `upgrade-core [version]`: one-click core upgrade (default stable latest)
     - `rollback-core [latest|/var/lib/mihomo/rollback/mihomo.<ts>.bak]`: manual rollback
+  - Prefers the remote controller secret and only falls back to local secret files when needed.
 
 - `selfcheck.sh`
-  - Runs a quick remote health check (status, config test, /version, bypass probes).
+  - Runs a quick remote health check (status, config test, `/version`, `/verge-api/public-config`, bypass probes).
 
 - `audit_proxy_egress.sh`
   - Audits each Socks5 proxy's IPv4/IPv6 egress via Mihomo controller API (/proxies/*/delay).
