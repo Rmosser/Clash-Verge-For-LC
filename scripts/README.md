@@ -17,6 +17,8 @@ Operational scripts.
 
 - `deploy_dashboard.sh`
   - Builds the LazyCat dashboard LPK and installs it via `lzc-cli`.
+  - `--clean-reset` removes legacy dashboard pkgm residues, purges the current app's LazyCat deploy mapping, and resets `/var/lib/mihomo/verge/` before reinstall.
+  - Verifies that the expected public route is reachable after install, and warns if `LAZYCAT_APP_DOMAIN` drifts from the public ingress domain.
   - Fetches the latest `metacubexd` release assets by default (can be pinned via env).
 
 - `deploy_all.sh`
