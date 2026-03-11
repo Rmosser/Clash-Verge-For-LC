@@ -107,9 +107,9 @@
 
 为方便手动切换节点/分组，我们在懒猫微服上安装了一个 Web 控制台应用（LPK）：
 
-- 应用包：`cloud.lazycat.app.mihomo-dashboard`
-- 子域名：`mihomo`
-- 访问入口：`https://mihomo.<boxname>.heiyu.space`（示例：`https://mihomo.rainierserver.heiyu.space`）
+- 应用包：`cloud.lazycat.app.clash-verge-for-lc`
+- 子域名：`clash`
+- 访问入口：`https://clash.<boxname>.heiyu.space`（示例：`https://clash.rainierserver.heiyu.space`）
 - 设计目标：不把 mihomo 控制端口暴露到局域网；通过懒猫登录鉴权后访问（路由 `/api` 反代到 `host.lzcapp:9090`）
 
 ---
@@ -217,7 +217,7 @@ lzc-net-safe-apply apply-dns wlp4s0 223.5.5.5 119.29.29.29
 
 3) 立刻从外部验证懒猫入口仍可访问（至少满足其一即可）：
 
-- `https://mihomo.<boxname>.heiyu.space` 可打开
+- `https://clash.<boxname>.heiyu.space` 可打开
 - 或能确认控制面域名解析与 443 连接正常
 
 4) 5 分钟内确认（取消自动回滚）：

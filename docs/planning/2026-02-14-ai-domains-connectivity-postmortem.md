@@ -131,7 +131,7 @@ export LZC_NET_ROLLBACK_AFTER_SECS=300
 
 ## 最终验收清单（本次通过）
 
-1. 懒猫应用入口可访问：`https://mihomo.<boxname>.heiyu.space` TLS 正常
+1. 懒猫应用入口可访问：`https://clash.<boxname>.heiyu.space` TLS 正常
 2. `PROXY=AUTO` 时，通过 `127.0.0.1:7890` 访问：
    - `https://1.1.1.1` / `https://www.google.com` / `https://cloudflare-dns.com` 握手成功（200/301）
 3. DoH 解析链路正常（通过代理）：Cloudflare/Google DoH 可返回 JSON（至少对常见域名有 Answer）
