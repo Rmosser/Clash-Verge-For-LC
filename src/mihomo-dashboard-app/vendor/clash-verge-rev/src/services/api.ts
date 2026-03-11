@@ -1,4 +1,5 @@
 import { getName, getVersion } from "@tauri-apps/api/app";
+import { invoke } from "@tauri-apps/api/core";
 import { fetch } from "@tauri-apps/plugin-http";
 import { asyncRetry } from "foxts/async-retry";
 import { extractErrorMessage } from "foxts/extract-error-message";
@@ -36,6 +37,10 @@ interface ServiceConfig {
   mapping: (data: any) => IpInfo;
   timeout?: number; // 保留timeout字段（如有需要）
 }
+
+const hasWebPortRuntime = () =>
+  typeof window !== "undefined" &&
+  !!window.__LZCAPP_MIHOMO__?.vergeApiBaseUrl;
 
 // 可用的IP检测服务列表及字段映射
 const IP_CHECK_SERVICES: ServiceConfig[] = [
@@ -141,6 +146,10 @@ const IP_CHECK_SERVICES: ServiceConfig[] = [
 export const getIpInfo = async (): Promise<
   IpInfo & { lastFetchTs: number }
 > => {
+  if (hasWebPortRuntime()) {
+    return invoke<IpInfo & { lastFetchTs: number }>("get_ip_info");
+  }
+
   // 配置参数
   const maxRetries = 2;
   const serviceTimeout = 5000;

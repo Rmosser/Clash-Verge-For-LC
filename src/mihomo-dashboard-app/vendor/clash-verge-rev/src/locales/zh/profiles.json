@@ -28,11 +28,14 @@
     "feedback": {
       "errors": {
         "invalidUrl": "无效的订阅链接，请输入以 http:// 或 https:// 开头的地址",
-        "onlyYaml": "仅支持 YAML 文件"
+        "onlyYaml": "仅支持 YAML 文件",
+        "sameBoxDirectYamlRequired": "同机场景请使用 SubHub 直出 YAML 订阅链接，不要使用需要登录的页面地址"
       },
       "notifications": {
         "importRetry": "订阅导入失败，尝试使用 Clash 代理导入",
         "importFail": "使用 Clash 代理导入订阅失败",
+        "importSameBoxSubHubHint": "检测到同机 SubHub lazycat 订阅链接。该链路不依赖当前浏览器登录态，若微服经 *.heiyu.space 回拉大订阅超时，请改用免登录直链或先下载 YAML 再导入。",
+        "importSameBoxSubHubFail": "同机 SubHub lazycat 订阅导入失败。当前微服经 *.heiyu.space 回拉大订阅容易超时；请改用免登录直链，或先在浏览器下载 YAML 后使用本地文件导入。",
         "importNeedsRefresh": "订阅已导入，但可能需要手动刷新",
         "importSuccess": "订阅已成功导入，如未显示请重启应用",
         "profileSwitched": "订阅已切换",

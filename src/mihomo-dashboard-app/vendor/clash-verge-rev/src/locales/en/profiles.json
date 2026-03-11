@@ -28,11 +28,14 @@
     "feedback": {
       "errors": {
         "invalidUrl": "Invalid profile URL. Please enter a URL starting with http:// or https://",
-        "onlyYaml": "Only YAML Files Supported"
+        "onlyYaml": "Only YAML Files Supported",
+        "sameBoxDirectYamlRequired": "For same-box imports, use the SubHub direct YAML export URL instead of a login-protected app page"
       },
       "notifications": {
         "importRetry": "Import failed, retrying with Clash proxy...",
         "importFail": "Import failed even with Clash proxy",
+        "importSameBoxSubHubHint": "Detected a same-box SubHub lazycat subscription URL. This flow does not reuse your current browser login state. If the box times out while re-fetching large YAML via *.heiyu.space, switch to a direct no-login export URL or download the YAML first.",
+        "importSameBoxSubHubFail": "Same-box SubHub lazycat import failed. Re-fetching large YAML through *.heiyu.space can time out on the microserver. Use a direct no-login export URL or download the YAML locally and import the file.",
         "importNeedsRefresh": "Profile imported but may need manual refresh",
         "importSuccess": "Profile imported successfully, please restart if not visible",
         "profileSwitched": "Profile Switched",
