@@ -26,6 +26,7 @@ services:
       - PORT=3001
       - TIMEOUT_MS=25000
       - MAX_BYTES=12582912
+      - VERGE_API_BASE=http://host.lzcapp:9091
     healthcheck:
       test:
         - CMD-SHELL

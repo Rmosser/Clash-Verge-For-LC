@@ -24,6 +24,7 @@ CONTAINER_PROXY_SOCKET_LOCAL="$ROOT/infra/microserver/mihomo-container-proxy.soc
 CONTAINER_PROXY_SERVICE_LOCAL="$ROOT/infra/microserver/mihomo-container-proxy.service"
 VERGE_API_LOCAL="$ROOT/infra/microserver/mihomo-verge-api.py"
 VERGE_API_UNIT_LOCAL="$ROOT/infra/microserver/mihomo-verge-api.service"
+RUNTIME_CONTRACT_LOCAL="$ROOT/src/mihomo-dashboard-app/runtime-contract.json"
 MMDB_LOCAL="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_COUNTRY_MMDB_LOCAL:-var/private/Country.mmdb}")"
 SECRET_LOCAL_FILE="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_SECRET_FILE_LOCAL:-var/private/mihomo.secret}")"
 VERGE_SECRET_LOCAL_FILE="$(lzc_resolve_path_from_root "$ROOT" "${VERGE_API_SECRET_FILE_LOCAL:-var/private/verge-api.secret}")"
@@ -111,6 +112,7 @@ TMP_CONTAINER_PROXY_SOCKET="/tmp/mihomo-container-proxy.socket.$TS"
 TMP_CONTAINER_PROXY_SERVICE="/tmp/mihomo-container-proxy.service.$TS"
 TMP_VERGE_API="/tmp/mihomo-verge-api.py.$TS"
 TMP_VERGE_API_UNIT="/tmp/mihomo-verge-api.service.$TS"
+TMP_RUNTIME_CONTRACT="/tmp/runtime-contract.json.$TS"
 TMP_VERGE_SECRET="/tmp/verge-api.secret.$TS"
 
 if [[ "$ONLY_CORE" != "1" ]]; then
@@ -242,10 +244,11 @@ if [[ "$ONLY_CORE" != "1" ]]; then
   scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
     "$UNIT_LOCAL" "$SSH_USER@$HOST:$TMP_UNIT" >/dev/null
 
-  if [[ ! -f "$VERGE_API_LOCAL" || ! -f "$VERGE_API_UNIT_LOCAL" ]]; then
+  if [[ ! -f "$VERGE_API_LOCAL" || ! -f "$VERGE_API_UNIT_LOCAL" || ! -f "$RUNTIME_CONTRACT_LOCAL" ]]; then
     echo "ERROR: missing verge api files:" >&2
     echo "  - $VERGE_API_LOCAL" >&2
     echo "  - $VERGE_API_UNIT_LOCAL" >&2
+    echo "  - $RUNTIME_CONTRACT_LOCAL" >&2
     exit 1
   fi
 
@@ -253,6 +256,8 @@ if [[ "$ONLY_CORE" != "1" ]]; then
     "$VERGE_API_LOCAL" "$SSH_USER@$HOST:$TMP_VERGE_API" >/dev/null
   scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
     "$VERGE_API_UNIT_LOCAL" "$SSH_USER@$HOST:$TMP_VERGE_API_UNIT" >/dev/null
+  scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+    "$RUNTIME_CONTRACT_LOCAL" "$SSH_USER@$HOST:$TMP_RUNTIME_CONTRACT" >/dev/null
   printf '%s\n' "$VERGE_API_SECRET_EFFECTIVE" | \
     ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
       "$SSH_USER@$HOST" "cat > '$TMP_VERGE_SECRET'"
@@ -308,6 +313,7 @@ ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
   TMP_CONTAINER_PROXY_SERVICE="$TMP_CONTAINER_PROXY_SERVICE" \
   TMP_VERGE_API="$TMP_VERGE_API" \
   TMP_VERGE_API_UNIT="$TMP_VERGE_API_UNIT" \
+  TMP_RUNTIME_CONTRACT="$TMP_RUNTIME_CONTRACT" \
   TMP_VERGE_SECRET="$TMP_VERGE_SECRET" \
   MIHOMO_URL="$MIHOMO_URL" \
   MIHOMO_TAG="$MIHOMO_TAG" \
@@ -326,6 +332,7 @@ container_proxy_service=/etc/systemd/system/mihomo-container-proxy.service
 verge_api_service=/etc/systemd/system/mihomo-verge-api.service
 verge_api_secret=/etc/mihomo/verge-api.secret
 verge_api_bin=/usr/local/lib/lzc-mihomo/mihomo-verge-api.py
+runtime_contract=/usr/local/lib/lzc-mihomo/runtime-contract.json
 mihomo_bin=/usr/local/bin/mihomo
 rollback_dir=/var/lib/mihomo/rollback
 log_file="$rollback_dir/upgrade-${TS}.log"
@@ -465,8 +472,9 @@ if [[ "$ONLY_CORE" != "1" ]]; then
   install -o root -g root -m 644 "$TMP_UNIT" "$unit"
   install -o root -g root -m 755 "$TMP_VERGE_API" "$verge_api_bin"
   install -o root -g root -m 644 "$TMP_VERGE_API_UNIT" "$verge_api_service"
+  install -o root -g root -m 644 "$TMP_RUNTIME_CONTRACT" "$runtime_contract"
   install -o root -g root -m 600 "$TMP_VERGE_SECRET" "$verge_api_secret"
-  rm -f "$TMP_CFG" "$TMP_UNIT" "$TMP_VERGE_API" "$TMP_VERGE_API_UNIT" "$TMP_VERGE_SECRET"
+  rm -f "$TMP_CFG" "$TMP_UNIT" "$TMP_VERGE_API" "$TMP_VERGE_API_UNIT" "$TMP_RUNTIME_CONTRACT" "$TMP_VERGE_SECRET"
 
   # Optional mmdb
   if [[ -f "/tmp/Country.mmdb.${TS}" ]]; then

@@ -10,6 +10,7 @@ Group=root
 Environment=VERGE_API_BIND=172.18.0.1:9091
 Environment=VERGE_API_SECRET_FILE=/etc/mihomo/verge-api.secret
 Environment=MIHOMO_VERGE_APP_VERSION=2.4.7-webport.0
+Environment=MIHOMO_VERGE_RUNTIME_CONTRACT_PATH=/usr/local/lib/lzc-mihomo/runtime-contract.json
 ExecStart=/usr/bin/env python3 /usr/local/lib/lzc-mihomo/mihomo-verge-api.py
 Restart=always
 RestartSec=2
