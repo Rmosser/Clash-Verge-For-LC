@@ -67,6 +67,40 @@ const debugProfileSwitch = (action: string, profile: string, extra?: any) => {
   debugLog(`[Profile-Debug][${timestamp}] ${action}: ${profile}`, extra || "");
 };
 
+const getLazyCatBoxHost = (hostname: string) => {
+  const parts = String(hostname || "").split(".").filter(Boolean);
+  return parts.length > 2 ? parts.slice(1).join(".") : String(hostname || "");
+};
+
+const inspectImportUrl = (rawUrl: string, currentHost: string) => {
+  const fallback = {
+    isSameBoxSubHubLazycat: false,
+    isSameBoxLazyCatWebPage: false,
+  };
+
+  try {
+    const parsed = new URL(rawUrl);
+    const normalizedPath = parsed.pathname.replace(/\/+$/, "");
+    const isLazyCatDomain =
+      parsed.hostname.endsWith(".heiyu.space") ||
+      parsed.hostname.endsWith(".lazycat.cloud");
+    const sameBox =
+      isLazyCatDomain &&
+      getLazyCatBoxHost(parsed.hostname) === getLazyCatBoxHost(currentHost);
+    const isSubHubYamlExport =
+      /^\/sub\/device\/[^/]+\/clash(?:\/providers\/[^/]+)?\.ya?ml$/i.test(
+        normalizedPath,
+      ) && parsed.searchParams.get("profile") === "lazycat";
+
+    return {
+      isSameBoxSubHubLazycat: sameBox && isSubHubYamlExport,
+      isSameBoxLazyCatWebPage: sameBox && !/\.ya?ml$/i.test(normalizedPath),
+    };
+  } catch {
+    return fallback;
+  }
+};
+
 // 检查请求是否已过期
 const isRequestOutdated = (
   currentSequence: number,
@@ -280,6 +314,11 @@ const ProfilePage = () => {
       showNotice.error("profiles.page.feedback.errors.invalidUrl");
       return;
     }
+    const importUrlMeta = inspectImportUrl(url, window.location.hostname);
+    if (importUrlMeta.isSameBoxLazyCatWebPage) {
+      showNotice.error("profiles.page.feedback.errors.sameBoxDirectYamlRequired");
+      return;
+    }
     setLoading(true);
 
     const handleImportSuccess = async (noticeKey: string) => {
@@ -289,6 +328,9 @@ const ProfilePage = () => {
     };
 
     try {
+      if (importUrlMeta.isSameBoxSubHubLazycat) {
+        showNotice.info("profiles.page.feedback.notifications.importSameBoxSubHubHint");
+      }
       // 尝试正常导入
       await importProfile(url);
       await handleImportSuccess("shared.feedback.notifications.importSuccess");
@@ -308,7 +350,9 @@ const ProfilePage = () => {
       } catch (retryErr) {
         // 回退导入也失败
         showNotice.error(
-          "profiles.page.feedback.notifications.importFail",
+          importUrlMeta.isSameBoxSubHubLazycat
+            ? "profiles.page.feedback.notifications.importSameBoxSubHubFail"
+            : "profiles.page.feedback.notifications.importFail",
           String(retryErr),
         );
       }
