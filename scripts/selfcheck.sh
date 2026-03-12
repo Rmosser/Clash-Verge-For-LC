@@ -89,4 +89,34 @@ echo
 echo "== TUN bypass probes (manual review) =="
 ssh_remote "set -euo pipefail; ip route get 6.6.6.6 || true; ip -6 route get 2000::6666 || true; ip -6 route get fc03:1136:3800::1 || true"
 
+echo "== Protocol probes (use these instead of ping) =="
+ssh_remote CONTROLLER_URL="$CONTROLLER_URL" SECRET="$secret" bash -s <<'REMOTE'
+set -euo pipefail
+
+run_check() {
+  local label="$1"
+  shift
+  echo "-- $label"
+  if "$@"; then
+    echo "OK: $label"
+  else
+    echo "WARN: $label failed"
+  fi
+  echo
+}
+
+run_check "DNS lookup google.com" getent ahostsv4 google.com
+run_check "TCP connect google.com:443" bash -lc 'exec 3<>/dev/tcp/google.com/443'
+run_check "HTTPS via TUN https://www.gstatic.com/generate_204" curl -fsSI --max-time 10 https://www.gstatic.com/generate_204
+run_check "HTTPS via mixed-port https://api.ipify.org" curl -fsS --max-time 15 --proxy http://127.0.0.1:7890 https://api.ipify.org
+run_check "Controller health /version" curl -fsS --max-time 5 -H "Authorization: Bearer ${SECRET}" "${CONTROLLER_URL%/}/version"
+
+cat <<'EOF'
+NOTE:
+  ping/ICMP is intentionally not part of this selfcheck.
+  In the current Mihomo + TUN + upstream SOCKS5 setup, daily traffic validation
+  should rely on DNS/TCP/HTTPS checks rather than ICMP echo replies.
+EOF
+REMOTE
+
 echo "OK: selfcheck finished"
