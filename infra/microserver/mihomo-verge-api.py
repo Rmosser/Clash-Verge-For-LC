@@ -523,24 +523,38 @@ def render_top_level_yaml(data: dict[str, Any]) -> str:
 def top_level_block_range(text: str, key: str) -> tuple[int, int] | None:
     lines = text.splitlines(keepends=True)
     start = None
-    key_prefix = f"{key}:"
+
+    def is_top_level_mapping_key(line: str) -> bool:
+        stripped = line.rstrip("\n")
+        if not stripped or stripped.startswith((" ", "\t", "-")):
+            return False
+        head, sep, _ = stripped.partition(":")
+        return bool(sep and head)
+
     for idx, line in enumerate(lines):
         stripped = line.rstrip("\n")
-        if stripped.startswith(key_prefix) and not stripped.startswith((" ", "\t")):
+        head, sep, _ = stripped.partition(":")
+        if sep and head == key and not line.startswith((" ", "\t")):
             start = idx
             break
     if start is None:
         return None
     end = start + 1
     while end < len(lines):
-        stripped = lines[end].rstrip("\n")
+        line = lines[end]
+        stripped = line.rstrip("\n")
         if not stripped:
             end += 1
             continue
-        if lines[end].startswith((" ", "\t")):
+        if line.startswith((" ", "\t")):
             end += 1
             continue
-        break
+        if stripped.startswith("-"):
+            end += 1
+            continue
+        if is_top_level_mapping_key(line):
+            break
+        end += 1
     offsets = [0]
     for line in lines:
         offsets.append(offsets[-1] + len(line))
@@ -1050,6 +1064,10 @@ def ensure_state() -> None:
             apply_empty_profile_runtime()
             if initialized_empty_state:
                 append_operation_log("repaired empty runtime controller after clean reset")
+            else:
+                append_operation_log(
+                    "reconciled stale mihomo runtime with empty profile state"
+                )
         finally:
             ENSURING_EMPTY_RUNTIME = False
 
@@ -1484,6 +1502,17 @@ def empty_profile_runtime_text() -> str:
     )
 
 
+def empty_runtime_has_stale_profile_payload(runtime_text: str) -> bool:
+    for key in ("proxies", "proxy-providers"):
+        block_range = top_level_block_range(runtime_text, key)
+        if block_range is None:
+            continue
+        block_text = runtime_text[block_range[0] : block_range[1]].strip()
+        if block_text and block_text != f"{key}:":
+            return True
+    return False
+
+
 def empty_runtime_requires_repair() -> bool:
     if not MIHOMO_CONFIG_PATH.exists():
         return True
@@ -1492,6 +1521,9 @@ def empty_runtime_requires_repair() -> bool:
     controller = extract_scalar(runtime_text, "external-controller")
     secret = extract_scalar(runtime_text, "secret")
     if controller != "172.18.0.1:9090" or not secret:
+        return True
+
+    if empty_runtime_has_stale_profile_payload(runtime_text):
         return True
 
     try:
