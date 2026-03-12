@@ -1,0 +1,13 @@
+[Unit]
+Description=Configure resolver to prefer Mihomo DNS on the default route interface
+After=network-online.target mihomo.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/lzc-mihomo/mihomo-resolved-sync.sh apply
+ExecStop=/usr/local/lib/lzc-mihomo/mihomo-resolved-sync.sh revert
+
+[Install]
+WantedBy=multi-user.target

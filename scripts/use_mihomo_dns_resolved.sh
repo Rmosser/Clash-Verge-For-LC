@@ -17,39 +17,45 @@ fi
 HOST="${MICROSERVER_HOST:-rainierserver.heiyu.space}"
 SSH_USER="${MICROSERVER_SSH_USER:-root}"
 SSH_KEY="${MICROSERVER_SSH_KEY:-$HOME/.ssh/id_ed25519}"
-DROPIN_DIR="/etc/systemd/resolved.conf.d"
-DROPIN_FILE="$DROPIN_DIR/90-lzc-mihomo-dns.conf"
+MODE="${1:-enable}"
+
+if [[ "$MODE" != "enable" && "$MODE" != "--disable" ]]; then
+  echo "Usage: $0 [--disable]" >&2
+  exit 1
+fi
 
 ssh_remote() {
   ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$SSH_USER@$HOST" "$@"
 }
 
-echo "Pointing systemd-resolved DNS to mihomo on $SSH_USER@$HOST ..."
+if [[ "$MODE" == "--disable" ]]; then
+  echo "Reverting resolver DNS from mihomo on $SSH_USER@$HOST ..."
+else
+  echo "Pointing resolver DNS to mihomo on $SSH_USER@$HOST ..."
+fi
 
-ssh_remote DROPIN_DIR="$DROPIN_DIR" DROPIN_FILE="$DROPIN_FILE" bash -s <<'REMOTE'
+ssh_remote MODE="$MODE" bash -s <<'REMOTE'
 set -euo pipefail
 
-if ! systemctl list-unit-files --no-pager 2>/dev/null | awk '{print $1}' | grep -qx systemd-resolved.service; then
-  echo "ERROR: systemd-resolved.service not found on this microserver (LazyCat base OS may provide DNS differently)." >&2
-  echo "Hint: edit /etc/resolv.conf to point at 127.0.0.1 and restart the service that owns it." >&2
+if ! command -v resolvectl >/dev/null 2>&1; then
+  echo "ERROR: resolvectl not found on this microserver." >&2
   exit 2
 fi
 
-install -d -o root -g root -m 755 "$DROPIN_DIR"
+iface="$(ip route show default 2>/dev/null | awk '/default/ {print $5; exit}')"
+if [[ -z "$iface" ]]; then
+  echo "ERROR: unable to determine default route interface" >&2
+  exit 3
+fi
 
-cat >"$DROPIN_FILE" <<'CONF'
-[Resolve]
-# Forward all queries to mihomo so the DoH+respect-rules chain resolves AI/Telegram IPs cleanly.
-DNS=127.0.0.1
-# Keep the LazyCat router/link-local DNS as fallbacks so control-plane domains stay direct if mihomo stops.
-FallbackDNS=192.168.1.1 fe80::1
-CONF
+if [[ "$MODE" == "--disable" ]]; then
+  resolvectl revert "$iface"
+else
+  resolvectl dns "$iface" 127.0.0.1:1053 192.168.1.1 fe80::1
+fi
 
-systemctl restart systemd-resolved
-sleep 1
-systemctl is-active systemd-resolved >/dev/null
-
-echo "OK: systemd-resolved restarted"
+resolvectl flush-caches >/dev/null 2>&1 || true
+echo "OK: resolver state updated"
 echo "--- resolvectl status (DNS servers should now include 127.0.0.1)"
 resolvectl status | head -n 20 || true
 REMOTE

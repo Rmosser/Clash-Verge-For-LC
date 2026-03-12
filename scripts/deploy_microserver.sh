@@ -24,12 +24,15 @@ CONTAINER_PROXY_SOCKET_LOCAL="$ROOT/infra/microserver/mihomo-container-proxy.soc
 CONTAINER_PROXY_SERVICE_LOCAL="$ROOT/infra/microserver/mihomo-container-proxy.service"
 VERGE_API_LOCAL="$ROOT/infra/microserver/mihomo-verge-api.py"
 VERGE_API_UNIT_LOCAL="$ROOT/infra/microserver/mihomo-verge-api.service"
+RESOLVED_SYNC_LOCAL="$ROOT/infra/microserver/mihomo-resolved-sync.sh"
+RESOLVED_SYNC_UNIT_LOCAL="$ROOT/infra/microserver/mihomo-resolved-sync.service"
 RUNTIME_CONTRACT_LOCAL="$ROOT/src/mihomo-dashboard-app/runtime-contract.json"
 MMDB_LOCAL="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_COUNTRY_MMDB_LOCAL:-var/private/Country.mmdb}")"
 SECRET_LOCAL_FILE="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_SECRET_FILE_LOCAL:-var/private/mihomo.secret}")"
 VERGE_SECRET_LOCAL_FILE="$(lzc_resolve_path_from_root "$ROOT" "${VERGE_API_SECRET_FILE_LOCAL:-var/private/verge-api.secret}")"
 TUN_ENABLE="${MIHOMO_TUN_ENABLE:-1}" # 1=enabled (default), 0=disabled
 DNS_ENABLE="${MIHOMO_DNS_ENABLE:-1}" # 1=enabled (default), 0=disabled
+RESOLVED_VIA_MIHOMO="${MIHOMO_RESOLVED_VIA_MIHOMO:-1}" # 1=point systemd-resolved to 127.0.0.1:1053 when DNS is enabled
 AUTO_TEST_URL="${MIHOMO_AUTO_TEST_URL-https://api.openai.com/v1/models}"
 DOH_PROXY_RULES_ENABLE="${MIHOMO_DOH_PROXY_RULES_ENABLE:-1}" # 1=enabled (default), 0=disabled
 INSTALL_NET_SAFE_APPLY="${LZC_NET_SAFE_APPLY_INSTALL:-1}" # 1=install (default), 0=skip
@@ -112,6 +115,8 @@ TMP_CONTAINER_PROXY_SOCKET="/tmp/mihomo-container-proxy.socket.$TS"
 TMP_CONTAINER_PROXY_SERVICE="/tmp/mihomo-container-proxy.service.$TS"
 TMP_VERGE_API="/tmp/mihomo-verge-api.py.$TS"
 TMP_VERGE_API_UNIT="/tmp/mihomo-verge-api.service.$TS"
+TMP_RESOLVED_SYNC="/tmp/mihomo-resolved-sync.sh.$TS"
+TMP_RESOLVED_SYNC_UNIT="/tmp/mihomo-resolved-sync.service.$TS"
 TMP_RUNTIME_CONTRACT="/tmp/runtime-contract.json.$TS"
 TMP_VERGE_SECRET="/tmp/verge-api.secret.$TS"
 
@@ -252,10 +257,21 @@ if [[ "$ONLY_CORE" != "1" ]]; then
     exit 1
   fi
 
+  if [[ ! -f "$RESOLVED_SYNC_LOCAL" || ! -f "$RESOLVED_SYNC_UNIT_LOCAL" ]]; then
+    echo "ERROR: missing resolved sync files:" >&2
+    echo "  - $RESOLVED_SYNC_LOCAL" >&2
+    echo "  - $RESOLVED_SYNC_UNIT_LOCAL" >&2
+    exit 1
+  fi
+
   scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
     "$VERGE_API_LOCAL" "$SSH_USER@$HOST:$TMP_VERGE_API" >/dev/null
   scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
     "$VERGE_API_UNIT_LOCAL" "$SSH_USER@$HOST:$TMP_VERGE_API_UNIT" >/dev/null
+  scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+    "$RESOLVED_SYNC_LOCAL" "$SSH_USER@$HOST:$TMP_RESOLVED_SYNC" >/dev/null
+  scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+    "$RESOLVED_SYNC_UNIT_LOCAL" "$SSH_USER@$HOST:$TMP_RESOLVED_SYNC_UNIT" >/dev/null
   scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
     "$RUNTIME_CONTRACT_LOCAL" "$SSH_USER@$HOST:$TMP_RUNTIME_CONTRACT" >/dev/null
   printf '%s\n' "$VERGE_API_SECRET_EFFECTIVE" | \
@@ -313,6 +329,8 @@ ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
   TMP_CONTAINER_PROXY_SERVICE="$TMP_CONTAINER_PROXY_SERVICE" \
   TMP_VERGE_API="$TMP_VERGE_API" \
   TMP_VERGE_API_UNIT="$TMP_VERGE_API_UNIT" \
+  TMP_RESOLVED_SYNC="$TMP_RESOLVED_SYNC" \
+  TMP_RESOLVED_SYNC_UNIT="$TMP_RESOLVED_SYNC_UNIT" \
   TMP_RUNTIME_CONTRACT="$TMP_RUNTIME_CONTRACT" \
   TMP_VERGE_SECRET="$TMP_VERGE_SECRET" \
   MIHOMO_URL="$MIHOMO_URL" \
@@ -322,6 +340,8 @@ ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
   ONLY_CORE="$ONLY_CORE" \
   NO_ROLLBACK="$NO_ROLLBACK" \
   CONTAINER_PROXY_ENABLE="$CONTAINER_PROXY_ENABLE" \
+  DNS_ENABLE="$DNS_ENABLE" \
+  RESOLVED_VIA_MIHOMO="$RESOLVED_VIA_MIHOMO" \
   bash -s <<'REMOTE'
 set -euo pipefail
 
@@ -332,6 +352,8 @@ container_proxy_service=/etc/systemd/system/mihomo-container-proxy.service
 verge_api_service=/etc/systemd/system/mihomo-verge-api.service
 verge_api_secret=/etc/mihomo/verge-api.secret
 verge_api_bin=/usr/local/lib/lzc-mihomo/mihomo-verge-api.py
+resolved_sync_service=/etc/systemd/system/mihomo-resolved-sync.service
+resolved_sync_bin=/usr/local/lib/lzc-mihomo/mihomo-resolved-sync.sh
 runtime_contract=/usr/local/lib/lzc-mihomo/runtime-contract.json
 mihomo_bin=/usr/local/bin/mihomo
 rollback_dir=/var/lib/mihomo/rollback
@@ -358,6 +380,96 @@ chmod 600 "$log_file" || true
 log() {
   local msg="$1"
   printf '[%s] %s\n' "$(date -Iseconds)" "$msg" | tee -a "$log_file" >&2
+}
+
+ensure_systemd_resolved_present() {
+  if ! systemctl list-unit-files --no-pager 2>/dev/null | awk '{print $1}' | grep -qx systemd-resolved.service; then
+    log "ERROR: systemd-resolved.service not found on this microserver."
+    return 1
+  fi
+}
+
+ensure_mihomo_dns_ready() {
+  local ready=0
+  for _ in 1 2 3 4 5; do
+    if ss -lun | grep -q '127.0.0.1:1053'; then
+      ready=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$ready" != "1" ]]; then
+    log "Mihomo DNS 127.0.0.1:1053 is not listening after restart"
+    return 1
+  fi
+}
+
+configure_resolved_via_mihomo() {
+  if ! command -v resolvectl >/dev/null 2>&1; then
+    log "ERROR: resolvectl not found on this microserver."
+    return 1
+  fi
+  systemctl enable --now mihomo-resolved-sync.service >/dev/null
+  systemctl is-active mihomo-resolved-sync.service >/dev/null
+}
+
+disable_resolved_via_mihomo() {
+  if systemctl list-unit-files --no-pager 2>/dev/null | awk '{print $1}' | grep -qx mihomo-resolved-sync.service; then
+    systemctl disable --now mihomo-resolved-sync.service >/dev/null || true
+    log "Disabled mihomo-resolved-sync.service"
+  fi
+}
+
+run_dns_validation() {
+  local txt_via_mihomo
+  local txt_via_stub
+  local a_via_mihomo
+  local aaaa_baidu_via_mihomo
+  local resolved_status
+
+  if ! command -v dig >/dev/null 2>&1; then
+    log "ERROR: dig not found on microserver; cannot run special TXT DNS validation"
+    return 1
+  fi
+  if ! command -v resolvectl >/dev/null 2>&1; then
+    log "ERROR: resolvectl not found on microserver; cannot validate systemd-resolved state"
+    return 1
+  fi
+
+  txt_via_mihomo="$(dig +time=5 +tries=1 TXT _dnsaddr.origin.lazycat.cloud @127.0.0.1 -p 1053 2>&1 || true)"
+  printf '%s\n' "$txt_via_mihomo" | tee -a "$log_file" >/dev/null
+  if ! grep -q 'status: NOERROR' <<<"$txt_via_mihomo"; then
+    log "Special TXT lookup via mihomo DNS failed"
+    return 1
+  fi
+
+  txt_via_stub="$(dig +time=5 +tries=1 TXT _dnsaddr.origin.lazycat.cloud @127.0.0.53 2>&1 || true)"
+  printf '%s\n' "$txt_via_stub" | tee -a "$log_file" >/dev/null
+  if ! grep -q 'status: NOERROR' <<<"$txt_via_stub"; then
+    log "Special TXT lookup via systemd-resolved stub failed"
+    return 1
+  fi
+
+  a_via_mihomo="$(dig +time=5 +tries=1 A origin.lazycat.cloud @127.0.0.1 -p 1053 2>&1 || true)"
+  printf '%s\n' "$a_via_mihomo" | tee -a "$log_file" >/dev/null
+  if ! grep -q 'status: NOERROR' <<<"$a_via_mihomo"; then
+    log "origin.lazycat.cloud A lookup via mihomo DNS failed"
+    return 1
+  fi
+
+  aaaa_baidu_via_mihomo="$(dig +time=5 +tries=1 AAAA www.baidu.com @127.0.0.1 -p 1053 2>&1 || true)"
+  printf '%s\n' "$aaaa_baidu_via_mihomo" | tee -a "$log_file" >/dev/null
+  if ! grep -q 'IN[[:space:]]\+AAAA' <<<"$aaaa_baidu_via_mihomo"; then
+    log "www.baidu.com AAAA lookup via mihomo DNS failed"
+    return 1
+  fi
+
+  resolved_status="$(resolvectl status 2>&1 || true)"
+  printf '%s\n' "$resolved_status" | tee -a "$log_file" >/dev/null
+  if ! grep -q '127.0.0.1:1053' <<<"$resolved_status"; then
+    log "system resolver is not pointing at 127.0.0.1:1053"
+    return 1
+  fi
 }
 
 extract_version() {
@@ -472,9 +584,11 @@ if [[ "$ONLY_CORE" != "1" ]]; then
   install -o root -g root -m 644 "$TMP_UNIT" "$unit"
   install -o root -g root -m 755 "$TMP_VERGE_API" "$verge_api_bin"
   install -o root -g root -m 644 "$TMP_VERGE_API_UNIT" "$verge_api_service"
+  install -o root -g root -m 755 "$TMP_RESOLVED_SYNC" "$resolved_sync_bin"
+  install -o root -g root -m 644 "$TMP_RESOLVED_SYNC_UNIT" "$resolved_sync_service"
   install -o root -g root -m 644 "$TMP_RUNTIME_CONTRACT" "$runtime_contract"
   install -o root -g root -m 600 "$TMP_VERGE_SECRET" "$verge_api_secret"
-  rm -f "$TMP_CFG" "$TMP_UNIT" "$TMP_VERGE_API" "$TMP_VERGE_API_UNIT" "$TMP_RUNTIME_CONTRACT" "$TMP_VERGE_SECRET"
+  rm -f "$TMP_CFG" "$TMP_UNIT" "$TMP_VERGE_API" "$TMP_VERGE_API_UNIT" "$TMP_RESOLVED_SYNC" "$TMP_RESOLVED_SYNC_UNIT" "$TMP_RUNTIME_CONTRACT" "$TMP_VERGE_SECRET"
 
   # Optional mmdb
   if [[ -f "/tmp/Country.mmdb.${TS}" ]]; then
@@ -554,6 +668,14 @@ if [[ -f "$verge_api_service" && -f "$verge_api_secret" ]]; then
     log "Verge API /healthz probe failed after restart"
     false
   fi
+fi
+
+if [[ "$DNS_ENABLE" == "1" && "$RESOLVED_VIA_MIHOMO" == "1" ]]; then
+  ensure_mihomo_dns_ready
+  configure_resolved_via_mihomo
+  run_dns_validation
+else
+  disable_resolved_via_mihomo
 fi
 
 if [[ "$core_attempted" == "1" ]]; then
