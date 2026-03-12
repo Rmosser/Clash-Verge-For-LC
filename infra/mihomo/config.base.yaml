@@ -33,7 +33,9 @@ dns:
     "+.heiyu.space":
       - 192.168.1.1
       - fe80::1
-    "+.lazycat.cloud":
+    # networkdiagnostic uses www.baidu.com for IPv6 reachability probing.
+    # Keep this on router/link-local DNS so AAAA answers remain available.
+    "+.baidu.com":
       - 192.168.1.1
       - fe80::1
 
@@ -75,6 +77,20 @@ tun:
     - fe80::/10
     - ff00::/8
     - fc03:1136:3800::/40
+    # LazyCat networkdiagnostic NAT/STUN peers observed on 2026-03-12.
+    # They must bypass Meta entirely or NAT probing is polluted by TUN/PROXY.
+    - 45.63.83.38/32
+    - 45.32.130.255/32
+    - 95.179.192.146/32
+    - 139.84.241.187/32
+    - 141.11.139.150/32
+    - 110.42.109.179/32
+    - 183.136.206.164/32
+    - 114.66.59.177/32
+    - 110.42.42.48/32
+    - 139.180.182.231/32
+    - 45.32.239.193/32
+    - 107.172.76.12/32
 
 # ---
 # proxies:
