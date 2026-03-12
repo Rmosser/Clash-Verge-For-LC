@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="100px" height="100px" viewBox="0 0 100 100" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <title>无网络</title>
+    <defs>
+        <filter x="-25.0%" y="0.0%" width="150.0%" height="100.0%" filterUnits="objectBoundingBox" id="filter-1">
+            <feGaussianBlur stdDeviation="4 0" in="SourceGraphic"></feGaussianBlur>
+        </filter>
+        <linearGradient x1="97.0582919%" y1="100%" x2="2.94170807%" y2="0%" id="linearGradient-2">
+            <stop stop-color="#DEE9EA" offset="0%"></stop>
+            <stop stop-color="#ECF2F2" offset="100%"></stop>
+        </linearGradient>
+        <path d="M31.147287,8.53097608 L31.5447685,8.47419405 C34.2381907,8.09923586 37.0322148,7.90864951 39.8967672,7.90864951 C42.6773271,7.90864951 45.3914472,8.08824485 48.0116148,8.44175078 C58.3905049,-1.02279598 63.9285265,-0.21971446 65.381997,0.248616405 L65.4800801,0.281781802 C65.677184,0.351728199 65.7742766,0.407149584 65.7742766,0.407149584 C74.8404986,6.29824214 78.162591,26.1007685 78.9373145,31.7379145 C79.4976141,33.98464 79.7922078,36.378604 79.7922078,38.9119118 C79.7922078,58.6378755 78.961799,82.2483898 39.8967672,82.2483898 C0.797935343,82.2483898 0.0159587069,59.5728519 0.000319174137,40.0999112 L0,38.9119118 C0,36.2965212 0.313993516,33.8296504 0.910076171,31.5178924 C1.29854404,28.3082894 4.25249377,6.51625243 13.6629233,0.390864781 C13.6629233,0.390864781 19.0775852,-2.70525154 31.147287,8.53097608 Z" id="path-3"></path>
+        <filter x="-62.7%" y="-376.0%" width="225.3%" height="852.0%" filterUnits="objectBoundingBox" id="filter-5">
+            <feGaussianBlur stdDeviation="10" in="SourceGraphic"></feGaussianBlur>
+        </filter>
+        <filter x="-94.0%" y="-94.0%" width="288.0%" height="288.0%" filterUnits="objectBoundingBox" id="filter-6">
+            <feGaussianBlur stdDeviation="10" in="SourceGraphic"></feGaussianBlur>
+        </filter>
+        <filter x="-94.0%" y="-94.0%" width="288.0%" height="288.0%" filterUnits="objectBoundingBox" id="filter-7">
+            <feGaussianBlur stdDeviation="10" in="SourceGraphic"></feGaussianBlur>
+        </filter>
+        <linearGradient x1="49.9013396%" y1="0%" x2="49.9013396%" y2="86.8051849%" id="linearGradient-8">
+            <stop stop-color="#FFFFFF" offset="0%"></stop>
+            <stop stop-color="#2EC1CC" offset="100%"></stop>
+        </linearGradient>
+        <path d="M63.8337662,21.3576025 C63.8337662,34.9392235 60.1315373,49.2051948 31.9236292,49.2051948 C4.75191336,49.2051948 0,34.9392235 0,21.3576025 C0,7.76530945 14.2948671,0 31.9236292,0 C49.5388991,0 63.8337662,7.76530945 63.8337662,21.3576025" id="path-9"></path>
+        <filter x="-45.1%" y="-45.1%" width="190.2%" height="190.2%" filterUnits="objectBoundingBox" id="filter-11">
+            <feGaussianBlur stdDeviation="7" in="SourceGraphic"></feGaussianBlur>
+        </filter>
+        <filter x="-39.5%" y="-39.5%" width="179.0%" height="179.0%" filterUnits="objectBoundingBox" id="filter-12">
+            <feGaussianBlur stdDeviation="7" in="SourceGraphic"></feGaussianBlur>
+        </filter>
+        <linearGradient x1="100%" y1="50%" x2="13.4267481%" y2="50.7918363%" id="linearGradient-13">
+            <stop stop-color="#0DC4C4" offset="0%"></stop>
+            <stop stop-color="#11CDCA" stop-opacity="0" offset="100%"></stop>
+        </linearGradient>
+        <linearGradient x1="107.949662%" y1="-19.6784647%" x2="1.16262682%" y2="100%" id="linearGradient-14">
+            <stop stop-color="#FFFFFF" offset="0%"></stop>
+            <stop stop-color="#FFFFFF" stop-opacity="0" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="页面-1" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="网络诊断_检测完成2" transform="translate(-138, -571)">
+            <g id="编组-2备份" transform="translate(16, 449)">
+                <g id="无网络" transform="translate(122, 122)">
+                    <ellipse id="投影" fill="#D5E2E2" opacity="0.601635161" filter="url(#filter-1)" cx="49" cy="92" rx="24" ry="3"></ellipse>
+                    <g id="编组">
+                        <g id="耳机" transform="translate(0, 29.9462)" fill="#2EC1CC">
+                            <path d="M11.2661282,27.956283 L11.4217231,27.9496337 L10.4655464,4.40295317 L10.3099516,4.40960252 C7.44009188,4.52530122 5.20723993,6.94699473 5.32426851,9.81685447 L5.85754643,22.9692701 C5.974575,25.8404597 8.39626851,28.0733116 11.2661282,27.956283" id="Fill-5"></path>
+                            <path d="M87.8928367,27.956283 L87.7385718,27.9496337 L88.6947484,4.40295317 L88.8490134,4.40960252 C91.720203,4.52530122 93.9530549,6.94699473 93.8360264,9.81685447 L93.3014186,22.9692701 C93.18439,25.8404597 90.7640264,28.0733116 87.8928367,27.956283" id="Fill-11"></path>
+                        </g>
+                        <g id="脸部" transform="translate(9.6626, 0)">
+                            <mask id="mask-4" fill="white">
+                                <use xlink:href="#path-3"></use>
+                            </mask>
+                            <use id="蒙版" fill="url(#linearGradient-2)" xlink:href="#path-3"></use>
+                            <rect id="矩形" fill="#4DDAD9" filter="url(#filter-5)" mask="url(#mask-4)" x="15.6049621" y="79.7929176" width="47.8753247" height="7.97922078" rx="3.5"></rect>
+                            <rect id="矩形" fill="#FFFFFF" filter="url(#filter-6)" mask="url(#mask-4)" x="-5.31948052" y="-1.32979707" width="31.9168831" height="31.9168831" rx="12"></rect>
+                            <rect id="矩形备份-4" fill="#FFFFFF" filter="url(#filter-7)" mask="url(#mask-4)" x="52.6805195" y="-1.32979707" width="31.9168831" height="31.9168831" rx="12"></rect>
+                        </g>
+                        <path d="M15.1990857,44.9533789 C15.1990857,60.1138983 20.3270649,76.0257944 49.6586805,76.0257944 L49.6586805,76.0257944 C80.1166961,76.0257944 84.1196052,60.1138983 84.1196052,44.9533789 L84.1196052,44.9533789 C84.1196052,29.7941893 68.6917818,21.1260957 49.6586805,21.1260957 L49.6586805,21.1260957 C30.6269091,21.1260957 15.1990857,29.7941893 15.1990857,44.9533789" id="面部厚度" fill="url(#linearGradient-8)" transform="translate(49.6593, 48.5759) scale(1, -1) translate(-49.6593, -48.5759)"></path>
+                        <g id="耳朵" transform="translate(17.5093, 3.8037)" fill="#E1EDED">
+                            <path d="M64.2998857,15.8276257 C64.2998857,15.8276257 61.1773506,0.284103655 56.9510234,0.00882053781 C52.7220364,-0.266462579 46.2987636,5.99323612 46.2987636,5.99323612 C46.2987636,5.99323612 58.0415169,8.62238937 64.2998857,15.8276257" id="Fill-23"></path>
+                            <path d="M0,15.8276257 C0,15.8276257 3.12253506,0.284103655 7.34886234,0.00882053781 C11.5765195,-0.266462579 18.0011221,5.99323612 18.0011221,5.99323612 C18.0011221,5.99323612 6.25836883,8.62238937 0,15.8276257" id="Fill-19"></path>
+                        </g>
+                        <g id="面部" transform="translate(18.1995, 23.6064)">
+                            <mask id="mask-10" fill="white">
+                                <use xlink:href="#path-9" transform="translate(31.9169, 24.6026) scale(1, -1) translate(-31.9169, -24.6026)"></use>
+                            </mask>
+                            <use id="蒙版" fill="#021717" transform="translate(31.9169, 24.6026) scale(1, -1) translate(-31.9169, -24.6026)" xlink:href="#path-9"></use>
+                            <rect id="矩形" fill="#FFFFFF" opacity="0.243675595" filter="url(#filter-11)" mask="url(#mask-10)" x="-6.23070753" y="-10.3070255" width="46.5454545" height="46.5454545" rx="10"></rect>
+                            <rect id="矩形备份-12" fill="#10CDCD" opacity="0.0534551711" filter="url(#filter-12)" mask="url(#mask-10)" x="13.7173444" y="-28.9252073" width="53.1948052" height="53.1948052" rx="10"></rect>
+                            <path d="M59.9386715,10.7319506 C57.375089,32.7485753 47.9523956,44.0949502 31.6705912,44.7710754 C15.3887868,45.4472006 3.64160062,36.3969245 -3.57096727,17.6202473 L-15.3170452,36.0349146 L26.3511106,74.3120248 L67.3696835,36.0349146 L72.5895694,2.66621314 L59.9386715,10.7319506 Z" id="路径-3" fill="url(#linearGradient-13)" opacity="0.0540597098" mask="url(#mask-10)"></path>
+                            <g id="check-small.3" mask="url(#mask-10)" fill="#FFFFFF" fill-rule="nonzero">
+                                <g transform="translate(23.8005, 19.3936)" id="路径">
+                                    <path d="M17.209426,-1.74466182 C18.1729761,-2.73356851 19.7557551,-2.75412409 20.7446618,-1.79057397 C21.7335685,-0.827023855 21.7541241,0.75575512 20.790574,1.74466182 L8.1239073,14.7446618 C7.14261325,15.7517794 5.52405341,15.7517794 4.54275936,14.7446618 L-1.79057397,8.24466182 C-2.75412409,7.25575512 -2.73356851,5.67297614 -1.74466182,4.70942603 C-0.75575512,3.74587591 0.827023855,3.76643149 1.79057397,4.75533818 L6.333,9.417 L17.209426,-1.74466182 Z"></path>
+                                </g>
+                            </g>
+                        </g>
+                    </g>
+                    <path d="M33.4479629,30.5877228 C29.8345727,32.5639098 26.2211825,36.4564203 22.6077922,42.2652543" id="高光" stroke="url(#linearGradient-14)" stroke-width="3" opacity="0.364583333" stroke-linejoin="bevel" stroke-dasharray="3,2"></path>
+                </g>
+            </g>
+        </g>
+    </g>
+</svg>

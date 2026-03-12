@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IPv6 检测说明</title>
+    <style>body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; margin: 0; padding: 24px; line-height: 1.7; color: #202020; }</style>
+  </head>
+  <body>
+    <h1>IPv6 连接异常</h1>
+    <p>该检查会区分两层：</p>
+    <p>一是默认 resolver 是否能获得探测域名的 AAAA 记录；二是获得 AAAA 之后是否能完成实际的 IPv6 TCP 连接。</p>
+    <p>如果你启用了透明代理，请确认没有通过规则主动拒绝公网 IPv6。</p>
+  </body>
+</html>

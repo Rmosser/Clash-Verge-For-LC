@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Origin 检测说明</title>
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; margin: 0; padding: 24px; line-height: 1.7; color: #202020; }
+      h1 { font-size: 28px; margin: 0 0 16px; }
+      h2 { font-size: 18px; margin: 24px 0 8px; }
+      code { background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
+    </style>
+  </head>
+  <body>
+    <h1>访问微服注册服务异常</h1>
+    <p>这个检查被拆成了两层：</p>
+    <h2>1. 默认 resolver 检查</h2>
+    <p>应用会先使用容器默认 DNS 解析 <code>_dnsaddr.origin.lazycat.cloud</code> 的 TXT 记录，判断当前默认解析链路是否能完成注册服务发现。</p>
+    <h2>2. 服务可达性检查</h2>
+    <p>如果默认 resolver 失败，应用会继续验证 <code>origin.lazycat.cloud:443</code> 是否仍然可以到达。若服务真实可达，则不会继续给出红项。</p>
+    <h2>建议</h2>
+    <p>若该项持续转红，请优先检查容器默认 DNS 是否能返回 <code>dnsaddr</code> 风格的 TXT 记录，而不是只检查普通 A 记录是否可解析。</p>
+  </body>
+</html>
