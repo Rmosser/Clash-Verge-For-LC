@@ -1,5 +1,5 @@
 import dayjs from "dayjs";
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { mutate } from "swr";
 import { MihomoWebSocket, type LogLevel } from "tauri-plugin-mihomo-api";
 
@@ -10,7 +10,14 @@ import { useMihomoWsSubscription } from "./use-mihomo-ws-subscription";
 
 const MAX_LOG_NUM = 1000;
 const FLUSH_DELAY_MS = 50;
+const DEFAULT_REALTIME_DEGRADED_MESSAGE =
+  "实时日志不可用，已降级为历史日志。";
+const DEFAULT_HISTORY_ERROR_MESSAGE = "历史日志加载失败。";
+
 type LogType = ILogItem["type"];
+
+export type LogHistoryStatus = "idle" | "loading" | "ready" | "empty" | "error";
+export type LogRealtimeStatus = "paused" | "connecting" | "ready" | "degraded";
 
 const DEFAULT_LOG_TYPES: LogType[] = ["debug", "info", "warning", "error"];
 const LOG_LEVEL_FILTERS: Record<LogLevel, LogType[]> = {
@@ -38,11 +45,22 @@ const appendLogs = (
   incoming: ILogItem[],
 ): ILogItem[] => clampLogs([...(current ?? []), ...incoming]);
 
+const mergeLogs = (historyLogs: ILogItem[], realtimeLogs: ILogItem[]) =>
+  clampLogs([...historyLogs, ...realtimeLogs]);
+
 export const useLogData = () => {
   const [clashLog] = useClashLog();
   const enableLog = clashLog.enable;
   const logLevel = clashLog.logLevel;
   const allowedTypes = LOG_LEVEL_FILTERS[logLevel] ?? DEFAULT_LOG_TYPES;
+
+  const [historyLogs, setHistoryLogs] = useState<ILogItem[]>([]);
+  const [historyStatus, setHistoryStatus] = useState<LogHistoryStatus>("idle");
+  const [historyMessage, setHistoryMessage] = useState<string>();
+  const [realtimeStatus, setRealtimeStatus] =
+    useState<LogRealtimeStatus>("paused");
+  const [realtimeMessage, setRealtimeMessage] = useState<string>();
+  const [historyRefreshToken, setHistoryRefreshToken] = useState(0);
 
   const { response, refresh, subscriptionCacheKey } = useMihomoWsSubscription<
     ILogItem[]
@@ -51,7 +69,19 @@ export const useLogData = () => {
     buildSubscriptKey: (date) => (enableLog ? `getClashLog-${date}` : null),
     fallbackData: [],
     keepPreviousData: true,
-    connect: () => MihomoWebSocket.connect_logs(logLevel),
+    connect: async () => {
+      setRealtimeStatus("connecting");
+      try {
+        const socket = await MihomoWebSocket.connect_logs(logLevel);
+        setRealtimeStatus("ready");
+        setRealtimeMessage(undefined);
+        return socket;
+      } catch (error) {
+        setRealtimeStatus("degraded");
+        setRealtimeMessage(DEFAULT_REALTIME_DEGRADED_MESSAGE);
+        throw error;
+      }
+    },
     setupHandlers: ({ next, scheduleReconnect, isMounted }) => {
       let flushTimer: ReturnType<typeof setTimeout> | null = null;
       const buffer: ILogItem[] = [];
@@ -76,6 +106,8 @@ export const useLogData = () => {
       return {
         handleMessage: (data) => {
           if (data.startsWith("Websocket error")) {
+            setRealtimeStatus("degraded");
+            setRealtimeMessage(DEFAULT_REALTIME_DEGRADED_MESSAGE);
             next(data);
             void scheduleReconnect();
             return;
@@ -98,18 +130,62 @@ export const useLogData = () => {
             next(error);
           }
         },
-        async onConnected() {
-          const logs = await getClashLogs();
-          if (isMounted()) {
-            next(null, clampLogs(filterLogsByLevel(logs, allowedTypes)));
-          }
-        },
         cleanup: clearFlushTimer,
       };
     },
   });
 
   const previousLogLevelRef = useRef<string | undefined>(undefined);
+
+  const filteredHistoryLogs = useMemo(
+    () => clampLogs(filterLogsByLevel(historyLogs, allowedTypes)),
+    [allowedTypes, historyLogs],
+  );
+
+  const filteredRealtimeLogs = useMemo(
+    () => clampLogs(filterLogsByLevel(response.data ?? [], allowedTypes)),
+    [allowedTypes, response.data],
+  );
+
+  const combinedLogs = useMemo(
+    () => mergeLogs(filteredHistoryLogs, filteredRealtimeLogs),
+    [filteredHistoryLogs, filteredRealtimeLogs],
+  );
+
+  const loadHistoryLogs = useCallback(async () => {
+    setHistoryStatus("loading");
+    setHistoryMessage(undefined);
+
+    try {
+      const logs = await getClashLogs();
+      setHistoryLogs(logs);
+      setHistoryStatus(logs.length > 0 ? "ready" : "empty");
+    } catch (error) {
+      setHistoryLogs([]);
+      setHistoryStatus("error");
+      setHistoryMessage(
+        error instanceof Error && error.message
+          ? error.message
+          : DEFAULT_HISTORY_ERROR_MESSAGE,
+      );
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadHistoryLogs();
+  }, [historyRefreshToken, loadHistoryLogs]);
+
+  useEffect(() => {
+    if (!enableLog) {
+      setRealtimeStatus("paused");
+      setRealtimeMessage(undefined);
+      return;
+    }
+
+    setRealtimeStatus((current) =>
+      current === "ready" ? current : "connecting",
+    );
+  }, [enableLog]);
 
   useEffect(() => {
     if (!logLevel) {
@@ -122,18 +198,40 @@ export const useLogData = () => {
     }
 
     previousLogLevelRef.current = logLevel;
-    refresh();
-  }, [logLevel, refresh]);
+    if (enableLog) {
+      setRealtimeStatus("connecting");
+      refresh();
+    }
+  }, [enableLog, logLevel, refresh]);
 
   const refreshGetClashLog = (clear = false) => {
     if (clear) {
+      setHistoryLogs([]);
+      setHistoryStatus("empty");
+      setHistoryMessage(undefined);
+      setRealtimeMessage(undefined);
       if (subscriptionCacheKey) {
         mutate(subscriptionCacheKey, []);
       }
-    } else {
+      return;
+    }
+
+    setHistoryRefreshToken((current) => current + 1);
+    if (enableLog) {
+      setRealtimeStatus("connecting");
       refresh();
     }
   };
 
-  return { response, refreshGetClashLog };
+  return {
+    response: {
+      ...response,
+      data: combinedLogs,
+    },
+    historyStatus,
+    historyMessage,
+    realtimeStatus,
+    realtimeMessage,
+    refreshGetClashLog,
+  };
 };
