@@ -27,6 +27,7 @@ export type WebCapability =
   | "externalOpen"
   | "clipboard"
   | "download"
+  | "runtimeProfile"
   | "filePicker"
   | "directoryOpen"
   | "devtools"
@@ -36,7 +37,7 @@ export type WebCapability =
   | "tray";
 
 export type WebActionPolicy = {
-  mode: "enabled" | "degraded" | "disabled";
+  mode: "enabled" | "degraded" | "disabled" | "blocked_no_profile";
   reason: string;
   label?: string;
   fallback?: string;
@@ -135,12 +136,30 @@ export const getUnsupportedWebFeatureMessage = (
   }
 };
 
-const WEB_ACTION_POLICIES: Record<WebCapability, WebActionPolicy> =
-  EXPECTED_RUNTIME_INFO.capabilities;
+const isWebActionPolicy = (value: unknown): value is WebActionPolicy =>
+  !!value &&
+  typeof value === "object" &&
+  typeof (value as { mode?: unknown }).mode === "string" &&
+  typeof (value as { reason?: unknown }).reason === "string";
+
+const getCapabilityPolicies = () => {
+  const runtimeInfo = getRuntimeInfo();
+  const runtimeCapabilities = runtimeInfo?.capabilities;
+  if (runtimeCapabilities && typeof runtimeCapabilities === "object") {
+    return runtimeCapabilities as Partial<Record<WebCapability, WebActionPolicy>>;
+  }
+  return {};
+};
 
 export const getWebActionPolicy = (
   capability: WebCapability
-): WebActionPolicy => WEB_ACTION_POLICIES[capability];
+): WebActionPolicy => {
+  const runtimePolicy = getCapabilityPolicies()[capability];
+  if (isWebActionPolicy(runtimePolicy)) {
+    return runtimePolicy;
+  }
+  return EXPECTED_RUNTIME_INFO.capabilities[capability];
+};
 
 export const assessRuntimeContract = (
   actualRuntime: RuntimeInfo | null

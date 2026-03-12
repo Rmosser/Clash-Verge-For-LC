@@ -19,6 +19,7 @@ import { BaseDialog, DialogRef, Switch } from "@/components/base";
 import { useClashInfo } from "@/hooks/use-clash";
 import { useVerge } from "@/hooks/use-verge";
 import { showNotice } from "@/services/notice-service";
+import { getWebActionPolicy } from "@root/browser/runtime";
 
 export function ControllerViewer({ ref }: { ref?: Ref<DialogRef> }) {
   const { t } = useTranslation();
@@ -28,6 +29,7 @@ export function ControllerViewer({ ref }: { ref?: Ref<DialogRef> }) {
 
   const { clashInfo, patchInfo } = useClashInfo();
   const { verge, patchVerge } = useVerge();
+  const runtimeProfilePolicy = getWebActionPolicy("runtimeProfile");
   const [controller, setController] = useState(clashInfo?.server || "");
   const [secret, setSecret] = useState(clashInfo?.secret || "");
   const [enableController, setEnableController] = useState(
@@ -124,6 +126,11 @@ export function ControllerViewer({ ref }: { ref?: Ref<DialogRef> }) {
       onCancel={() => setOpen(false)}
       onOk={onSave}
     >
+      {runtimeProfilePolicy.mode !== "enabled" && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          {runtimeProfilePolicy.reason}
+        </Alert>
+      )}
       <List>
         <ListItem
           sx={{

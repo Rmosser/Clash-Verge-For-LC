@@ -1,5 +1,6 @@
 import { Delete, ExpandLess, ExpandMore } from "@mui/icons-material";
 import {
+  Alert,
   Button,
   Divider,
   List,
@@ -25,6 +26,7 @@ import {
   normalizeHost,
   normalizeListenHost,
 } from "@/utils/network";
+import { getWebActionPolicy } from "@root/browser/runtime";
 
 interface TunnelsViewerRef {
   open: () => void;
@@ -41,6 +43,7 @@ interface TunnelEntry {
 export const TunnelsViewer = forwardRef<TunnelsViewerRef>((_, ref) => {
   const { t } = useTranslation();
   const { clash, mutateClash, patchClash } = useClash();
+  const runtimeProfilePolicy = getWebActionPolicy("runtimeProfile");
 
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -212,6 +215,11 @@ export const TunnelsViewer = forwardRef<TunnelsViewerRef>((_, ref) => {
       }}
       onOk={handleSave}
     >
+      {runtimeProfilePolicy.mode !== "enabled" && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          {runtimeProfilePolicy.reason}
+        </Alert>
+      )}
       <List>
         {draftTunnels.length > 0 && (
           <>

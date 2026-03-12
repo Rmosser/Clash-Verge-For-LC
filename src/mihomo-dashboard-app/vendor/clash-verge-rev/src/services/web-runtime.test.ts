@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   assessRuntimeContract,
@@ -6,6 +6,10 @@ import {
   getExpectedRuntimeInfo,
   getWebActionPolicy,
 } from "../../../../browser/runtime";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("getWebActionPolicy", () => {
   it("marks directory open as degraded with copy-path fallback", () => {
@@ -22,6 +26,37 @@ describe("getWebActionPolicy", () => {
       mode: "disabled",
       reason: "请使用浏览器 DevTools。",
       label: "浏览器 DevTools",
+    });
+  });
+
+  it("prefers runtime capability overrides when the backend reports empty runtime mode", () => {
+    const expected = getExpectedRuntimeInfo();
+    vi.stubGlobal("window", {
+      __LZCAPP_MIHOMO__: {
+        runtimeInfo: {
+          ...expected,
+          capabilities: {
+            ...expected.capabilities,
+            runtimeProfile: {
+              mode: "degraded",
+              reason:
+                "当前没有活动配置文件；运行态修改会写入空配置运行态，需要持久配置时请先新建或选择配置。",
+              label: "空配置运行态",
+            },
+          },
+        },
+      },
+    } as typeof globalThis & {
+      __LZCAPP_MIHOMO__?: {
+        runtimeInfo?: typeof expected;
+      };
+    });
+
+    expect(getWebActionPolicy("runtimeProfile")).toEqual({
+      mode: "degraded",
+      reason:
+        "当前没有活动配置文件；运行态修改会写入空配置运行态，需要持久配置时请先新建或选择配置。",
+      label: "空配置运行态",
     });
   });
 });

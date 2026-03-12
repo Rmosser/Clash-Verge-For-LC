@@ -19,6 +19,11 @@
       "mode": "enabled",
       "reason": "LazyCat Web 版会通过浏览器下载文件。"
     },
+    "runtimeProfile": {
+      "mode": "enabled",
+      "reason": "当前运行态已绑定活动配置文件。",
+      "label": "活动配置"
+    },
     "filePicker": {
       "mode": "degraded",
       "reason": "LazyCat Web 版使用浏览器文件选择器代替桌面文件对话框。",
