@@ -92,6 +92,18 @@ DEFAULT_ROUTE_EXCLUDES = [
     "fe80::/10",
     "ff00::/8",
     "fc03:1136:3800::/40",
+    "45.63.83.38/32",
+    "45.32.130.255/32",
+    "95.179.192.146/32",
+    "139.84.241.187/32",
+    "141.11.139.150/32",
+    "110.42.109.179/32",
+    "183.136.206.164/32",
+    "114.66.59.177/32",
+    "110.42.42.48/32",
+    "139.180.182.231/32",
+    "45.32.239.193/32",
+    "107.172.76.12/32",
 ]
 
 DEFAULT_TUN_CONFIG = {
@@ -118,9 +130,15 @@ DEFAULT_DNS_CONFIG = {
     ],
     "nameserver-policy": {
         "+.heiyu.space": ["192.168.1.1", "fe80::1"],
-        "+.lazycat.cloud": ["192.168.1.1", "fe80::1"],
+        "+.baidu.com": ["192.168.1.1", "fe80::1"],
     },
 }
+
+LEGACY_DIRECT_DNS_POLICY_KEYS = (
+    "+.lazycat.cloud",
+    "+.lazycat.cloud.lan",
+    "+.heiyu.space.lan",
+)
 
 DEFAULT_DNS_STATE = {
     "dns": DEFAULT_DNS_CONFIG,
@@ -234,6 +252,11 @@ DEFAULT_RUNTIME_CONTRACT = {
         "download": {
             "mode": "enabled",
             "reason": "LazyCat Web 版会通过浏览器下载文件。",
+        },
+        "runtimeProfile": {
+            "mode": "enabled",
+            "reason": "当前运行态已绑定活动配置文件。",
+            "label": "活动配置",
         },
         "filePicker": {
             "mode": "degraded",
@@ -836,9 +859,11 @@ def save_dns_config_state(data: dict[str, Any]) -> None:
 def normalize_dns_config(data: dict[str, Any], enabled: bool) -> dict[str, Any]:
     merged = deep_merge(DEFAULT_DNS_CONFIG, data)
     merged["enable"] = enabled
-    policy = merged.setdefault("nameserver-policy", {})
+    policy = copy.deepcopy(merged.get("nameserver-policy") or {})
+    for key in LEGACY_DIRECT_DNS_POLICY_KEYS:
+        policy.pop(key, None)
     policy["+.heiyu.space"] = ["192.168.1.1", "fe80::1"]
-    policy["+.lazycat.cloud"] = ["192.168.1.1", "fe80::1"]
+    merged["nameserver-policy"] = policy
     return merged
 
 
@@ -1295,6 +1320,21 @@ def runtime_probe_health() -> dict[str, Any]:
 
 def runtime_info_payload() -> dict[str, Any]:
     contract = load_runtime_contract()
+    capabilities = copy.deepcopy(
+        contract.get("capabilities") or DEFAULT_RUNTIME_CONTRACT["capabilities"]
+    )
+    if get_profiles_state().get("current"):
+        capabilities["runtimeProfile"] = {
+            "mode": "enabled",
+            "reason": "当前运行态已绑定活动配置文件。",
+            "label": "活动配置",
+        }
+    else:
+        capabilities["runtimeProfile"] = {
+            "mode": "degraded",
+            "reason": "当前没有活动配置文件；运行态修改会写入空配置运行态，需要持久配置时请先新建或选择配置。",
+            "label": "空配置运行态",
+        }
     return {
         "platform": str(contract.get("platform") or DEFAULT_RUNTIME_CONTRACT["platform"]),
         "appVersion": str(contract.get("appVersion") or APP_VERSION),
@@ -1306,9 +1346,7 @@ def runtime_info_payload() -> dict[str, Any]:
             contract.get("packageFingerprint")
             or DEFAULT_RUNTIME_CONTRACT["packageFingerprint"]
         ),
-        "capabilities": copy.deepcopy(
-            contract.get("capabilities") or DEFAULT_RUNTIME_CONTRACT["capabilities"]
-        ),
+        "capabilities": capabilities,
         "probeHealth": runtime_probe_health(),
     }
 
@@ -1470,6 +1508,33 @@ def current_profile_item() -> dict[str, Any]:
         "当前没有可用的配置文件，已切换为空配置运行态。",
         recoverable=True,
     )
+
+
+def build_runtime_text_for_current_or_empty_state(
+    *,
+    overlay_state: dict[str, Any] | None = None,
+    verge_state: dict[str, Any] | None = None,
+    dns_state: dict[str, Any] | None = None,
+) -> tuple[str, str, dict[str, Any] | None]:
+    profiles = get_profiles_state()
+    current_uid = str(profiles.get("current") or "")
+    if current_uid:
+        item = current_profile_item()
+        text, secret = build_runtime_text(
+            item=item,
+            overlay_state=overlay_state,
+            verge_state=verge_state,
+            dns_state=dns_state,
+        )
+        return text, secret, item
+
+    text, secret = build_runtime_text(
+        base_text=empty_profile_runtime_text(),
+        overlay_state=overlay_state,
+        verge_state=verge_state,
+        dns_state=dns_state,
+    )
+    return text, secret, None
 
 
 def render_proxy_chain_yaml(items: list[str]) -> str:
@@ -1661,6 +1726,14 @@ def apply_current_profile() -> None:
 def apply_empty_profile_runtime() -> None:
     new_text, _ = build_runtime_text(base_text=empty_profile_runtime_text())
     apply_runtime_text(new_text, "applied empty runtime profile")
+
+
+def apply_runtime_for_current_or_empty_state() -> None:
+    new_text, _, item = build_runtime_text_for_current_or_empty_state()
+    if item:
+        apply_runtime_text(new_text, f"applied profile {item['uid']}")
+    else:
+        apply_runtime_text(new_text, "applied empty runtime profile")
 
 
 def fetch_remote_profile(url: str, option: dict[str, Any] | None = None) -> tuple[str, dict[str, int]]:
@@ -1861,7 +1934,7 @@ def restore_backup_archive(source: Path) -> None:
             shutil.copytree(restore_root / "icons", ICONS_DIR, dirs_exist_ok=True)
     finally:
         shutil.rmtree(restore_root, ignore_errors=True)
-    apply_current_profile()
+    apply_runtime_for_current_or_empty_state()
 
 
 def webdav_config() -> tuple[str, str, str]:
@@ -2320,14 +2393,14 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
         if "external-controller" in overlay:
             overlay["external-controller"] = "172.18.0.1:9090"
         save_overlay(overlay)
-        apply_current_profile()
+        apply_runtime_for_current_or_empty_state()
         return {"secret": controller_secret()}
 
     if cmd == "patch_clash_mode":
         overlay = load_overlay()
         overlay["mode"] = args.get("payload") or "rule"
         save_overlay(overlay)
-        apply_current_profile()
+        apply_runtime_for_current_or_empty_state()
         return None
 
     if cmd == "get_clash_logs":
@@ -2350,7 +2423,7 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
         merged = deep_merge(current, payload)
         save_verge_config_state(merged)
         if RUNTIME_RELEVANT_VERGE_KEYS.intersection(payload.keys()):
-            apply_current_profile()
+            apply_runtime_for_current_or_empty_state()
         return merged
 
     if cmd == "save_dns_config":
@@ -2370,7 +2443,7 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
         verge = get_verge_config_state()
         verge["enable_dns_settings"] = bool(args.get("apply"))
         save_verge_config_state(verge)
-        apply_current_profile()
+        apply_runtime_for_current_or_empty_state()
         return None
 
     if cmd == "get_sys_proxy":

@@ -51,7 +51,7 @@ DNS_BLOCK = """dns:
     "+.heiyu.space":
       - 192.168.1.1
       - fe80::1
-    "+.lazycat.cloud":
+    "+.baidu.com":
       - 192.168.1.1
       - fe80::1
 """
@@ -81,12 +81,40 @@ tun:
     - fe80::/10
     - ff00::/8
     - fc03:1136:3800::/40
+    - 45.63.83.38/32
+    - 45.32.130.255/32
+    - 95.179.192.146/32
+    - 139.84.241.187/32
+    - 141.11.139.150/32
+    - 110.42.109.179/32
+    - 183.136.206.164/32
+    - 114.66.59.177/32
+    - 110.42.42.48/32
+    - 139.180.182.231/32
+    - 45.32.239.193/32
+    - 107.172.76.12/32
 """
 
 REQUIRED_TUN_EXCLUDES = [
     "6.6.6.6/32",
     "2000::6666/128",
     "fc03:1136:3800::/40",
+    "45.63.83.38/32",
+    "45.32.130.255/32",
+    "95.179.192.146/32",
+    "139.84.241.187/32",
+    "141.11.139.150/32",
+    "110.42.109.179/32",
+    "183.136.206.164/32",
+    "114.66.59.177/32",
+    "110.42.42.48/32",
+    "139.180.182.231/32",
+    "45.32.239.193/32",
+    "107.172.76.12/32",
+]
+
+PROBLEMATIC_RULE_PATTERNS = [
+    r"IP-CIDR6,::/0,REJECT,no-resolve",
 ]
 
 
@@ -489,6 +517,15 @@ def ensure_auto_url_test(text: str, url: str) -> tuple[str, bool]:
     return "".join(lines), True
 
 
+def strip_problematic_rules(text: str) -> tuple[str, bool]:
+    changed = False
+    for rule in PROBLEMATIC_RULE_PATTERNS:
+        pattern = rf"(?m)^[ \t]*-[ \t]*{rule}[ \t]*(?:#.*)?\n?"
+        text, count = re.subn(pattern, "", text)
+        changed = changed or count > 0
+    return text, changed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--in", dest="in_path", required=True, help="Input config.yaml")
@@ -540,6 +577,8 @@ def main() -> int:
     text = in_path.read_text(encoding="utf-8")
 
     changed = False
+    text, did = strip_problematic_rules(text)
+    changed = changed or did
     if args.set_secret is not None:
         text, did, _ = set_secret(text, args.set_secret, force=True)
         changed = changed or did
