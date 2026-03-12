@@ -1,0 +1,34 @@
+name: Network Diagnostic
+package: cloud.lazycat.networkdiagnostic
+version: 0.0.5
+description: LazyCat network diagnostic compatibility edition with split resolver and service checks.
+author: rinier
+application:
+  subdomain: networkdiagnostic
+  routes:
+    - /api/=http://api:8000
+    - /=file:///lzcapp/pkg/content/dist
+
+services:
+  api:
+    image: registry.lazycat.cloud/node:18-alpine
+    command: node /lzcapp/pkg/content/server.mjs
+    environment:
+      - PORT=8000
+      - ORIGIN_HOST=origin.lazycat.cloud
+      - ORIGIN_DNSADDR_NAME=_dnsaddr.origin.lazycat.cloud
+      - SERVICE_DNS_SERVERS=172.18.0.1:1053,223.5.5.5:53,119.29.29.29:53
+      - LAZYCAT_PUBLIC_DOMAINS=dl.lazycatcloud.com,dl.lazycatmicroserver.com,appstore.api.lazycatmicroserver.com
+      - IPV4_PROBE_HOST=origin.lazycat.cloud
+      - IPV6_PROBE_HOST=www.baidu.com
+      - RELAY_TARGETS=origin.lazycat.cloud:443,dl.lazycatcloud.com:443,dl.lazycatmicroserver.com:443
+      - NAT_PROBE_TARGETS=origin.lazycat.cloud:443,dl.lazycatcloud.com:443,dl.lazycatmicroserver.com:443
+      - TCP_TIMEOUT_MS=2500
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -qO- http://127.0.0.1:8000/healthz >/dev/null 2>&1 || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

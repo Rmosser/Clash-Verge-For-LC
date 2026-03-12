@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DNS 检测说明</title>
+    <style>body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; margin: 0; padding: 24px; line-height: 1.7; color: #202020; }</style>
+  </head>
+  <body>
+    <h1>DNS 检测异常</h1>
+    <p>该检查会同时观察：</p>
+    <ul>
+      <li>默认 resolver 是否能完成当前微服所需的解析</li>
+      <li>必要时备用解析链路是否仍然能把服务连通性保住</li>
+    </ul>
+    <p>如果这里异常，请优先区分是“默认 DNS 链路坏了”，还是“服务本身真的不可达”。</p>
+  </body>
+</html>

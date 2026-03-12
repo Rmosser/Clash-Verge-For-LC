@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NAT 探测说明</title>
+    <style>body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; margin: 0; padding: 24px; line-height: 1.7; color: #202020; }</style>
+  </head>
+  <body>
+    <h1>NAT / 直连探测异常</h1>
+    <p>这项检查更偏向“当前直连探测是否成功”，而不是简单地把结果直接翻译成“运营商一定是 NAT4”。</p>
+    <p>若透明代理或 TUN 会卷入 NAT 探测流量，就可能出现假红。请优先确认探测目标是否真正绕过了代理路径。</p>
+  </body>
+</html>
