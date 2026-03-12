@@ -38,6 +38,7 @@ import { showNotice } from "@/services/notice-service";
 import { useLoadingCache, useSetLoadingCache } from "@/services/states";
 import type { TranslationKey } from "@/types/generated/i18n-keys";
 import { debugLog } from "@/utils/debug";
+import { normalizeEpochToMs } from "@/utils/normalize-epoch";
 import parseTraffic from "@/utils/parse-traffic";
 
 import { ProfileBox } from "./profile-box";
@@ -231,6 +232,7 @@ export const ProfileItem = (props: Props) => {
   const from = parseUrl(itemData.url);
   const description = itemData.desc;
   const expire = parseExpire(extra?.expire);
+  const updatedAtMs = normalizeEpochToMs(updated);
   const progress = Math.min(
     Math.round(((download + upload) * 100) / (total + 0.01)) + 1,
     100,
@@ -247,7 +249,7 @@ export const ProfileItem = (props: Props) => {
 
     const handler = () => {
       const now = Date.now();
-      const lastUpdate = updated * 1000;
+      const lastUpdate = updatedAtMs;
       // 大于一天的不管
       if (now - lastUpdate >= 24 * 36e5) return;
 
@@ -267,7 +269,7 @@ export const ProfileItem = (props: Props) => {
         timer = undefined;
       }
     };
-  }, [forceRefresh, hasUrl, updated]);
+  }, [forceRefresh, hasUrl, updatedAtMs]);
 
   const [fileOpen, setFileOpen] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
@@ -744,7 +746,7 @@ export const ProfileItem = (props: Props) => {
                     title={
                       showNextUpdate
                         ? t("profiles.components.profileItem.tooltips.showLast")
-                        : `${t("shared.labels.updateTime")}: ${parseExpire(updated)}\n${t("profiles.components.profileItem.tooltips.showNext")}`
+                        : `${t("shared.labels.updateTime")}: ${parseUpdatedAt(updated)}\n${t("profiles.components.profileItem.tooltips.showNext")}`
                     }
                     sx={{
                       cursor: "pointer",
@@ -760,8 +762,8 @@ export const ProfileItem = (props: Props) => {
                   >
                     {showNextUpdate
                       ? nextUpdateTime
-                      : updated > 0
-                        ? dayjs(updated * 1000).fromNow()
+                      : updatedAtMs > 0
+                        ? dayjs(updatedAtMs).fromNow()
                         : ""}
                   </Typography>
                 </Box>
@@ -780,7 +782,7 @@ export const ProfileItem = (props: Props) => {
         ) : (
           <Box sx={{ ...boxStyle, fontSize: 12, justifyContent: "flex-end" }}>
             <span title={t("shared.labels.updateTime")}>
-              {parseExpire(updated)}
+              {parseUpdatedAt(updated)}
             </span>
           </Box>
         )}
@@ -925,4 +927,10 @@ function parseUrl(url?: string) {
 function parseExpire(expire?: number) {
   if (!expire) return "-";
   return dayjs(expire * 1000).format("YYYY-MM-DD");
+}
+
+function parseUpdatedAt(updated?: number) {
+  const updatedAtMs = normalizeEpochToMs(updated);
+  if (!updatedAtMs) return "-";
+  return dayjs(updatedAtMs).format("YYYY-MM-DD");
 }

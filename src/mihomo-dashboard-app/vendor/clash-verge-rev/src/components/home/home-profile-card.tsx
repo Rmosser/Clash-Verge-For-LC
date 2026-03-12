@@ -27,6 +27,7 @@ import { useNavigate } from "react-router";
 import { useAppData } from "@/providers/app-data-context";
 import { openWebUrl, updateProfile } from "@/services/cmds";
 import { showNotice } from "@/services/notice-service";
+import { normalizeEpochToMs } from "@/utils/normalize-epoch";
 import parseTraffic from "@/utils/parse-traffic";
 
 import { EnhancedCard } from "./enhanced-card";
@@ -87,6 +88,7 @@ const ProfileDetails = ({
 }) => {
   const { t } = useTranslation();
   const theme = useTheme();
+  const updatedAtMs = normalizeEpochToMs(current.updated);
 
   const usedTraffic = useMemo(() => {
     if (!current.extra) return 0;
@@ -169,7 +171,7 @@ const ProfileDetails = ({
           </Stack>
         )}
 
-        {current.updated && (
+        {updatedAtMs > 0 && (
           <Stack direction="row" alignItems="center" spacing={1}>
             <UpdateOutlined
               fontSize="small"
@@ -188,7 +190,7 @@ const ProfileDetails = ({
             >
               {t("shared.labels.updateTime")}:{" "}
               <Box component="span" fontWeight="medium">
-                {dayjs(current.updated * 1000).format("YYYY-MM-DD HH:mm")}
+                {dayjs(updatedAtMs).format("YYYY-MM-DD HH:mm")}
               </Box>
             </Typography>
           </Stack>
