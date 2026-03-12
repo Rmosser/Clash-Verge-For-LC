@@ -1,5 +1,5 @@
 import { LanRounded, SettingsRounded } from "@mui/icons-material";
-import { MenuItem, Select, TextField, Typography } from "@mui/material";
+import { Alert, MenuItem, Select, TextField, Typography } from "@mui/material";
 import { invoke } from "@tauri-apps/api/core";
 import { useLockFn } from "ahooks";
 import { useRef, useState } from "react";
@@ -13,6 +13,7 @@ import { useVerge } from "@/hooks/use-verge";
 import { invoke_uwp_tool } from "@/services/cmds";
 import { showNotice } from "@/services/notice-service";
 import getSystem from "@/utils/get-system";
+import { getWebActionPolicy } from "@root/browser/runtime";
 
 import { ClashCoreViewer } from "./mods/clash-core-viewer";
 import { ClashPortViewer } from "./mods/clash-port-viewer";
@@ -46,6 +47,7 @@ const SettingClash = ({ onError }: Props) => {
   } = clash ?? {};
 
   const { verge_mixed_port } = verge ?? {};
+  const runtimeProfilePolicy = getWebActionPolicy("runtimeProfile");
 
   // 独立跟踪DNS设置开关状态
   const [dnsSettingsEnabled, setDnsSettingsEnabled] = useState(() => {
@@ -105,6 +107,11 @@ const SettingClash = ({ onError }: Props) => {
       <DnsViewer ref={dnsRef} />
       <HeaderConfiguration ref={corsRef} />
       <TunnelsViewer ref={tunnelRef} />
+      {runtimeProfilePolicy.mode !== "enabled" && (
+        <Alert severity="info" sx={{ mx: 2, mb: 1.5 }}>
+          {runtimeProfilePolicy.reason}
+        </Alert>
+      )}
       <SettingItem
         label={t("settings.sections.clash.form.fields.allowLan")}
         extra={

@@ -22,6 +22,7 @@ import { useSystemState } from "@/hooks/use-system-state";
 import { useVerge } from "@/hooks/use-verge";
 import { showNotice } from "@/services/notice-service";
 import {
+  getWebActionPolicy,
   getUnsupportedWebFeatureMessage,
   isLzcWebRuntime,
 } from "@root/browser/runtime";
@@ -128,6 +129,7 @@ const ProxyControlSwitches = ({
 
   const { enable_tun_mode } = verge ?? {};
   const webRuntime = isLzcWebRuntime();
+  const runtimeProfilePolicy = getWebActionPolicy("runtimeProfile");
 
   const showErrorNotice = useCallback(
     (msg: string) => showNotice.error(msg),
@@ -233,6 +235,13 @@ const ProxyControlSwitches = ({
                   color="secondary"
                   onClick={onUninstallService}
                   sx={{ ml: 1 }}
+                />
+              )}
+              {runtimeProfilePolicy.mode !== "enabled" && (
+                <TooltipIcon
+                  title={runtimeProfilePolicy.reason}
+                  icon={WarningRounded}
+                  sx={{ color: "info.main", ml: 1 }}
                 />
               )}
             </>
