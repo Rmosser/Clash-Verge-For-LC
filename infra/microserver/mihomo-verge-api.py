@@ -253,6 +253,10 @@ DEFAULT_RUNTIME_CONTRACT = {
             "mode": "enabled",
             "reason": "LazyCat Web 版会通过浏览器下载文件。",
         },
+        "systemProxy": {
+            "mode": "disabled",
+            "reason": "LazyCat 微服 Web 版不支持接管宿主机系统代理，请使用虚拟网卡模式（TUN）或显式代理入口。",
+        },
         "runtimeProfile": {
             "mode": "enabled",
             "reason": "当前运行态已绑定活动配置文件。",
@@ -712,6 +716,23 @@ def run_command(args: list[str], check: bool = True) -> subprocess.CompletedProc
     )
 
 
+MIHOMO_JOURNAL_LINE_PATTERN = re.compile(
+    r'^time=".+?"\s+level=(debug|info|warning|warn|error|err)\s+msg=".*"$',
+    re.IGNORECASE,
+)
+
+
+def filter_mihomo_journal_lines(lines: list[str]) -> list[str]:
+    rows: list[str] = []
+    for line in lines:
+        text = str(line or "").strip()
+        if not text:
+            continue
+        if MIHOMO_JOURNAL_LINE_PATTERN.match(text):
+            rows.append(text)
+    return rows
+
+
 def read_os_release() -> dict[str, str]:
     path = Path("/etc/os-release")
     values: dict[str, str] = {}
@@ -882,10 +903,56 @@ def normalize_tun_config(data: dict[str, Any], enabled: bool) -> dict[str, Any]:
 def default_profile_name(url: str | None = None) -> str:
     if url:
         parsed = urllib.parse.urlparse(url)
-        tail = Path(parsed.path).name or parsed.netloc
+        tail = urllib.parse.unquote(Path(parsed.path).name or parsed.netloc)
         if tail:
             return tail
     return f"Profile {dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+
+
+def normalize_profile_name_candidate(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    candidate = urllib.parse.unquote(str(raw).strip().strip('"').strip("'"))
+    candidate = Path(candidate).name.strip()
+    if not candidate:
+        return None
+    if len(candidate) > 128:
+        candidate = candidate[:128].strip()
+    return candidate or None
+
+
+def parse_content_disposition_filename(header_value: str) -> str | None:
+    if not header_value:
+        return None
+    encoded = re.search(r"""filename\*\s*=\s*([^;]+)""", header_value, flags=re.I)
+    if encoded:
+        value = encoded.group(1).strip().strip('"')
+        if "''" in value:
+            _, value = value.split("''", 1)
+        return normalize_profile_name_candidate(value)
+
+    plain = re.search(r"""filename\s*=\s*("?)([^";]+)\1""", header_value, flags=re.I)
+    if plain:
+        return normalize_profile_name_candidate(plain.group(2))
+    return None
+
+
+def resolve_remote_profile_name_hint(
+    url: str,
+    headers: dict[str, str],
+) -> str | None:
+    if headers.get("profile-title"):
+        name = normalize_profile_name_candidate(headers.get("profile-title"))
+        if name:
+            return name
+
+    disposition_name = parse_content_disposition_filename(
+        headers.get("content-disposition", "")
+    )
+    if disposition_name:
+        return disposition_name
+
+    return normalize_profile_name_candidate(default_profile_name(url))
 
 
 def default_profile_option() -> dict[str, Any]:
@@ -895,6 +962,113 @@ def default_profile_option() -> dict[str, Any]:
         "allow_auto_update": True,
         "update_interval": 24,
         "timeout_seconds": 20,
+    }
+
+
+def profile_import_transport(option: dict[str, Any]) -> str:
+    if option.get("self_proxy"):
+        return "self_proxy"
+    if option.get("with_proxy") is False:
+        return "direct"
+    return "system"
+
+
+def looks_like_html_payload(payload: str) -> bool:
+    sample = payload.lstrip().lower()
+    return sample.startswith("<!doctype html") or sample.startswith("<html")
+
+
+def top_level_block_has_content(text: str, key: str) -> bool:
+    block_range = top_level_block_range(text, key)
+    if block_range is None:
+        return False
+
+    block_text = text[block_range[0] : block_range[1]].strip()
+    if not block_text:
+        return False
+
+    inline = re.match(rf"^{re.escape(key)}\s*:\s*(.*)$", block_text)
+    if inline and "\n" not in block_text:
+        value = inline.group(1).strip()
+        return value not in ("", "[]", "{}", "null")
+
+    lines = block_text.splitlines()
+    if len(lines) <= 1:
+        return False
+
+    for line in lines[1:]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        return True
+    return False
+
+
+def validate_remote_profile_payload(
+    payload: str,
+    *,
+    content_type: str,
+    source_url: str,
+) -> dict[str, Any]:
+    normalized = payload.lstrip("\ufeff")
+    lowered_ct = content_type.lower()
+    if "text/html" in lowered_ct or looks_like_html_payload(normalized):
+        raise ApiError(
+            "PROFILE_HTML_LOGIN_PAGE",
+            "订阅链接返回了登录页/HTML 内容，请改用可直接下载 YAML 的订阅链接。",
+            status=HTTPStatus.BAD_REQUEST,
+            layer="profile-import",
+            recoverable=True,
+            warning={"url": source_url, "contentType": content_type},
+        )
+
+    if not normalized.strip():
+        raise ApiError(
+            "PROFILE_CONTENT_INVALID",
+            "订阅内容为空，请检查订阅链接是否有效。",
+            status=HTTPStatus.BAD_REQUEST,
+            layer="profile-import",
+            recoverable=True,
+            warning={"url": source_url, "contentType": content_type},
+        )
+
+    has_proxy_groups = top_level_block_range(normalized, "proxy-groups") is not None
+    has_rules = top_level_block_range(normalized, "rules") is not None
+    has_proxies = top_level_block_has_content(normalized, "proxies")
+    has_proxy_providers = top_level_block_has_content(normalized, "proxy-providers")
+    has_node_source = has_proxies or has_proxy_providers
+
+    if not has_proxy_groups or not has_rules or not has_node_source:
+        missing: list[str] = []
+        if not has_proxy_groups:
+            missing.append("proxy-groups")
+        if not has_rules:
+            missing.append("rules")
+        if not has_node_source:
+            missing.append("proxies/proxy-providers")
+        raise ApiError(
+            "PROFILE_CONTENT_INVALID",
+            f"订阅内容缺少必需段落: {', '.join(missing)}",
+            status=HTTPStatus.BAD_REQUEST,
+            layer="profile-import",
+            recoverable=True,
+            warning={
+                "url": source_url,
+                "contentType": content_type,
+                "summary": {
+                    "hasProxyGroups": has_proxy_groups,
+                    "hasRules": has_rules,
+                    "hasProxies": has_proxies,
+                    "hasProxyProviders": has_proxy_providers,
+                },
+            },
+        )
+
+    return {
+        "hasProxyGroups": has_proxy_groups,
+        "hasRules": has_rules,
+        "hasProxies": has_proxies,
+        "hasProxyProviders": has_proxy_providers,
     }
 
 
@@ -1025,6 +1199,9 @@ def normalize_verge_config_state(raw: Any) -> tuple[dict[str, Any], bool]:
     home_cards, home_cards_changed = normalize_home_cards(normalized.get("home_cards"))
     normalized["home_cards"] = home_cards
     changed = changed or home_cards_changed
+    if normalized.get("enable_system_proxy") is not False:
+        normalized["enable_system_proxy"] = False
+        changed = True
     return normalized, changed
 
 
@@ -1736,9 +1913,12 @@ def apply_runtime_for_current_or_empty_state() -> None:
         apply_runtime_text(new_text, "applied empty runtime profile")
 
 
-def fetch_remote_profile(url: str, option: dict[str, Any] | None = None) -> tuple[str, dict[str, int]]:
+def fetch_remote_profile(
+    url: str, option: dict[str, Any] | None = None
+) -> tuple[str, dict[str, int], dict[str, Any]]:
     option = option or {}
     timeout = int(option.get("timeout_seconds") or 20)
+    transport = profile_import_transport(option)
     handlers: list[Any] = []
     if option.get("self_proxy"):
         verge = get_verge_config_state()
@@ -1757,12 +1937,99 @@ def fetch_remote_profile(url: str, option: dict[str, Any] | None = None) -> tupl
             "User-Agent": str(option.get("user_agent") or "clash-verge-webport/1.0")
         },
     )
-    with opener.open(request, timeout=timeout) as response:
-        payload = response.read().decode("utf-8", errors="replace")
-        info = parse_subscription_userinfo(
-            response.headers.get("subscription-userinfo", "")
+    started = now_ms()
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            payload = response.read().decode("utf-8", errors="replace")
+            info = parse_subscription_userinfo(
+                response.headers.get("subscription-userinfo", "")
+            )
+            headers = {str(k).lower(): str(v) for k, v in response.headers.items()}
+            content_type = headers.get("content-type", "")
+            validation = validate_remote_profile_payload(
+                payload,
+                content_type=content_type,
+                source_url=url,
+            )
+            name_hint = resolve_remote_profile_name_hint(url, headers)
+            elapsed_ms = max(0, now_ms() - started)
+            metadata = {
+                "url": url,
+                "transport": transport,
+                "timeoutSeconds": timeout,
+                "elapsedMs": elapsed_ms,
+                "statusCode": int(response.getcode() or 0),
+                "contentType": content_type,
+                "profileNameHint": name_hint,
+                "validation": validation,
+            }
+            return payload, info, metadata
+    except urllib.error.HTTPError as exc:
+        status_code = int(exc.code or 0)
+        response_body = ""
+        try:
+            response_body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            response_body = ""
+        api_status = (
+            HTTPStatus.BAD_REQUEST
+            if 400 <= status_code < 500
+            else HTTPStatus.BAD_GATEWAY
         )
-    return payload, info
+        raise ApiError(
+            "PROFILE_FETCH_HTTP_ERROR",
+            f"订阅链接返回 HTTP {status_code}",
+            status=api_status,
+            layer="profile-import",
+            recoverable=True,
+            warning={
+                "url": url,
+                "transport": transport,
+                "statusCode": status_code,
+                "bodyPreview": response_body[:200] if response_body else "",
+            },
+        ) from exc
+    except (socket.timeout, TimeoutError) as exc:
+        raise ApiError(
+            "PROFILE_FETCH_TIMEOUT",
+            f"订阅拉取超时（{timeout}s）",
+            status=HTTPStatus.GATEWAY_TIMEOUT,
+            layer="profile-import",
+            recoverable=True,
+            warning={"url": url, "transport": transport},
+        ) from exc
+    except urllib.error.URLError as exc:
+        reason_text = str(exc.reason or "").lower()
+        if isinstance(exc.reason, (socket.timeout, TimeoutError)) or (
+            "timed out" in reason_text
+        ):
+            raise ApiError(
+                "PROFILE_FETCH_TIMEOUT",
+                f"订阅拉取超时（{timeout}s）",
+                status=HTTPStatus.GATEWAY_TIMEOUT,
+                layer="profile-import",
+                recoverable=True,
+                warning={"url": url, "transport": transport},
+            ) from exc
+        raise ApiError(
+            "PROFILE_FETCH_NETWORK_ERROR",
+            f"订阅拉取失败: {exc.reason}",
+            status=HTTPStatus.BAD_GATEWAY,
+            layer="profile-import",
+            recoverable=True,
+            warning={"url": url, "transport": transport},
+        ) from exc
+    except ApiError:
+        raise
+    except Exception as exc:
+        raise ApiError(
+            "PROFILE_FETCH_NETWORK_ERROR",
+            f"订阅拉取失败: {exc}",
+            status=HTTPStatus.BAD_GATEWAY,
+            layer="profile-import",
+            recoverable=True,
+            warning={"url": url, "transport": transport},
+        ) from exc
 
 
 def parse_subscription_userinfo(header_value: str) -> dict[str, int]:
@@ -1780,19 +2047,27 @@ def parse_subscription_userinfo(header_value: str) -> dict[str, int]:
     return values
 
 
-def create_profile_item(item: dict[str, Any], file_data: str | None) -> dict[str, Any]:
+def create_profile_item(
+    item: dict[str, Any], file_data: str | None
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
     ensure_state()
     profiles = get_profiles_state()
     uid = item.get("uid") or uuid.uuid4().hex
     profile_type = item.get("type") or "local"
-    name = item.get("name") or default_profile_name(item.get("url"))
+    name = item.get("name")
     option = deep_merge(default_profile_option(), item.get("option") or {})
     extra = {"upload": 0, "download": 0, "total": 0, "expire": 0}
+    import_meta: dict[str, Any] | None = None
 
     if file_data is None and profile_type == "remote" and item.get("url"):
-        file_data, extra = fetch_remote_profile(str(item["url"]), option)
+        file_data, extra, import_meta = fetch_remote_profile(str(item["url"]), option)
     if file_data is None:
         raise RuntimeError("profile content is required")
+
+    if not name and import_meta:
+        name = import_meta.get("profileNameHint")
+    if not name:
+        name = default_profile_name(item.get("url"))
 
     path = profile_path(uid)
     atomic_write_text(path, file_data)
@@ -1813,7 +2088,7 @@ def create_profile_item(item: dict[str, Any], file_data: str | None) -> dict[str
     if not profiles.get("current"):
         profiles["current"] = uid
     save_profiles_state(profiles)
-    return record
+    return record, import_meta
 
 
 def update_profile_file(uid: str, file_data: str) -> None:
@@ -2241,8 +2516,26 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
     if cmd == "import_profile":
         url = str(args.get("url") or "")
         option = args.get("option") or default_profile_option()
-        create_profile_item({"type": "remote", "url": url, "option": option}, None)
-        return None
+        profiles_before = get_profiles_state()
+        previous_current = str(profiles_before.get("current") or "")
+        record, import_meta = create_profile_item(
+            {"type": "remote", "url": url, "option": option},
+            None,
+        )
+        profiles_after = get_profiles_state()
+        current_uid = str(profiles_after.get("current") or "")
+        activated_current = current_uid == str(record.get("uid") or "")
+        return {
+            "profile": {
+                "uid": str(record.get("uid") or ""),
+                "name": str(record.get("name") or ""),
+                "url": str(record.get("url") or ""),
+            },
+            "activatedCurrent": activated_current,
+            "previousCurrent": previous_current,
+            "fetch": import_meta or {},
+            "validation": (import_meta or {}).get("validation") or {},
+        }
 
     if cmd == "view_profile":
         uid = str(args.get("index") or "")
@@ -2273,7 +2566,9 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
         if not item:
             raise RuntimeError("profile not found")
         if item.get("type") == "remote" and item.get("url"):
-            payload, extra = fetch_remote_profile(str(item["url"]), args.get("option") or item.get("option"))
+            payload, extra, _ = fetch_remote_profile(
+                str(item["url"]), args.get("option") or item.get("option")
+            )
             atomic_write_text(profile_path(uid), payload)
             item["updated"] = now_ms()
             item["extra"] = extra
@@ -2321,10 +2616,21 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
         return True
 
     if cmd == "enhance_profiles":
-        if get_profiles_state().get("current"):
-            apply_current_profile()
-        else:
-            apply_empty_profile_runtime()
+        try:
+            if get_profiles_state().get("current"):
+                apply_current_profile()
+            else:
+                apply_empty_profile_runtime()
+        except ApiError:
+            raise
+        except Exception as exc:
+            raise ApiError(
+                "PROFILE_APPLY_FAILED",
+                f"应用运行时配置失败: {exc}",
+                status=HTTPStatus.BAD_GATEWAY,
+                layer="runtime",
+                recoverable=False,
+            ) from exc
         return None
 
     if cmd == "get_clash_info":
@@ -2405,10 +2711,28 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
 
     if cmd == "get_clash_logs":
         try:
-            result = run_command(["journalctl", "-u", "mihomo", "-n", "300", "--no-pager"])
-            return result.stdout.splitlines()
-        except Exception:
-            return []
+            result = run_command(
+                [
+                    "journalctl",
+                    "-u",
+                    "mihomo",
+                    "-n",
+                    "300",
+                    "--no-pager",
+                    "-o",
+                    "cat",
+                ]
+            )
+            return filter_mihomo_journal_lines(result.stdout.splitlines())
+        except Exception as exc:
+            append_operation_log(f"get_clash_logs failed: {exc}")
+            raise ApiError(
+                "GET_CLASH_LOGS_FAILED",
+                f"读取 Mihomo 日志失败: {exc}",
+                status=HTTPStatus.BAD_GATEWAY,
+                layer="verge-api",
+                recoverable=True,
+            ) from exc
 
     if cmd == "clear_logs":
         atomic_write_text(OPERATIONS_LOG_PATH, "")
@@ -2419,12 +2743,20 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
 
     if cmd == "patch_verge_config":
         current = get_verge_config_state()
-        payload = args.get("payload") or {}
+        payload_raw = args.get("payload") or {}
+        payload = payload_raw if isinstance(payload_raw, dict) else {}
+        if "enable_system_proxy" in payload:
+            if bool(payload.get("enable_system_proxy")):
+                append_operation_log(
+                    "ignored patch_verge_config enable_system_proxy=true in lazycat-web runtime"
+                )
+            payload = copy.deepcopy(payload)
+            payload["enable_system_proxy"] = False
         merged = deep_merge(current, payload)
         save_verge_config_state(merged)
         if RUNTIME_RELEVANT_VERGE_KEYS.intersection(payload.keys()):
             apply_runtime_for_current_or_empty_state()
-        return merged
+        return get_verge_config_state()
 
     if cmd == "save_dns_config":
         save_dns_config_state(args.get("dnsConfig") or {})
