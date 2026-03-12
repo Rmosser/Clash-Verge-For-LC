@@ -79,6 +79,83 @@ function sendText(res, statusCode, text) {
   );
 }
 
+function probeEnvelope(code, message, extra) {
+  return JSON.stringify({
+    ok: false,
+    code,
+    message,
+    durationMs: 0,
+    fromCache: false,
+    ...(extra && typeof extra === "object" ? extra : {})
+  });
+}
+
+function normalizeProbeErrorCode(text, statusCode) {
+  const source = String(text || "").toUpperCase();
+  if (source.includes("ETIMEDOUT") || source.includes("TIMEOUT")) {
+    return "TIMEOUT";
+  }
+  if (
+    source.includes("ECONNREFUSED") ||
+    source.includes("ECONNRESET") ||
+    source.includes("EHOSTUNREACH") ||
+    source.includes("ENETUNREACH")
+  ) {
+    return "PROXY_UNREACHABLE";
+  }
+  if (source.includes("TLS") || source.includes("SSL")) {
+    return "UPSTREAM_TLS";
+  }
+  if (statusCode === 401) {
+    return "UNKNOWN";
+  }
+  return "UNKNOWN";
+}
+
+function sendProbeJson(res, statusCode, code, message, extra) {
+  const body = probeEnvelope(code, message, extra);
+  send(
+    res,
+    statusCode,
+    {
+      "content-type": "application/json; charset=utf-8",
+      "content-length": String(Buffer.byteLength(body))
+    },
+    Buffer.from(body, "utf8")
+  );
+}
+
+function normalizeProbeForwardResponse(forwarded) {
+  const statusCode = forwarded.statusCode || 502;
+  const contentType =
+    forwarded.headers && forwarded.headers["content-type"]
+      ? String(forwarded.headers["content-type"])
+      : "";
+  const bodyText = forwarded.body
+    ? forwarded.body.toString("utf8").trim()
+    : "";
+
+  if (contentType.includes("application/json")) {
+    return {
+      statusCode,
+      headers: {
+        "content-type": contentType || "application/json; charset=utf-8"
+      },
+      body: forwarded.body || Buffer.alloc(0)
+    };
+  }
+
+  const code = normalizeProbeErrorCode(bodyText, statusCode);
+  return {
+    statusCode,
+    headers: { "content-type": "application/json; charset=utf-8" },
+    body: Buffer.from(
+      probeEnvelope(code, bodyText || `probe upstream failed (${statusCode})`),
+      "utf8"
+    )
+  };
+}
+
 function isLoopbackHost(hostname) {
   const host = String(hostname || "").toLowerCase();
   if (!host) return false;
@@ -258,16 +335,12 @@ async function forwardProbe(req, res) {
     }
   });
 
+  const normalized = normalizeProbeForwardResponse(forwarded);
   send(
     res,
-    forwarded.statusCode || 502,
-    {
-      "content-type":
-        forwarded.headers && forwarded.headers["content-type"]
-          ? String(forwarded.headers["content-type"])
-          : "application/json; charset=utf-8"
-    },
-    forwarded.body || Buffer.alloc(0)
+    normalized.statusCode,
+    normalized.headers,
+    normalized.body || Buffer.alloc(0)
   );
 }
 
@@ -338,10 +411,22 @@ const server = http.createServer(async (req, res) => {
     const msg =
       (err && err.code ? String(err.code) + " " : "") +
       String((err && err.message) || err || "error");
+    if ((req.url || "").startsWith("/probe")) {
+      sendProbeJson(res, 502, normalizeProbeErrorCode(msg, 502), msg);
+      return;
+    }
     sendText(res, 502, msg + "\n");
   }
 });
 
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`[fetchproxy] listening on :${PORT}`);
-});
+if (require.main === module) {
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`[fetchproxy] listening on :${PORT}`);
+  });
+}
+
+module.exports = {
+  normalizeProbeErrorCode,
+  normalizeProbeForwardResponse,
+  probeEnvelope
+};
