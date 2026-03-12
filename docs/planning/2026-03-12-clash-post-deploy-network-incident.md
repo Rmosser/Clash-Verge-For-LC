@@ -574,9 +574,9 @@ MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 bash scripts/deploy_microserver.sh
 MIHOMO_TUN_ENABLE=0 bash scripts/deploy_microserver.sh
 ```
 
-## 重置后复盘与最终修复记录
+## 重置后复盘与阶段性修复记录
 
-重置微服后，本次采用了“每一步先备份，再做最小改动”的方式重新联调，并最终把 `networkdiagnostic` 调到了全绿。
+重置微服后，本次采用了“每一步先备份，再做最小改动”的方式重新联调，并阶段性消除了 `networkdiagnostic` 里的 NAT / IPv6 等主要红项。
 
 ### 验证路径
 
@@ -636,7 +636,7 @@ MIHOMO_TUN_ENABLE=0 bash scripts/deploy_microserver.sh
 - 这条红项不能直接下结论为“运营商就是 NAT4 / 对称 NAT”。
 - 更准确地说，是当前诊断流量在 `TUN` 下被污染，导致 NAT 探测失真。
 
-### 本次最终生效的修复
+### 本次阶段性生效的修复
 
 本次最终验证有效、并已准备固化回仓库的修复共有三类：
 
@@ -646,10 +646,170 @@ MIHOMO_TUN_ENABLE=0 bash scripts/deploy_microserver.sh
 
 ### 风险与后续
 
-当前方案已经把故障消除，但 NAT/STUN 探测地址存在轮换可能。
+当前方案已经把 NAT / IPv6 这类主要红项压了下去，但 NAT/STUN 探测地址存在轮换可能，而且后续复测又发现 `ByOrigin` 仍存在单独的 `special TXT DNS` 故障。
 
 因此后续若再次出现 `ByNATType` 单项转红，优先排查：
 
 1. `journalctl -u mihomo` 中新的 `3478/3479/4001/4002` 外连 IP
 2. 这些新 IP 是否已被纳入 `route-exclude-address`
 3. 是否有新的 LazyCat NAT 探测池需要加入默认绕行集合
+
+## 后续定位补充：`ByOrigin` / `special TXT DNS` 仍可复现
+
+在上面的阶段性修复之后，继续通过固定 Chrome profile、页面后端接口和容器内取证复测，确认：
+
+- `ByNATType` 已转绿
+- `ByIPv6Connectivity` 已转绿
+- 页面上最终只剩 `ByOrigin` 相关红项
+- 红项内容固定收敛为：
+  - `Cannot connect to origin server, you may not be able to connect to microserver outside LAN.`
+
+这说明前文“已调到全绿”的判断过于乐观；更准确地说，是：
+
+- NAT / IPv6 已基本修复
+- `origin` 相关的 `special TXT DNS` 仍是剩余未消除问题
+
+### 1. 页面真实剩余故障不是缓存，而是后端仍在返回红项
+
+通过页面内直接请求 `/api/*` 复测，确认：
+
+- `/api/ByNATType` 返回空问题
+- `/api/ByIPv6Connectivity` 返回空问题
+- `/api/ByDNS` 返回空问题
+- `/api/ByLazycatDomains` 返回空问题
+- 只有 `/api/ByOrigin` 持续返回错误
+
+错误内容为：
+
+- `lookup _dnsaddr.origin.lazycat.cloud on 127.0.0.11:53: no such host`
+
+结论：
+
+- 这不是前端页面缓存问题
+- 也不是手机端旧状态同步问题
+- 是 `networkdiagnostic` 后端当前仍在返回红项
+
+### 2. `networkdiagnostic` 的 `ByOrigin` 不是普通 A 记录探测，而是 `dnsaddr/TXT` 解析
+
+从微服安装包元数据和二进制取证可确认：
+
+- `cloud.lazycat.networkdiagnostic` 的 `/api/` 路由是：
+  - `exec://8000,/lzcapp/pkg/content/app`
+- 也就是说，页面 `/api/*` 不是静态假数据，而是由一个本地可执行文件直接返回
+- 进一步对该二进制做字符串分析，能看到：
+  - `hportal/libs/dnsaddr.QueryMultiAddress`
+  - `hportal/libs/networkdiagnostic.ByOrigin`
+  - `_dnsaddr.origin.lazycat.cloud`
+  - `Cannot connect to origin server...`
+
+结论：
+
+- `ByOrigin` 的根因是 `dnsaddr` 风格的特殊 TXT 解析链路
+- 不能用“普通域名 A 记录能解析”来替代判断
+
+### 3. 容器侧实际 resolver 链路是 `127.0.0.11 -> 172.18.0.1`
+
+对 `cloudlazycatnetworkdiagnostic-app-1` 做运行时 inspect 后确认：
+
+- 容器 `HostConfig.Dns` 为：
+  - `172.18.0.1`
+- 但容器内实际 `/etc/resolv.conf` 是：
+  - `nameserver 127.0.0.11`
+  - `search lan`
+  - 注释中 `ExtServers` 指向 `172.18.0.1`
+
+因此应用实际的 DNS 路径是：
+
+1. `networkdiagnostic` 进程先查 `127.0.0.11`
+2. Docker embedded DNS 再转给 `172.18.0.1`
+3. `172.18.0.1` 再走宿主机的 resolver / Mihomo DNS 链路
+
+这也解释了为什么：
+
+- 页面和接口错误里写的是 `127.0.0.11:53`
+- 但更早的宿主机日志里又能看到 `127.0.0.53:53` 相关现象
+
+两者不是矛盾，而是同一条 DNS 链路上的不同层次。
+
+### 4. 宿主机 TXT 解析已被修复，但应用侧 `ByOrigin` 仍然失败
+
+后续专门做过一次宿主机 TXT 修复实验：
+
+- 在宿主机 `mihomo` 的 `dns.nameserver-policy` 里为 `+.lazycat.cloud` 指定公共递归 DNS：
+  - `223.5.5.5`
+  - `119.29.29.29`
+- 这样做以后，宿主机侧：
+  - `resolvectl query --type=TXT _dnsaddr.origin.lazycat.cloud`
+  - 已能返回正确的 `dnsaddr=` TXT 记录
+
+但即使在以下动作都完成之后：
+
+- `systemctl restart mihomo`
+- 重启 `cloudlazycatnetworkdiagnostic-app-1`
+- 刷新页面、重新触发诊断
+
+`/api/ByOrigin` 仍持续返回：
+
+- `lookup _dnsaddr.origin.lazycat.cloud on 127.0.0.11:53: no such host`
+
+结论：
+
+- 宿主机 resolver 已不再是主要瓶颈
+- 剩余问题更像是：
+  - Docker embedded DNS `127.0.0.11`
+  - 与 `dnsaddr/TXT` 查询
+  - 以及当前容器运行时 resolver 路径
+  之间的兼容性问题
+
+### 5. 普通域名解析“看起来正常”并不能证伪 `ByOrigin`
+
+继续取证时出现过一个容易误判的现象：
+
+- 在容器里对 `_dnsaddr.origin.lazycat.cloud` 做普通 `nslookup`，可能会看到：
+  - CNAME 到 `_dnsaddr.origin-cn.lazycat.cloud`
+  - 甚至能拿到一个地址
+
+但这并不能推翻 `ByOrigin` 的报错，因为：
+
+- `nslookup` 看到的更接近普通 A / CNAME 路径
+- `ByOrigin` 实际依赖的是 `dnsaddr/TXT` 解析
+- 这两类查询在当前 resolver 链路下的成功与失败并不等价
+
+因此：
+
+- “普通 lookup 正常”
+- 不能推出
+- “`ByOrigin` 一定也正常”
+
+### 6. 当前更高置信度的最终收敛判断
+
+截至本轮后续定位，最可信的判断是：
+
+1. 宿主机级 NAT / IPv6 红项已经通过 DNS 策略与 `route-exclude-address` 的分离修复基本消除
+2. 剩余未消除的问题集中在：
+   - `cloud.lazycat.networkdiagnostic`
+   - `ByOrigin`
+   - `_dnsaddr.origin.lazycat.cloud`
+   - `127.0.0.11`
+3. 该问题不是：
+   - 页面缓存
+   - 单纯的 A 记录解析失败
+   - NAT/IPv6 旧诊断残留
+4. 该问题更像是：
+   - 诊断应用所在容器经 Docker embedded DNS 做 `dnsaddr/TXT` 查询时仍然失败
+   - 需要应用打包 / 运行时 DNS 行为或平台容器 DNS 侧进一步修正
+
+### 7. 后续建议
+
+后续再处理 `ByOrigin` 时，优先按下面顺序走，不要回到“继续盲目加大宿主机 DNS 覆盖范围”：
+
+1. 先确认容器侧 `127.0.0.11` 对 `dnsaddr/TXT` 查询的真实行为，而不是只看宿主机 `resolvectl`
+2. 继续区分：
+   - 普通 A / CNAME 解析
+   - `dnsaddr/TXT` 解析
+3. 如果宿主机 TXT 已正常，但 `/api/ByOrigin` 仍红：
+   - 优先怀疑 Docker embedded DNS / 容器 resolver 路径
+   - 而不是再次把 NAT / IPv6 / 运营商问题拉回来
+4. 若要彻底修复：
+   - 更可能需要 `networkdiagnostic` 应用打包层或平台容器 DNS 路径调整
+   - 而不是给诊断应用额外塞 `HTTP_PROXY/HTTPS_PROXY`

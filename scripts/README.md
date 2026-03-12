@@ -41,6 +41,8 @@ Operational scripts.
 
 - `selfcheck.sh`
   - Runs a quick remote health check (status, config test, `/version`, `/verge-api/public-config`, bypass probes).
+  - Includes practical traffic probes for DNS/TCP/HTTPS through TUN and the local mixed-port.
+  - Intentionally does not use `ping` as a pass/fail signal, because ICMP echo is not a reliable validation method for the current Mihomo + TUN + upstream SOCKS5 topology.
 
 - `audit_proxy_egress.sh`
   - Audits each Socks5 proxy's IPv4/IPv6 egress via Mihomo controller API (/proxies/*/delay).
