@@ -12,7 +12,23 @@ afterEach(() => {
 });
 
 describe("getWebActionPolicy", () => {
+  it("marks system proxy as disabled with lazycat guidance", () => {
+    vi.stubGlobal("window", {
+      __LZCAPP_MIHOMO__: {},
+    } as unknown as typeof globalThis);
+
+    expect(getWebActionPolicy("systemProxy")).toEqual({
+      mode: "disabled",
+      reason:
+        "LazyCat 微服 Web 版不支持接管宿主机系统代理，请使用虚拟网卡模式（TUN）或显式代理入口。",
+    });
+  });
+
   it("marks directory open as degraded with copy-path fallback", () => {
+    vi.stubGlobal("window", {
+      __LZCAPP_MIHOMO__: {},
+    } as unknown as typeof globalThis);
+
     expect(getWebActionPolicy("directoryOpen")).toEqual({
       mode: "degraded",
       reason: "LazyCat Web 版无法直接打开宿主机目录，将改为复制目录路径。",
@@ -22,10 +38,43 @@ describe("getWebActionPolicy", () => {
   });
 
   it("marks devtools as disabled with browser guidance", () => {
+    vi.stubGlobal("window", {
+      __LZCAPP_MIHOMO__: {},
+    } as unknown as typeof globalThis);
+
     expect(getWebActionPolicy("devtools")).toEqual({
       mode: "disabled",
       reason: "请使用浏览器 DevTools。",
       label: "浏览器 DevTools",
+    });
+  });
+
+  it("prefers runtime capability overrides for system proxy", () => {
+    const expected = getExpectedRuntimeInfo();
+    vi.stubGlobal("window", {
+      __LZCAPP_MIHOMO__: {
+        runtimeInfo: {
+          ...expected,
+          capabilities: {
+            ...expected.capabilities,
+            systemProxy: {
+              mode: "degraded",
+              reason: "runtime override",
+              label: "custom policy",
+            },
+          },
+        },
+      },
+    } as typeof globalThis & {
+      __LZCAPP_MIHOMO__?: {
+        runtimeInfo?: typeof expected;
+      };
+    });
+
+    expect(getWebActionPolicy("systemProxy")).toEqual({
+      mode: "degraded",
+      reason: "runtime override",
+      label: "custom policy",
     });
   });
 

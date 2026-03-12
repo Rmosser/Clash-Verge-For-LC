@@ -119,8 +119,12 @@ const ProxyControlSwitches = ({
   const { verge, mutateVerge, patchVerge } = useVerge();
   const { installServiceAndRestartCore } = useServiceInstaller();
   const { uninstallServiceAndRestartCore } = useServiceUninstaller();
-  const { configState: systemProxyConfigState, toggleSystemProxy } =
-    useSystemProxyState();
+  const {
+    configState: systemProxyConfigState,
+    toggleSystemProxy,
+    systemProxyDisabled,
+    systemProxyDisabledReason,
+  } = useSystemProxyState();
   const { isServiceOk, isTunModeAvailable, mutateSystemState } =
     useSystemState();
 
@@ -130,6 +134,7 @@ const ProxyControlSwitches = ({
   const { enable_tun_mode } = verge ?? {};
   const webRuntime = isLzcWebRuntime();
   const runtimeProfilePolicy = getWebActionPolicy("runtimeProfile");
+  const systemProxyPolicy = getWebActionPolicy("systemProxy");
 
   const showErrorNotice = useCallback(
     (msg: string) => showNotice.error(msg),
@@ -176,12 +181,28 @@ const ProxyControlSwitches = ({
       {isSystemProxyMode && (
         <SwitchRow
           label={t("settings.sections.proxyControl.fields.systemProxy")}
-          active={systemProxyConfigState}
-          infoTitle={t("settings.sections.proxyControl.tooltips.systemProxy")}
-          onInfoClick={() => sysproxyRef.current?.open()}
+          active={systemProxyDisabled ? false : systemProxyConfigState}
+          infoTitle={
+            systemProxyDisabled
+              ? systemProxyDisabledReason
+              : t("settings.sections.proxyControl.tooltips.systemProxy")
+          }
+          onInfoClick={
+            systemProxyDisabled ? undefined : () => sysproxyRef.current?.open()
+          }
           onToggle={(value) => toggleSystemProxy(value)}
           onError={onError}
-          highlight={systemProxyConfigState}
+          disabled={systemProxyDisabled}
+          highlight={systemProxyDisabled ? false : systemProxyConfigState}
+          extraIcons={
+            systemProxyDisabled ? (
+              <TooltipIcon
+                title={systemProxyDisabledReason || systemProxyPolicy.reason}
+                icon={WarningRounded}
+                sx={{ color: "warning.main", ml: 1 }}
+              />
+            ) : null
+          }
         />
       )}
 

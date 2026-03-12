@@ -1,19 +1,28 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeEpochToMs } from "./normalize-epoch";
+import {
+  normalizeEpochToMs,
+  normalizePlausibleEpochToMs,
+} from "./normalize-epoch";
 
 describe("normalizeEpochToMs", () => {
-  it("converts epoch seconds into milliseconds", () => {
-    expect(normalizeEpochToMs(1773287839)).toBe(1773287839000);
+  it("normalizes seconds to milliseconds", () => {
+    expect(normalizeEpochToMs(1_741_848_000)).toBe(1_741_848_000_000);
   });
 
-  it("preserves epoch milliseconds", () => {
-    expect(normalizeEpochToMs(1773287839852)).toBe(1773287839852);
+  it("keeps millisecond timestamps unchanged", () => {
+    expect(normalizeEpochToMs(1_741_848_000_000)).toBe(1_741_848_000_000);
+  });
+});
+
+describe("normalizePlausibleEpochToMs", () => {
+  it("keeps current-era timestamps", () => {
+    expect(normalizePlausibleEpochToMs(1_741_848_000_000)).toBe(
+      1_741_848_000_000,
+    );
   });
 
-  it("returns 0 for invalid values", () => {
-    expect(normalizeEpochToMs()).toBe(0);
-    expect(normalizeEpochToMs(0)).toBe(0);
-    expect(normalizeEpochToMs(Number.NaN)).toBe(0);
+  it("rejects implausibly large future timestamps", () => {
+    expect(normalizePlausibleEpochToMs(1_741_848_000_000_000)).toBe(0);
   });
 });

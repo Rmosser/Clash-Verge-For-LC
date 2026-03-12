@@ -19,6 +19,10 @@
       "mode": "enabled",
       "reason": "LazyCat Web 版会通过浏览器下载文件。"
     },
+    "systemProxy": {
+      "mode": "disabled",
+      "reason": "LazyCat 微服 Web 版不支持接管宿主机系统代理，请使用虚拟网卡模式（TUN）或显式代理入口。"
+    },
     "runtimeProfile": {
       "mode": "enabled",
       "reason": "当前运行态已绑定活动配置文件。",

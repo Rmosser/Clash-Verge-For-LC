@@ -27,6 +27,7 @@ export type WebCapability =
   | "externalOpen"
   | "clipboard"
   | "download"
+  | "systemProxy"
   | "runtimeProfile"
   | "filePicker"
   | "directoryOpen"

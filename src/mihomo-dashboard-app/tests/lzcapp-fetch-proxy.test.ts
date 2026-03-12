@@ -6,6 +6,7 @@ const require = createRequire(import.meta.url);
 const {
   normalizeProbeErrorCode,
   normalizeProbeForwardResponse,
+  pickPassthroughHeaders,
 } = require("../public/lzcapp-fetch-proxy.js") as {
   normalizeProbeErrorCode: (text: string, statusCode: number) => string;
   normalizeProbeForwardResponse: (forwarded: {
@@ -17,6 +18,9 @@ const {
     headers: Record<string, string>;
     body: Buffer;
   };
+  pickPassthroughHeaders: (
+    headers?: Record<string, string | undefined>,
+  ) => Record<string, string>;
 };
 
 describe("lzcapp-fetch-proxy probe normalization", () => {
@@ -39,6 +43,21 @@ describe("lzcapp-fetch-proxy probe normalization", () => {
       ok: false,
       code: "TIMEOUT",
       message: "ETIMEDOUT timeout",
+    });
+  });
+
+  it("keeps subscription diagnostics headers for import parity", () => {
+    const picked = pickPassthroughHeaders({
+      "subscription-userinfo": "upload=1; download=2; total=3; expire=4",
+      "profile-title": "My Profile",
+      "content-disposition": 'attachment; filename="demo.yaml"',
+      server: "nginx",
+    });
+
+    expect(picked).toEqual({
+      "subscription-userinfo": "upload=1; download=2; total=3; expire=4",
+      "profile-title": "My Profile",
+      "content-disposition": 'attachment; filename="demo.yaml"',
     });
   });
 });

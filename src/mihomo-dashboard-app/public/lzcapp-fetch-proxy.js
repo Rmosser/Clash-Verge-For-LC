@@ -79,6 +79,25 @@ function sendText(res, statusCode, text) {
   );
 }
 
+function pickPassthroughHeaders(headers) {
+  const out = {};
+  if (!headers || typeof headers !== "object") return out;
+
+  const keys = [
+    "subscription-userinfo",
+    "profile-title",
+    "x-profile-title",
+    "content-disposition"
+  ];
+
+  for (const key of keys) {
+    const value = headers[key];
+    if (value === undefined || value === null) continue;
+    out[key] = String(value);
+  }
+  return out;
+}
+
 function probeEnvelope(code, message, extra) {
   return JSON.stringify({
     ok: false,
@@ -403,7 +422,8 @@ const server = http.createServer(async (req, res) => {
       out.statusCode || 502,
       {
         "content-type": ct,
-        "content-length": String((out.body && out.body.length) || 0)
+        "content-length": String((out.body && out.body.length) || 0),
+        ...pickPassthroughHeaders(out.headers)
       },
       out.body || Buffer.alloc(0)
     );
@@ -428,5 +448,6 @@ if (require.main === module) {
 module.exports = {
   normalizeProbeErrorCode,
   normalizeProbeForwardResponse,
+  pickPassthroughHeaders,
   probeEnvelope
 };

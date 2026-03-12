@@ -38,7 +38,7 @@ import { showNotice } from "@/services/notice-service";
 import { useLoadingCache, useSetLoadingCache } from "@/services/states";
 import type { TranslationKey } from "@/types/generated/i18n-keys";
 import { debugLog } from "@/utils/debug";
-import { normalizeEpochToMs } from "@/utils/normalize-epoch";
+import { normalizePlausibleEpochToMs } from "@/utils/normalize-epoch";
 import parseTraffic from "@/utils/parse-traffic";
 
 import { ProfileBox } from "./profile-box";
@@ -118,7 +118,15 @@ export const ProfileItem = (props: Props) => {
         debugLog(`获取到下次更新时间结果:`, nextUpdate);
 
         if (nextUpdate) {
-          const nextUpdateDate = dayjs(nextUpdate * 1000);
+          const nextUpdateAtMs = normalizePlausibleEpochToMs(nextUpdate);
+          if (!nextUpdateAtMs) {
+            setNextUpdateTime(
+              t("profiles.components.profileItem.status.unknown"),
+            );
+            return;
+          }
+
+          const nextUpdateDate = dayjs(nextUpdateAtMs);
           const now = dayjs();
 
           // 如果已经过期，显示"更新失败"
@@ -232,7 +240,7 @@ export const ProfileItem = (props: Props) => {
   const from = parseUrl(itemData.url);
   const description = itemData.desc;
   const expire = parseExpire(extra?.expire);
-  const updatedAtMs = normalizeEpochToMs(updated);
+  const updatedAtMs = normalizePlausibleEpochToMs(updated);
   const progress = Math.min(
     Math.round(((download + upload) * 100) / (total + 0.01)) + 1,
     100,
@@ -930,7 +938,7 @@ function parseExpire(expire?: number) {
 }
 
 function parseUpdatedAt(updated?: number) {
-  const updatedAtMs = normalizeEpochToMs(updated);
+  const updatedAtMs = normalizePlausibleEpochToMs(updated);
   if (!updatedAtMs) return "-";
   return dayjs(updatedAtMs).format("YYYY-MM-DD");
 }
