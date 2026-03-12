@@ -73,15 +73,19 @@ const getIpInfoErrorMessage = (
     return fallback;
   }
 
-  const code = (error as Error & { code?: string }).code;
+  const code = String((error as Error & { code?: string }).code || "")
+    .trim()
+    .toUpperCase();
   switch (code) {
-    case "timeout":
+    case "TIMEOUT":
       return "通过 Mihomo 获取出口 IP 超时。";
-    case "proxy_connect_error":
+    case "PROXY_CONNECT_ERROR":
+    case "PROXY_UNREACHABLE":
       return "无法通过 Mihomo 获取出口 IP。";
-    case "upstream_http_error":
+    case "UPSTREAM_HTTP_ERROR":
+    case "UPSTREAM_TLS":
       return "IP 检测服务暂时不可用。";
-    case "network_error":
+    case "NETWORK_ERROR":
       return "当前网络环境下无法获取出口 IP。";
     default:
       return fallback;
