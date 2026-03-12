@@ -47,6 +47,13 @@ import { ConfigViewer } from "@/components/setting/mods/config-viewer";
 import { useListen } from "@/hooks/use-listen";
 import { useProfiles } from "@/hooks/use-profiles";
 import {
+  hasReadyNodes,
+  resolveImportErrorNoticeKey,
+  shouldRetryImportWithSelfProxy,
+} from "@/pages/profiles-import";
+import {
+  calcuProxies,
+  calcuProxyProviders,
   createProfile,
   deleteProfile,
   enhanceProfiles,
@@ -129,6 +136,14 @@ const isOperationAborted = (
   }
   return false;
 };
+
+const sleep = (ms: number) =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+const READY_CHECK_TIMEOUT_MS = 20_000;
+const READY_CHECK_INTERVAL_MS = 1_200;
 
 const ProfilePage = () => {
   const { t } = useTranslation();
@@ -307,6 +322,30 @@ const ProfilePage = () => {
     return [...new Set([profiles.current ?? ""])].filter(Boolean);
   };
 
+  const waitForNodesReady = async () => {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < READY_CHECK_TIMEOUT_MS) {
+      try {
+        const [proxyData, providerRecord] = await Promise.all([
+          calcuProxies(),
+          calcuProxyProviders(),
+        ]);
+        if (hasReadyNodes(proxyData, providerRecord)) {
+          return;
+        }
+      } catch (err) {
+        debugLog("[订阅导入] 节点就绪轮询失败，等待下一轮:", err);
+      }
+      await sleep(READY_CHECK_INTERVAL_MS);
+    }
+
+    const timeoutError = new Error("proxy providers not ready yet") as Error & {
+      code?: string;
+    };
+    timeoutError.code = "IMPORT_NODES_TIMEOUT";
+    throw timeoutError;
+  };
+
   const onImport = async () => {
     if (!url) return;
     // 校验url是否为http/https
@@ -319,42 +358,83 @@ const ProfilePage = () => {
       showNotice.error("profiles.page.feedback.errors.sameBoxDirectYamlRequired");
       return;
     }
+    setDisabled(true);
     setLoading(true);
-
-    const handleImportSuccess = async (noticeKey: string) => {
-      showNotice.success(noticeKey);
-      setUrl("");
-      await performRobustRefresh();
-    };
 
     try {
       if (importUrlMeta.isSameBoxSubHubLazycat) {
         showNotice.info("profiles.page.feedback.notifications.importSameBoxSubHubHint");
       }
-      // 尝试正常导入
-      await importProfile(url);
-      await handleImportSuccess("shared.feedback.notifications.importSuccess");
-    } catch (initialErr) {
-      console.warn("[订阅导入] 首次导入失败:", initialErr);
+      showNotice.info("profiles.page.feedback.notifications.importStageFetching");
 
+      let importResult = await importProfile(url);
+
+      if (!importResult?.profile?.uid) {
+        throw new Error("import_profile returned empty profile");
+      }
+
+      showNotice.info("profiles.page.feedback.notifications.importStageValidating");
+      showNotice.info("profiles.page.feedback.notifications.importStageApplying");
+
+      await performRobustRefresh();
+
+      if (importResult.activatedCurrent) {
+        showNotice.info("profiles.page.feedback.notifications.importStageWaitingNodes");
+        await waitForNodesReady();
+        showNotice.success("shared.feedback.notifications.importSuccess");
+      } else {
+        showNotice.success(
+          "profiles.page.feedback.notifications.importSavedNotActive",
+          {
+            name: importResult.profile.name || "-",
+          },
+        );
+      }
+
+      setUrl("");
+    } catch (initialErr: any) {
+      if (!shouldRetryImportWithSelfProxy(String(initialErr?.code || ""))) {
+        const noticeKey = resolveImportErrorNoticeKey(
+          String(initialErr?.code || ""),
+          importUrlMeta.isSameBoxSubHubLazycat,
+        );
+        showNotice.error(noticeKey, String(initialErr?.message || initialErr));
+        return;
+      }
+
+      console.warn("[订阅导入] 首次导入失败，准备走 Clash 代理重试:", initialErr);
       showNotice.info("profiles.page.feedback.notifications.importRetry");
+      showNotice.info("profiles.page.feedback.notifications.importStageFetching");
       try {
         // 使用自身代理尝试导入
-        await importProfile(url, {
+        const importResult = await importProfile(url, {
           with_proxy: false,
           self_proxy: true,
         });
-        await handleImportSuccess(
-          "shared.feedback.notifications.importWithClashProxy",
+        showNotice.info("profiles.page.feedback.notifications.importStageValidating");
+        showNotice.info("profiles.page.feedback.notifications.importStageApplying");
+        await performRobustRefresh();
+
+        if (importResult.activatedCurrent) {
+          showNotice.info("profiles.page.feedback.notifications.importStageWaitingNodes");
+          await waitForNodesReady();
+          showNotice.success("shared.feedback.notifications.importWithClashProxy");
+        } else {
+          showNotice.success(
+            "profiles.page.feedback.notifications.importSavedNotActive",
+            {
+              name: importResult.profile.name || "-",
+            },
+          );
+        }
+
+        setUrl("");
+      } catch (retryErr: any) {
+        const noticeKey = resolveImportErrorNoticeKey(
+          String(retryErr?.code || ""),
+          importUrlMeta.isSameBoxSubHubLazycat,
         );
-      } catch (retryErr) {
-        // 回退导入也失败
-        showNotice.error(
-          importUrlMeta.isSameBoxSubHubLazycat
-            ? "profiles.page.feedback.notifications.importSameBoxSubHubFail"
-            : "profiles.page.feedback.notifications.importFail",
-          String(retryErr),
-        );
+        showNotice.error(noticeKey, String(retryErr?.message || retryErr));
       }
     } finally {
       setDisabled(false);
@@ -365,8 +445,9 @@ const ProfilePage = () => {
   // 强化的刷新策略
   const performRobustRefresh = async () => {
     let retryCount = 0;
-    const maxRetries = 5;
+    const maxRetries = 4;
     const baseDelay = 200;
+    let lastError: unknown = null;
 
     while (retryCount < maxRetries) {
       try {
@@ -383,9 +464,10 @@ const ProfilePage = () => {
           setTimeout(resolve, baseDelay * (retryCount + 1)),
         );
 
-        await onEnhance(false);
+        await onEnhance(false, { silenceErrorNotice: true, rethrow: true });
         return;
       } catch (error) {
+        lastError = error;
         console.error(`[导入刷新] 第${retryCount + 1}次刷新失败:`, error);
         retryCount++;
         await new Promise((resolve) =>
@@ -394,22 +476,16 @@ const ProfilePage = () => {
       }
     }
 
-    // 所有重试失败后的最后尝试
     console.warn(`[导入刷新] 常规刷新失败，尝试清除缓存重新获取`);
+    await mutate("getProfiles", getProfiles(), { revalidate: true });
     try {
-      // 清除SWR缓存并重新获取
-      await mutate("getProfiles", getProfiles(), { revalidate: true });
-      await onEnhance(false);
-      showNotice.error(
-        "profiles.page.feedback.notifications.importNeedsRefresh",
-        3000,
-      );
-    } catch (finalError) {
-      console.error(`[导入刷新] 最终刷新尝试失败:`, finalError);
-      showNotice.error(
-        "profiles.page.feedback.notifications.importSuccess",
-        5000,
-      );
+      await onEnhance(false, { silenceErrorNotice: true, rethrow: true });
+      return;
+    } catch (finalError: any) {
+      const wrapped = finalError instanceof Error ? finalError : new Error(String(finalError));
+      (wrapped as Error & { code?: string }).code =
+        (finalError as any)?.code || (lastError as any)?.code || "PROFILE_APPLY_FAILED";
+      throw wrapped;
     }
   };
 
@@ -609,7 +685,14 @@ const ProfilePage = () => {
     })();
   }, [current, activateProfile, mutateProfiles]);
 
-  const onEnhance = useLockFn(async (notifySuccess: boolean) => {
+  const onEnhance = useLockFn(
+    async (
+      notifySuccess: boolean,
+      options?: {
+        silenceErrorNotice?: boolean;
+        rethrow?: boolean;
+      },
+    ) => {
     if (switchingProfileRef.current) {
       debugLog(
         `[Profile] 有profile正在切换中(${switchingProfileRef.current})，跳过enhance操作`,
@@ -620,24 +703,30 @@ const ProfilePage = () => {
     const currentProfiles = currentActivatings();
     setActivatings((prev) => [...new Set([...prev, ...currentProfiles])]);
 
-    try {
-      await enhanceProfiles();
-      mutateLogs();
-      if (notifySuccess) {
-        showNotice.success(
-          "profiles.page.feedback.notifications.profileReactivated",
-          1000,
+      try {
+        await enhanceProfiles();
+        mutateLogs();
+        if (notifySuccess) {
+          showNotice.success(
+            "profiles.page.feedback.notifications.profileReactivated",
+            1000,
+          );
+        }
+      } catch (err: any) {
+        if (!options?.silenceErrorNotice) {
+          showNotice.error(err, 3000);
+        }
+        if (options?.rethrow) {
+          throw err;
+        }
+      } finally {
+        // 保留正在切换的profile，清除其他状态
+        setActivatings((prev) =>
+          prev.filter((id) => id === switchingProfileRef.current),
         );
       }
-    } catch (err: any) {
-      showNotice.error(err, 3000);
-    } finally {
-      // 保留正在切换的profile，清除其他状态
-      setActivatings((prev) =>
-        prev.filter((id) => id === switchingProfileRef.current),
-      );
-    }
-  });
+    },
+  );
 
   const onDelete = useLockFn(async (uid: string) => {
     const current = profiles.current === uid;

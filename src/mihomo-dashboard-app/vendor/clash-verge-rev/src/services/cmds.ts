@@ -6,6 +6,7 @@ import { showNotice } from "@/services/notice-service";
 import type { ProbeEnvelope } from "@/services/runtime-probe";
 import { probeRuntime } from "@/services/runtime-probe";
 import { debugLog } from "@/utils/debug";
+import { parseClashLogLines } from "@/utils/parse-clash-log";
 import type {
   WebActionPolicy,
   WebCommandResult,
@@ -18,6 +19,37 @@ type UrlProbeData = {
   latencyMs?: number;
   errorCode?: string;
   errorMessage?: string;
+};
+
+export type ImportProfileResult = {
+  profile: {
+    uid: string;
+    name: string;
+    url: string;
+  };
+  activatedCurrent: boolean;
+  previousCurrent?: string;
+  fetch?: {
+    url?: string;
+    transport?: string;
+    timeoutSeconds?: number;
+    elapsedMs?: number;
+    statusCode?: number;
+    contentType?: string;
+    profileNameHint?: string;
+    validation?: {
+      hasProxyGroups?: boolean;
+      hasRules?: boolean;
+      hasProxies?: boolean;
+      hasProxyProviders?: boolean;
+    };
+  };
+  validation?: {
+    hasProxyGroups?: boolean;
+    hasRules?: boolean;
+    hasProxies?: boolean;
+    hasProxyProviders?: boolean;
+  };
 };
 
 const isWebCommandResult = <T = unknown>(
@@ -115,7 +147,7 @@ export async function saveProfileFile(index: string, fileData: string) {
 }
 
 export async function importProfile(url: string, option?: IProfileOption) {
-  return invoke<void>("import_profile", {
+  return invoke<ImportProfileResult>("import_profile", {
     url,
     option: option || { with_proxy: true },
   });
@@ -295,26 +327,8 @@ export async function calcuProxyProviders() {
 }
 
 export async function getClashLogs() {
-  const regex = /time="(.+?)"\s+level=(.+?)\s+msg="(.+?)"/;
-  const newRegex = /(.+?)\s+(.+?)\s+(.+)/;
   const logs = await invoke<string[]>("get_clash_logs");
-
-  return logs.reduce<ILogItem[]>((acc, log) => {
-    const result = log.match(regex);
-    if (result) {
-      const [_, _time, type, payload] = result;
-      const time = dayjs(_time).format("MM-DD HH:mm:ss");
-      acc.push({ time, type, payload });
-      return acc;
-    }
-
-    const result2 = log.match(newRegex);
-    if (result2) {
-      const [_, time, type, payload] = result2;
-      acc.push({ time, type, payload });
-    }
-    return acc;
-  }, []);
+  return parseClashLogLines(logs);
 }
 
 export async function clearLogs() {

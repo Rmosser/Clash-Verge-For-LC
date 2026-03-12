@@ -27,7 +27,7 @@ import { useNavigate } from "react-router";
 import { useAppData } from "@/providers/app-data-context";
 import { openWebUrl, updateProfile } from "@/services/cmds";
 import { showNotice } from "@/services/notice-service";
-import { normalizeEpochToMs } from "@/utils/normalize-epoch";
+import { normalizePlausibleEpochToMs } from "@/utils/normalize-epoch";
 import parseTraffic from "@/utils/parse-traffic";
 
 import { EnhancedCard } from "./enhanced-card";
@@ -88,7 +88,7 @@ const ProfileDetails = ({
 }) => {
   const { t } = useTranslation();
   const theme = useTheme();
-  const updatedAtMs = normalizeEpochToMs(current.updated);
+  const updatedAtMs = normalizePlausibleEpochToMs(current.updated);
 
   const usedTraffic = useMemo(() => {
     if (!current.extra) return 0;

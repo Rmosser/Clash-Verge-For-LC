@@ -16,6 +16,7 @@ import {
 } from "@mui/material";
 import { useState, useMemo, memo, FC } from "react";
 import { useTranslation } from "react-i18next";
+import { getWebActionPolicy } from "@root/browser/runtime";
 
 import ProxyControlSwitches from "@/components/shared/proxy-control-switches";
 import { useSystemProxyState } from "@/hooks/use-system-proxy-state";
@@ -31,16 +32,28 @@ interface TabButtonProps {
   icon: SvgIconComponent;
   label: string;
   hasIndicator?: boolean;
+  disabled?: boolean;
 }
 
 // Tab组件
 const TabButton: FC<TabButtonProps> = memo(
-  ({ isActive, onClick, icon: Icon, label, hasIndicator = false }) => (
+  ({
+    isActive,
+    onClick,
+    icon: Icon,
+    label,
+    hasIndicator = false,
+    disabled = false,
+  }) => (
     <Paper
       elevation={isActive ? 2 : 0}
-      onClick={onClick}
+      onClick={() => {
+        if (!disabled) {
+          onClick();
+        }
+      }}
       sx={{
-        cursor: "pointer",
+        cursor: disabled ? "not-allowed" : "pointer",
         px: 2,
         py: 1,
         display: "flex",
@@ -52,11 +65,12 @@ const TabButton: FC<TabButtonProps> = memo(
         borderRadius: 1.5,
         flex: 1,
         maxWidth: 160,
+        opacity: disabled ? 0.6 : 1,
         transition: "all 0.2s ease-in-out",
         position: "relative",
         "&:hover": {
-          transform: "translateY(-1px)",
-          boxShadow: 1,
+          transform: disabled ? "none" : "translateY(-1px)",
+          boxShadow: disabled ? 0 : 1,
         },
         "&:after": isActive
           ? {
@@ -144,6 +158,8 @@ export const ProxyTunCard: FC = () => {
   const { verge } = useVerge();
   const { isTunModeAvailable } = useSystemState();
   const { configState: systemProxyConfigState } = useSystemProxyState();
+  const systemProxyPolicy = getWebActionPolicy("systemProxy");
+  const systemProxyDisabled = systemProxyPolicy.mode !== "enabled";
 
   const { enable_tun_mode } = verge ?? {};
 
@@ -158,6 +174,12 @@ export const ProxyTunCard: FC = () => {
 
   const tabDescription = useMemo(() => {
     if (activeTab === "system") {
+      if (systemProxyDisabled) {
+        return {
+          text: systemProxyPolicy.reason,
+          tooltip: systemProxyPolicy.reason,
+        };
+      }
       return {
         text: systemProxyConfigState
           ? t("home.components.proxyTun.status.systemProxyEnabled")
@@ -179,6 +201,8 @@ export const ProxyTunCard: FC = () => {
     systemProxyConfigState,
     enable_tun_mode,
     isTunModeAvailable,
+    systemProxyDisabled,
+    systemProxyPolicy.reason,
     t,
   ]);
 
@@ -199,7 +223,8 @@ export const ProxyTunCard: FC = () => {
           onClick={() => handleTabChange("system")}
           icon={ComputerRounded}
           label={t("settings.sections.system.toggles.systemProxy")}
-          hasIndicator={systemProxyConfigState}
+          hasIndicator={!systemProxyDisabled && systemProxyConfigState}
+          disabled={systemProxyDisabled}
         />
         <TabButton
           isActive={activeTab === "tun"}
@@ -244,6 +269,15 @@ export const ProxyTunCard: FC = () => {
           noRightPadding={true}
         />
       </Box>
+
+      {systemProxyDisabled && (
+        <Typography
+          variant="caption"
+          sx={{ mt: 1, color: "warning.main", textAlign: "center" }}
+        >
+          {systemProxyPolicy.reason}
+        </Typography>
+      )}
     </Box>
   );
 };

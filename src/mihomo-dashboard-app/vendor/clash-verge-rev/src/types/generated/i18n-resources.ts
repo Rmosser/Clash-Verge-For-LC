@@ -201,6 +201,12 @@ export interface TranslationResources {
         showAscending: string;
         showDescending: string;
       };
+      messages: {
+        historyEmpty: string;
+        historyFailed: string;
+        historyLoading: string;
+        realtimeUnavailable: string;
+      };
       page: {
         title: string;
       };
@@ -362,6 +368,7 @@ export interface TranslationResources {
           errors: {
             invalidUrl: string;
             onlyYaml: string;
+            sameBoxDirectYamlRequired: string;
           };
           notices: {
             emergencyRefreshFailed: string;
@@ -370,9 +377,23 @@ export interface TranslationResources {
           notifications: {
             batchDeleted: string;
             importFail: string;
+            importFailedApply: string;
+            importFailedHtmlLogin: string;
+            importFailedHttp: string;
+            importFailedInvalidContent: string;
+            importFailedNetwork: string;
+            importFailedTimeout: string;
             importNeedsRefresh: string;
             importRetry: string;
+            importSameBoxSubHubFail: string;
+            importSameBoxSubHubHint: string;
+            importSavedNotActive: string;
+            importStageApplying: string;
+            importStageFetching: string;
+            importStageValidating: string;
+            importStageWaitingNodes: string;
             importSuccess: string;
+            importNodesTimeout: string;
             profileReactivated: string;
             profileSwitched: string;
             switchInterrupted: string;

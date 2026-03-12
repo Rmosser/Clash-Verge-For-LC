@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test:unit": "vitest run",
+    "test:unit": "vitest run && vitest run --dir tests",
     "lint": "eslint -c eslint.config.ts --max-warnings=0 --cache --cache-location .eslintcache browser",
     "sync:upstream": "bash ../../scripts/sync_clash_verge_rev.sh"
   },
