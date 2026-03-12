@@ -3,13 +3,14 @@ import {
   PauseCircleOutlineRounded,
   SwapVertRounded,
 } from "@mui/icons-material";
-import { Box, Button, IconButton, MenuItem } from "@mui/material";
+import { Alert, Box, Button, IconButton, MenuItem, Typography } from "@mui/material";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Virtuoso } from "react-virtuoso";
 
 import {
   BaseEmpty,
+  BaseLoading,
   BasePage,
   BaseSearchBox,
   BaseStyledSelect,
@@ -20,7 +21,7 @@ import { useClashLog } from "@/hooks/use-clash-log";
 import { useLogData } from "@/hooks/use-log-data";
 
 const LogPage = () => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [clashLog, setClashLog] = useClashLog();
   const enableLog = clashLog.enable;
   const logState = clashLog.logFilter;
@@ -31,6 +32,9 @@ const LogPage = () => {
   const [searchState, setSearchState] = useState<SearchState>();
   const {
     response: { data: logData },
+    historyStatus,
+    historyMessage,
+    realtimeStatus,
     refreshGetClashLog,
   } = useLogData();
 
@@ -60,6 +64,26 @@ const LogPage = () => {
     [filterLogs, isDescending],
   );
 
+  const logMessages = useMemo(
+    () =>
+      i18n.resolvedLanguage?.toLowerCase().startsWith("zh")
+        ? {
+            historyLoading: "正在加载历史日志...",
+            historyFailed: "历史日志加载失败。",
+            historyEmpty: "当前没有可显示的历史日志。",
+            realtimeUnavailable:
+              "实时日志不可用，当前已降级为仅显示历史日志。",
+          }
+        : {
+            historyLoading: "Loading history logs...",
+            historyFailed: "Failed to load history logs.",
+            historyEmpty: "No history logs available.",
+            realtimeUnavailable:
+              "Realtime logs are unavailable. Showing history only.",
+          },
+    [i18n.resolvedLanguage],
+  );
+
   const handleLogLevelChange = (newLevel: string) => {
     setClashLog((pre: any) => ({ ...pre, logFilter: newLevel }));
   };
@@ -73,6 +97,65 @@ const LogPage = () => {
       ...pre,
       logOrder: pre.logOrder === "desc" ? "asc" : "desc",
     }));
+  };
+
+  const renderBody = () => {
+    if (filteredLogs.length > 0) {
+      return (
+        <Virtuoso
+          initialTopMostItemIndex={isDescending ? 0 : 999}
+          data={filteredLogs}
+          style={{
+            flex: 1,
+          }}
+          itemContent={(index, item) => (
+            <LogItem value={item} searchState={searchState} />
+          )}
+          followOutput={isDescending ? false : "smooth"}
+        />
+      );
+    }
+
+    if (historyStatus === "loading") {
+      return (
+        <Box
+          sx={{
+            flex: 1,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 2,
+            color: "text.secondary",
+          }}
+        >
+          <BaseLoading />
+          <Typography variant="body2">
+            {logMessages.historyLoading}
+          </Typography>
+        </Box>
+      );
+    }
+
+    if (historyStatus === "error") {
+      return (
+        <BaseEmpty
+          text={logMessages.historyFailed}
+          extra={
+            historyMessage ? (
+              <Typography
+                variant="body2"
+                sx={{ mt: 1, px: 2, textAlign: "center" }}
+              >
+                {historyMessage}
+              </Typography>
+            ) : undefined
+          }
+        />
+      );
+    }
+
+    return <BaseEmpty text={logMessages.historyEmpty} />;
   };
 
   return (
@@ -168,22 +251,17 @@ const LogPage = () => {
           }}
         />
       </Box>
-
-      {filteredLogs.length > 0 ? (
-        <Virtuoso
-          initialTopMostItemIndex={isDescending ? 0 : 999}
-          data={filteredLogs}
-          style={{
-            flex: 1,
-          }}
-          itemContent={(index, item) => (
-            <LogItem value={item} searchState={searchState} />
-          )}
-          followOutput={isDescending ? false : "smooth"}
-        />
-      ) : (
-        <BaseEmpty />
+      {realtimeStatus === "degraded" && (
+        <Alert severity="warning" sx={{ mx: 1.5, mb: 1 }}>
+          {logMessages.realtimeUnavailable}
+        </Alert>
       )}
+      {historyStatus === "error" && filteredLogs.length > 0 && (
+        <Alert severity="error" sx={{ mx: 1.5, mb: 1 }}>
+          {historyMessage || logMessages.historyFailed}
+        </Alert>
+      )}
+      {renderBody()}
     </BasePage>
   );
 };
