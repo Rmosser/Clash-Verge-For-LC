@@ -16,7 +16,6 @@ import {
 } from "@mui/material";
 import { useState, useMemo, memo, FC } from "react";
 import { useTranslation } from "react-i18next";
-import { getWebActionPolicy } from "@root/browser/runtime";
 
 import ProxyControlSwitches from "@/components/shared/proxy-control-switches";
 import { useSystemProxyState } from "@/hooks/use-system-proxy-state";
@@ -157,9 +156,11 @@ export const ProxyTunCard: FC = () => {
 
   const { verge } = useVerge();
   const { isTunModeAvailable } = useSystemState();
-  const { configState: systemProxyConfigState } = useSystemProxyState();
-  const systemProxyPolicy = getWebActionPolicy("systemProxy");
-  const systemProxyDisabled = systemProxyPolicy.mode !== "enabled";
+  const {
+    configState: systemProxyConfigState,
+    systemProxyDisabled,
+    systemProxyDisabledReason,
+  } = useSystemProxyState();
 
   const { enable_tun_mode } = verge ?? {};
 
@@ -176,8 +177,8 @@ export const ProxyTunCard: FC = () => {
     if (activeTab === "system") {
       if (systemProxyDisabled) {
         return {
-          text: systemProxyPolicy.reason,
-          tooltip: systemProxyPolicy.reason,
+          text: systemProxyDisabledReason,
+          tooltip: systemProxyDisabledReason,
         };
       }
       return {
@@ -202,7 +203,7 @@ export const ProxyTunCard: FC = () => {
     enable_tun_mode,
     isTunModeAvailable,
     systemProxyDisabled,
-    systemProxyPolicy.reason,
+    systemProxyDisabledReason,
     t,
   ]);
 
@@ -275,7 +276,7 @@ export const ProxyTunCard: FC = () => {
           variant="caption"
           sx={{ mt: 1, color: "warning.main", textAlign: "center" }}
         >
-          {systemProxyPolicy.reason}
+          {systemProxyDisabledReason}
         </Typography>
       )}
     </Box>

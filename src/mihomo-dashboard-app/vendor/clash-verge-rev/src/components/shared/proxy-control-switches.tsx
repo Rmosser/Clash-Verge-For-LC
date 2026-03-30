@@ -134,7 +134,6 @@ const ProxyControlSwitches = ({
   const { enable_tun_mode } = verge ?? {};
   const webRuntime = isLzcWebRuntime();
   const runtimeProfilePolicy = getWebActionPolicy("runtimeProfile");
-  const systemProxyPolicy = getWebActionPolicy("systemProxy");
 
   const showErrorNotice = useCallback(
     (msg: string) => showNotice.error(msg),
@@ -197,7 +196,7 @@ const ProxyControlSwitches = ({
           extraIcons={
             systemProxyDisabled ? (
               <TooltipIcon
-                title={systemProxyDisabledReason || systemProxyPolicy.reason}
+                title={systemProxyDisabledReason}
                 icon={WarningRounded}
                 sx={{ color: "warning.main", ml: 1 }}
               />

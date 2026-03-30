@@ -33,7 +33,12 @@ dist/
 !src/mihomo-dashboard-app/dist/
 src/mihomo-dashboard-app/dist/**
 !src/mihomo-dashboard-app/dist/README.md
+.pnpm-store/
 .next/
+
+# Runtime and tooling artifacts
+output/
+src/mihomo-dashboard-app/.pnpm-store/
 
 # IDE
 .idea/

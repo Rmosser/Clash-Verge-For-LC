@@ -152,9 +152,19 @@ const getCapabilityPolicies = () => {
   return {};
 };
 
+const FORCED_SYSTEM_PROXY_POLICY: WebActionPolicy = {
+  mode: "disabled",
+  reason:
+    "LazyCat 微服 Web 版不支持接管宿主机系统代理，请使用虚拟网卡模式（TUN）或显式代理入口。",
+};
+
 export const getWebActionPolicy = (
   capability: WebCapability
 ): WebActionPolicy => {
+  if (capability === "systemProxy") {
+    return FORCED_SYSTEM_PROXY_POLICY;
+  }
+
   const runtimePolicy = getCapabilityPolicies()[capability];
   if (isWebActionPolicy(runtimePolicy)) {
     return runtimePolicy;

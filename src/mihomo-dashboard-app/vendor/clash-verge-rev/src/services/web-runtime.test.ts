@@ -49,7 +49,7 @@ describe("getWebActionPolicy", () => {
     });
   });
 
-  it("prefers runtime capability overrides for system proxy", () => {
+  it("ignores runtime capability overrides for system proxy", () => {
     const expected = getExpectedRuntimeInfo();
     vi.stubGlobal("window", {
       __LZCAPP_MIHOMO__: {
@@ -72,9 +72,9 @@ describe("getWebActionPolicy", () => {
     });
 
     expect(getWebActionPolicy("systemProxy")).toEqual({
-      mode: "degraded",
-      reason: "runtime override",
-      label: "custom policy",
+      mode: "disabled",
+      reason:
+        "LazyCat 微服 Web 版不支持接管宿主机系统代理，请使用虚拟网卡模式（TUN）或显式代理入口。",
     });
   });
 
