@@ -28,33 +28,15 @@ DOH_PROXY_RULES = [
     "- IP-CIDR6,2606:4700:4700::1001/128,PROXY,no-resolve",
 ]
 
-# A known-good DNS config verified on the microserver. Keep it secret-free.
-DNS_BLOCK = """dns:
-  enable: true
-  listen: 127.0.0.1:1053
-  ipv6: true
-  enhanced-mode: redir-host
-  use-hosts: true
-  respect-rules: true
-  default-nameserver:
-    - 192.168.1.1
-    - 223.5.5.5
-    - 119.29.29.29
-  proxy-server-nameserver:
-    - 192.168.1.1
-    - 223.5.5.5
-    - 119.29.29.29
-  nameserver:
-    - https://1.1.1.1/dns-query
-    - https://1.0.0.1/dns-query
-  nameserver-policy:
-    "+.heiyu.space":
-      - 192.168.1.1
-      - fe80::1
-    "+.baidu.com":
-      - 192.168.1.1
-      - fe80::1
-"""
+PUBLIC_DNS_SERVERS = [
+    "223.5.5.5",
+    "119.29.29.29",
+]
+
+DNS_POLICY_DOMAINS = [
+    "+.heiyu.space",
+    "+.baidu.com",
+]
 
 
 TUN_BLOCK = """\
@@ -122,6 +104,52 @@ def _insert_after_first(text: str, anchor: str, insert: str) -> tuple[str, bool]
     if anchor not in text:
         return text, False
     return text.replace(anchor, anchor + insert, 1), True
+
+
+def unique_preserve_order(values: list[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        value = raw.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
+def build_dns_block(direct_dns_servers: list[str]) -> str:
+    direct = unique_preserve_order(direct_dns_servers)
+    bootstrap = unique_preserve_order(direct + PUBLIC_DNS_SERVERS)
+
+    lines = [
+        "dns:",
+        "  enable: true",
+        "  listen: 127.0.0.1:1053",
+        "  ipv6: true",
+        "  enhanced-mode: redir-host",
+        "  use-hosts: true",
+        "  respect-rules: true",
+        "  default-nameserver:",
+    ]
+    lines.extend(f"    - {server}" for server in bootstrap)
+    lines.append("  proxy-server-nameserver:")
+    lines.extend(f"    - {server}" for server in bootstrap)
+    lines.extend(
+        [
+            "  nameserver:",
+            "    - https://1.1.1.1/dns-query",
+            "    - https://1.0.0.1/dns-query",
+        ]
+    )
+
+    if direct:
+        lines.append("  nameserver-policy:")
+        for domain in DNS_POLICY_DOMAINS:
+            lines.append(f'    "{domain}":')
+            lines.extend(f"      - {server}" for server in direct)
+
+    return "\n".join(lines) + "\n"
 
 
 def ensure_forced_proxy_rules(text: str) -> tuple[str, bool]:
@@ -354,7 +382,7 @@ def _top_level_block_range(lines: list[str], key: str) -> tuple[int, int] | None
     return start, end
 
 
-def ensure_dns_block(text: str) -> tuple[str, bool]:
+def ensure_dns_block(text: str, direct_dns_servers: list[str]) -> tuple[str, bool]:
     """
     Ensure a known-good top-level dns: block exists.
 
@@ -362,9 +390,7 @@ def ensure_dns_block(text: str) -> tuple[str, bool]:
     If present, normalize it to DNS_BLOCK (dns is safe to override).
     """
 
-    desired = DNS_BLOCK
-    if not desired.endswith("\n"):
-        desired += "\n"
+    desired = build_dns_block(direct_dns_servers)
 
     lines = text.splitlines(keepends=True)
     rng = _top_level_block_range(lines, "dns")
@@ -539,6 +565,12 @@ def main() -> int:
         help="Ensure DoH endpoint IP rules are forced to PROXY (no-resolve)",
     )
     parser.add_argument(
+        "--dns-direct-server",
+        action="append",
+        default=[],
+        help="Add a direct DNS resolver for local-policy domains such as .heiyu.space",
+    )
+    parser.add_argument(
         "--set-auto-test-url",
         default=None,
         help="Set proxy-groups[name=AUTO,type=url-test].url to this value (keeps candidates list)",
@@ -599,7 +631,7 @@ def main() -> int:
         text, did = ensure_tun_excludes(text)
         changed = changed or did
     if args.ensure_dns:
-        text, did = ensure_dns_block(text)
+        text, did = ensure_dns_block(text, args.dns_direct_server)
         changed = changed or did
     if args.ensure_doh_proxy_rules:
         text, did = ensure_doh_proxy_rules(text)

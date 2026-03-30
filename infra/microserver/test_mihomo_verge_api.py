@@ -85,25 +85,45 @@ class MihomoVergeApiTests(unittest.TestCase):
         append_operation_log.assert_called_once()
 
     def test_normalize_dns_config_prunes_legacy_direct_policy_keys(self) -> None:
-        normalized = MODULE.normalize_dns_config(
-            {
-                "nameserver-policy": {
-                    "+.lazycat.cloud": ["192.168.1.1", "fe80::1"],
-                    "+.lazycat.cloud.lan": ["192.168.1.1", "fe80::1"],
-                    "+.heiyu.space.lan": ["192.168.1.1", "fe80::1"],
-                    "+.custom.internal": ["10.0.0.2"],
-                }
-            },
-            True,
-        )
+        with patch.object(MODULE, "detect_direct_dns_servers", return_value=["192.168.8.1"]):
+            normalized = MODULE.normalize_dns_config(
+                {
+                    "nameserver-policy": {
+                        "+.lazycat.cloud": ["192.168.1.1", "fe80::1"],
+                        "+.lazycat.cloud.lan": ["192.168.1.1", "fe80::1"],
+                        "+.heiyu.space.lan": ["192.168.1.1", "fe80::1"],
+                        "+.custom.internal": ["10.0.0.2"],
+                    }
+                },
+                True,
+            )
 
         self.assertEqual(
             normalized["nameserver-policy"],
             {
-                "+.heiyu.space": ["192.168.1.1", "fe80::1"],
-                "+.baidu.com": ["192.168.1.1", "fe80::1"],
+                "+.heiyu.space": ["192.168.8.1"],
+                "+.baidu.com": ["192.168.8.1"],
                 "+.custom.internal": ["10.0.0.2"],
             },
+        )
+
+    def test_normalize_dns_config_replaces_legacy_bootstrap_resolvers(self) -> None:
+        with patch.object(MODULE, "detect_direct_dns_servers", return_value=["192.168.8.1"]):
+            normalized = MODULE.normalize_dns_config(
+                {
+                    "default-nameserver": ["192.168.1.1", "223.5.5.5", "119.29.29.29"],
+                    "proxy-server-nameserver": ["192.168.1.1", "223.5.5.5", "119.29.29.29"],
+                },
+                True,
+            )
+
+        self.assertEqual(
+            normalized["default-nameserver"],
+            ["192.168.8.1", "223.5.5.5", "119.29.29.29"],
+        )
+        self.assertEqual(
+            normalized["proxy-server-nameserver"],
+            ["192.168.8.1", "223.5.5.5", "119.29.29.29"],
         )
 
     def test_normalize_tun_config_keeps_diagnostic_bypass_pool(self) -> None:
@@ -141,6 +161,32 @@ class MihomoVergeApiTests(unittest.TestCase):
             "空配置运行态",
         )
 
+    def test_runtime_info_payload_forces_system_proxy_disabled_even_with_contract_override(self) -> None:
+        contract = copy.deepcopy(MODULE.DEFAULT_RUNTIME_CONTRACT)
+        contract["capabilities"]["systemProxy"] = {
+            "mode": "enabled",
+            "reason": "incorrect override",
+            "label": "override",
+        }
+        with (
+            patch.object(MODULE, "load_runtime_contract", return_value=contract),
+            patch.object(MODULE, "get_profiles_state", return_value={"current": "", "items": []}),
+            patch.object(
+                MODULE,
+                "runtime_probe_health",
+                return_value={"status": "ok", "checkedAt": "2026-03-12T00:00:00Z"},
+            ),
+        ):
+            payload = MODULE.runtime_info_payload()
+
+        self.assertEqual(
+            payload["capabilities"]["systemProxy"],
+            {
+                "mode": "disabled",
+                "reason": "LazyCat 微服 Web 版不支持接管宿主机系统代理，请使用虚拟网卡模式（TUN）或显式代理入口。",
+            },
+        )
+
     def test_apply_runtime_for_current_or_empty_state_uses_empty_runtime_log(self) -> None:
         with (
             patch.object(
@@ -172,6 +218,29 @@ class MihomoVergeApiTests(unittest.TestCase):
             "runtime-yaml",
             "applied profile demo-profile",
         )
+
+    def test_patch_verge_config_forces_enable_system_proxy_false(self) -> None:
+        verge_state = {
+            "enable_system_proxy": False,
+            "enable_tun_mode": True,
+            "language": "zh",
+        }
+        with (
+            patch.object(MODULE, "ensure_state"),
+            patch.object(MODULE, "get_verge_config_state", return_value=verge_state),
+            patch.object(MODULE, "save_verge_config_state") as save_verge_config_state,
+            patch.object(MODULE, "append_operation_log") as append_operation_log,
+            patch.object(MODULE, "apply_runtime_for_current_or_empty_state") as apply_runtime,
+        ):
+            MODULE.invoke_command(
+                "patch_verge_config",
+                {"payload": {"enable_system_proxy": True}},
+            )
+
+        saved_payload = save_verge_config_state.call_args.args[0]
+        self.assertIs(saved_payload["enable_system_proxy"], False)
+        append_operation_log.assert_called_once()
+        apply_runtime.assert_not_called()
 
     def test_validate_remote_profile_payload_accepts_provider_profile(self) -> None:
         payload = """

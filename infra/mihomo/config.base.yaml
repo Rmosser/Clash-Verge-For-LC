@@ -16,28 +16,27 @@ dns:
   use-hosts: true
   respect-rules: true
   # Used for bootstrap resolution (before DoH) and for resolving proxy servers.
+  # `scripts/deploy_microserver.sh` rewrites these to the target machine's
+  # detected direct resolver(s) when DNS is enabled.
   default-nameserver:
-    - 192.168.1.1
     - 223.5.5.5
     - 119.29.29.29
   proxy-server-nameserver:
-    - 192.168.1.1
     - 223.5.5.5
     - 119.29.29.29
   # DoH endpoints (must be reachable; in some networks they need to go via PROXY).
   nameserver:
     - https://1.1.1.1/dns-query
     - https://1.0.0.1/dns-query
-  # IMPORTANT: keep LazyCat control-plane domains resolving via router/link-local DNS (DIRECT).
+  # IMPORTANT: deployment rewrites these placeholders to target-specific DIRECT
+  # resolver(s) so LazyCat control-plane domains stay off DoH/TUN.
   nameserver-policy:
     "+.heiyu.space":
-      - 192.168.1.1
-      - fe80::1
+      - 223.5.5.5
     # networkdiagnostic uses www.baidu.com for IPv6 reachability probing.
     # Keep this on router/link-local DNS so AAAA answers remain available.
     "+.baidu.com":
-      - 192.168.1.1
-      - fe80::1
+      - 223.5.5.5
 
 # IMPORTANT (rules required when DoH is blocked on DIRECT):
 # Add these to rules: so DoH endpoint IPs always go PROXY (no-resolve):

@@ -6,7 +6,6 @@ PATH="/lzcsys/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$
 STATE_DIR="/var/lib/mihomo"
 STATE_FILE="$STATE_DIR/resolved-link.iface"
 PRIMARY_DNS="${MIHOMO_RESOLVED_DNS_PRIMARY:-127.0.0.1:1053}"
-FALLBACK_DNS=(${MIHOMO_RESOLVED_FALLBACK_DNS:-192.168.1.1 fe80::1})
 
 need_bin() {
   local bin="$1"
@@ -18,6 +17,10 @@ need_bin() {
 
 detect_default_iface() {
   ip route show default 2>/dev/null | awk '/default/ {print $5; exit}'
+}
+
+detect_default_gateway_v4() {
+  ip route show default 2>/dev/null | awk '/default/ {print $3; exit}'
 }
 
 resolve_iface() {
@@ -36,19 +39,40 @@ resolve_iface() {
   detect_default_iface
 }
 
+resolve_fallback_dns() {
+  if [[ -n "${MIHOMO_RESOLVED_FALLBACK_DNS:-}" ]]; then
+    read -r -a configured <<<"${MIHOMO_RESOLVED_FALLBACK_DNS}"
+    printf '%s\n' "${configured[@]}"
+    return 0
+  fi
+
+  local gateway_v4
+  gateway_v4="$(detect_default_gateway_v4)"
+  if [[ -n "$gateway_v4" ]]; then
+    printf '%s\n' "$gateway_v4"
+  fi
+}
+
 apply_dns() {
   local iface
+  local fallback_dns=()
   iface="$(resolve_iface)"
   if [[ -z "$iface" ]]; then
     echo "ERROR: unable to determine default route interface for resolvectl" >&2
     exit 1
   fi
 
+  mapfile -t fallback_dns < <(resolve_fallback_dns)
+
   install -d -m 750 "$STATE_DIR"
   printf '%s\n' "$iface" >"$STATE_FILE"
   chmod 600 "$STATE_FILE" || true
 
-  resolvectl dns "$iface" "$PRIMARY_DNS" "${FALLBACK_DNS[@]}"
+  if [[ "${#fallback_dns[@]}" -gt 0 ]]; then
+    resolvectl dns "$iface" "$PRIMARY_DNS" "${fallback_dns[@]}"
+  else
+    resolvectl dns "$iface" "$PRIMARY_DNS"
+  fi
   resolvectl flush-caches >/dev/null 2>&1 || true
 }
 

@@ -115,35 +115,15 @@ DEFAULT_TUN_CONFIG = {
     "route-exclude-address": DEFAULT_ROUTE_EXCLUDES,
 }
 
-DEFAULT_DNS_CONFIG = {
-    "enable": True,
-    "listen": "127.0.0.1:1053",
-    "ipv6": True,
-    "enhanced-mode": "redir-host",
-    "use-hosts": True,
-    "respect-rules": True,
-    "default-nameserver": ["192.168.1.1", "223.5.5.5", "119.29.29.29"],
-    "proxy-server-nameserver": ["192.168.1.1", "223.5.5.5", "119.29.29.29"],
-    "nameserver": [
-        "https://1.1.1.1/dns-query",
-        "https://1.0.0.1/dns-query",
-    ],
-    "nameserver-policy": {
-        "+.heiyu.space": ["192.168.1.1", "fe80::1"],
-        "+.baidu.com": ["192.168.1.1", "fe80::1"],
-    },
-}
+PUBLIC_DNS_SERVERS = ["223.5.5.5", "119.29.29.29"]
+DNS_POLICY_DOMAINS = ("+.heiyu.space", "+.baidu.com")
+LEGACY_DIRECT_DNS_SERVERS = {"192.168.1.1", "fe80::1"}
 
 LEGACY_DIRECT_DNS_POLICY_KEYS = (
     "+.lazycat.cloud",
     "+.lazycat.cloud.lan",
     "+.heiyu.space.lan",
 )
-
-DEFAULT_DNS_STATE = {
-    "dns": DEFAULT_DNS_CONFIG,
-    "hosts": {},
-}
 
 LAZYCAT_AUTH_COOKIE_NAMES = ("HC-Auth-Token",)
 
@@ -297,6 +277,84 @@ DEFAULT_RUNTIME_CONTRACT = {
         },
     },
 }
+
+
+def unique_preserve_order(values: list[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        value = str(raw).strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
+def parse_dns_server_list(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return unique_preserve_order(re.split(r"[\s,]+", raw.strip()))
+
+
+def detect_direct_dns_servers() -> list[str]:
+    configured = parse_dns_server_list(os.environ.get("MIHOMO_DIRECT_DNS_SERVERS"))
+    if configured:
+        return configured
+
+    try:
+        result = subprocess.run(
+            ["ip", "route", "show", "default"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return []
+
+    if result.returncode != 0:
+        return []
+
+    for line in result.stdout.splitlines():
+        match = re.search(r"\bvia\s+(\S+)", line)
+        if match:
+            return [match.group(1)]
+    return []
+
+
+def build_default_dns_config() -> dict[str, Any]:
+    direct_dns_servers = detect_direct_dns_servers()
+    bootstrap_servers = unique_preserve_order(direct_dns_servers + PUBLIC_DNS_SERVERS)
+
+    config: dict[str, Any] = {
+        "enable": True,
+        "listen": "127.0.0.1:1053",
+        "ipv6": True,
+        "enhanced-mode": "redir-host",
+        "use-hosts": True,
+        "respect-rules": True,
+        "default-nameserver": bootstrap_servers,
+        "proxy-server-nameserver": bootstrap_servers,
+        "nameserver": [
+            "https://1.1.1.1/dns-query",
+            "https://1.0.0.1/dns-query",
+        ],
+        "nameserver-policy": {},
+    }
+
+    if direct_dns_servers:
+        config["nameserver-policy"] = {
+            domain: list(direct_dns_servers) for domain in DNS_POLICY_DOMAINS
+        }
+
+    return config
+
+
+def build_default_dns_state() -> dict[str, Any]:
+    return {
+        "dns": build_default_dns_config(),
+        "hosts": {},
+    }
 
 
 def now_ms() -> int:
@@ -852,7 +910,7 @@ def normalize_dns_state(raw: Any) -> tuple[dict[str, Any], bool]:
         hosts_raw = {}
 
     normalized = {
-        "dns": deep_merge(DEFAULT_DNS_CONFIG, dns_raw),
+        "dns": deep_merge(build_default_dns_config(), dns_raw),
         "hosts": copy.deepcopy(hosts_raw),
     }
     if raw != normalized:
@@ -861,7 +919,7 @@ def normalize_dns_state(raw: Any) -> tuple[dict[str, Any], bool]:
 
 
 def load_dns_state() -> dict[str, Any]:
-    loaded = load_json(DNS_CONFIG_PATH, DEFAULT_DNS_STATE)
+    loaded = load_json(DNS_CONFIG_PATH, build_default_dns_state())
     normalized, changed = normalize_dns_state(loaded)
     if changed:
         save_json(DNS_CONFIG_PATH, normalized)
@@ -878,12 +936,34 @@ def save_dns_config_state(data: dict[str, Any]) -> None:
 
 
 def normalize_dns_config(data: dict[str, Any], enabled: bool) -> dict[str, Any]:
-    merged = deep_merge(DEFAULT_DNS_CONFIG, data)
+    defaults = build_default_dns_config()
+    merged = deep_merge(defaults, data)
     merged["enable"] = enabled
+    direct_dns_servers = detect_direct_dns_servers()
+    bootstrap_servers = unique_preserve_order(direct_dns_servers + PUBLIC_DNS_SERVERS)
+
+    current_default_nameserver = list(merged.get("default-nameserver") or [])
+    current_proxy_nameserver = list(merged.get("proxy-server-nameserver") or [])
+    if not current_default_nameserver or LEGACY_DIRECT_DNS_SERVERS.intersection(
+        current_default_nameserver
+    ):
+        merged["default-nameserver"] = bootstrap_servers
+    if not current_proxy_nameserver or LEGACY_DIRECT_DNS_SERVERS.intersection(
+        current_proxy_nameserver
+    ):
+        merged["proxy-server-nameserver"] = bootstrap_servers
+
     policy = copy.deepcopy(merged.get("nameserver-policy") or {})
     for key in LEGACY_DIRECT_DNS_POLICY_KEYS:
         policy.pop(key, None)
-    policy["+.heiyu.space"] = ["192.168.1.1", "fe80::1"]
+    if direct_dns_servers:
+        for domain in DNS_POLICY_DOMAINS:
+            policy[domain] = list(direct_dns_servers)
+    else:
+        for domain in DNS_POLICY_DOMAINS:
+            existing = list(policy.get(domain) or [])
+            if LEGACY_DIRECT_DNS_SERVERS.intersection(existing):
+                policy.pop(domain, None)
     merged["nameserver-policy"] = policy
     return merged
 
@@ -1215,7 +1295,7 @@ def ensure_state() -> None:
         save_json(VERGE_CONFIG_PATH, detect_bootstrap_verge_config())
 
     if not DNS_CONFIG_PATH.exists():
-        save_json(DNS_CONFIG_PATH, DEFAULT_DNS_STATE)
+        save_json(DNS_CONFIG_PATH, build_default_dns_state())
 
     if not OVERLAY_JSON_PATH.exists():
         save_overlay({})
@@ -1500,6 +1580,10 @@ def runtime_info_payload() -> dict[str, Any]:
     capabilities = copy.deepcopy(
         contract.get("capabilities") or DEFAULT_RUNTIME_CONTRACT["capabilities"]
     )
+    capabilities["systemProxy"] = {
+        "mode": "disabled",
+        "reason": "LazyCat 微服 Web 版不支持接管宿主机系统代理，请使用虚拟网卡模式（TUN）或显式代理入口。",
+    }
     if get_profiles_state().get("current"):
         capabilities["runtimeProfile"] = {
             "mode": "enabled",

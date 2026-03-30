@@ -37,12 +37,23 @@ fi
 ssh_remote MODE="$MODE" bash -s <<'REMOTE'
 set -euo pipefail
 
+resolve_fallback_dns() {
+  if [[ -n "${MIHOMO_RESOLVED_FALLBACK_DNS:-}" ]]; then
+    read -r -a configured <<<"${MIHOMO_RESOLVED_FALLBACK_DNS}"
+    printf '%s\n' "${configured[@]}"
+    return 0
+  fi
+
+  ip route show default 2>/dev/null | awk '/default/ {print $3; exit}'
+}
+
 if ! command -v resolvectl >/dev/null 2>&1; then
   echo "ERROR: resolvectl not found on this microserver." >&2
   exit 2
 fi
 
 iface="$(ip route show default 2>/dev/null | awk '/default/ {print $5; exit}')"
+mapfile -t fallback_dns < <(resolve_fallback_dns)
 if [[ -z "$iface" ]]; then
   echo "ERROR: unable to determine default route interface" >&2
   exit 3
@@ -51,7 +62,11 @@ fi
 if [[ "$MODE" == "--disable" ]]; then
   resolvectl revert "$iface"
 else
-  resolvectl dns "$iface" 127.0.0.1:1053 192.168.1.1 fe80::1
+  if [[ "${#fallback_dns[@]}" -gt 0 ]]; then
+    resolvectl dns "$iface" 127.0.0.1:1053 "${fallback_dns[@]}"
+  else
+    resolvectl dns "$iface" 127.0.0.1:1053
+  fi
 fi
 
 resolvectl flush-caches >/dev/null 2>&1 || true

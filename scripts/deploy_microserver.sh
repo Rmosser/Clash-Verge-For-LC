@@ -17,6 +17,8 @@ fi
 HOST="${MICROSERVER_HOST:-rainierserver.heiyu.space}"
 SSH_USER="${MICROSERVER_SSH_USER:-root}"
 SSH_KEY="${MICROSERVER_SSH_KEY:-$HOME/.ssh/id_ed25519}"
+RESOLVED_DNS_PRIMARY_OVERRIDE="${MIHOMO_RESOLVED_DNS_PRIMARY:-}"
+RESOLVED_FALLBACK_DNS_OVERRIDE="${MIHOMO_RESOLVED_FALLBACK_DNS:-}"
 
 CFG_LOCAL="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_CONFIG_LOCAL:-var/private/mihomo.config.yaml}")"
 UNIT_LOCAL="$ROOT/infra/mihomo/mihomo.service"
@@ -43,6 +45,10 @@ ONLY_CORE=0
 NO_ROLLBACK=0
 CORE_VERSION_ARG=""
 FORCE_LATEST_STABLE=0
+
+ssh_remote() {
+  ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$SSH_USER@$HOST" "$@"
+}
 
 usage() {
   cat <<'USAGE'
@@ -120,6 +126,21 @@ TMP_RESOLVED_SYNC_UNIT="/tmp/mihomo-resolved-sync.service.$TS"
 TMP_RUNTIME_CONTRACT="/tmp/runtime-contract.json.$TS"
 TMP_VERGE_SECRET="/tmp/verge-api.secret.$TS"
 
+REMOTE_DIRECT_DNS_SERVERS=()
+if [[ "$DNS_ENABLE" == "1" || "$RESOLVED_VIA_MIHOMO" == "1" ]]; then
+  if [[ -n "${MIHOMO_DIRECT_DNS_SERVERS:-}" ]]; then
+    read -r -a REMOTE_DIRECT_DNS_SERVERS <<< "${MIHOMO_DIRECT_DNS_SERVERS}"
+  else
+    detected_remote_ipv4_gateway="$(
+      ssh_remote "ip route show default 2>/dev/null | awk '/default/ {print \$3; exit}'" \
+        | tr -d '\r\n' || true
+    )"
+    if [[ -n "$detected_remote_ipv4_gateway" ]]; then
+      REMOTE_DIRECT_DNS_SERVERS=("$detected_remote_ipv4_gateway")
+    fi
+  fi
+fi
+
 if [[ "$ONLY_CORE" != "1" ]]; then
   if [[ ! -f "$CFG_LOCAL" ]]; then
     echo "ERROR: missing config file: $CFG_LOCAL" >&2
@@ -159,6 +180,9 @@ if [[ "$ONLY_CORE" != "1" ]]; then
 
   if [[ "$DNS_ENABLE" == "1" ]]; then
     PATCH_ARGS+=(--ensure-dns)
+    for dns_server in "${REMOTE_DIRECT_DNS_SERVERS[@]}"; do
+      PATCH_ARGS+=(--dns-direct-server "$dns_server")
+    done
     if [[ "$DOH_PROXY_RULES_ENABLE" == "1" ]]; then
       PATCH_ARGS+=(--ensure-doh-proxy-rules)
     fi
@@ -203,7 +227,7 @@ fi
 echo "Deploying to $SSH_USER@$HOST ..."
 
 # Compute mihomo download URL for the remote architecture.
-REMOTE_UNAME="$(ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$SSH_USER@$HOST" uname -m)"
+REMOTE_UNAME="$(ssh_remote uname -m)"
 
 MIHOMO_TAG="$CORE_VERSION_ARG"
 if [[ -z "$MIHOMO_TAG" ]]; then
@@ -342,6 +366,8 @@ ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
   CONTAINER_PROXY_ENABLE="$CONTAINER_PROXY_ENABLE" \
   DNS_ENABLE="$DNS_ENABLE" \
   RESOLVED_VIA_MIHOMO="$RESOLVED_VIA_MIHOMO" \
+  RESOLVED_DNS_PRIMARY_OVERRIDE="$RESOLVED_DNS_PRIMARY_OVERRIDE" \
+  RESOLVED_FALLBACK_DNS_OVERRIDE="$RESOLVED_FALLBACK_DNS_OVERRIDE" \
   bash -s <<'REMOTE'
 set -euo pipefail
 
@@ -354,6 +380,8 @@ verge_api_secret=/etc/mihomo/verge-api.secret
 verge_api_bin=/usr/local/lib/lzc-mihomo/mihomo-verge-api.py
 resolved_sync_service=/etc/systemd/system/mihomo-resolved-sync.service
 resolved_sync_bin=/usr/local/lib/lzc-mihomo/mihomo-resolved-sync.sh
+resolved_sync_dropin_dir=/etc/systemd/system/mihomo-resolved-sync.service.d
+resolved_sync_override_file=$resolved_sync_dropin_dir/override.conf
 runtime_contract=/usr/local/lib/lzc-mihomo/runtime-contract.json
 mihomo_bin=/usr/local/bin/mihomo
 rollback_dir=/var/lib/mihomo/rollback
@@ -418,6 +446,25 @@ disable_resolved_via_mihomo() {
     systemctl disable --now mihomo-resolved-sync.service >/dev/null || true
     log "Disabled mihomo-resolved-sync.service"
   fi
+}
+
+configure_resolved_sync_override() {
+  if [[ -z "${RESOLVED_DNS_PRIMARY_OVERRIDE:-}" && -z "${RESOLVED_FALLBACK_DNS_OVERRIDE:-}" ]]; then
+    rm -f "$resolved_sync_override_file" || true
+    rmdir "$resolved_sync_dropin_dir" >/dev/null 2>&1 || true
+    return
+  fi
+
+  install -d -o root -g root -m 755 "$resolved_sync_dropin_dir"
+  {
+    echo "[Service]"
+    if [[ -n "${RESOLVED_DNS_PRIMARY_OVERRIDE:-}" ]]; then
+      printf 'Environment=MIHOMO_RESOLVED_DNS_PRIMARY=%q\n' "$RESOLVED_DNS_PRIMARY_OVERRIDE"
+    fi
+    if [[ -n "${RESOLVED_FALLBACK_DNS_OVERRIDE:-}" ]]; then
+      printf 'Environment=MIHOMO_RESOLVED_FALLBACK_DNS=%q\n' "$RESOLVED_FALLBACK_DNS_OVERRIDE"
+    fi
+  } >"$resolved_sync_override_file"
 }
 
 run_dns_validation() {
@@ -614,6 +661,8 @@ if [[ "${CONTAINER_PROXY_ENABLE}" == "1" ]]; then
     log "NOTE: container proxy socket/service not installed (missing tmp files or systemd-socket-proxyd)."
   fi
 fi
+
+configure_resolved_sync_override
 
 # Validate config with the current core before restart.
 "$mihomo_bin" -t -d /var/lib/mihomo -f /etc/mihomo/config.yaml >/dev/null
