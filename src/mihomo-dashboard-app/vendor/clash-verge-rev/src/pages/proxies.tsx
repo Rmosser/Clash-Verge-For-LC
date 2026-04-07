@@ -1,5 +1,5 @@
 import { LanOutlined, LanRounded } from "@mui/icons-material";
-import { Box, Button, ButtonGroup } from "@mui/material";
+import { Alert, Box, Button, ButtonGroup } from "@mui/material";
 import { useLockFn } from "ahooks";
 import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -48,7 +48,14 @@ const ProxyPage = () => {
     null as string | null,
   );
 
-  const { clashConfig, refreshClashConfig } = useAppData();
+  const {
+    clashConfig,
+    profileHealth,
+    staleProxyData,
+    refreshClashConfig,
+    refreshProxy,
+    refreshProxyProviders,
+  } = useAppData();
 
   const updateChainConfigData = useCallback((value: string | null) => {
     dispatchChainConfigData(value);
@@ -147,6 +154,14 @@ const ProxyPage = () => {
     }
   }, [normalizedMode, onChangeMode]);
 
+  const onRetryProxyRefresh = useLockFn(async () => {
+    await Promise.allSettled([
+      refreshProxy(),
+      refreshProxyProviders(),
+      refreshClashConfig(),
+    ]);
+  });
+
   return (
     <BasePage
       full
@@ -191,6 +206,21 @@ const ProxyPage = () => {
         </Box>
       }
     >
+      {profileHealth?.status === "degraded" && (
+        <Alert
+          severity="warning"
+          sx={{ mx: 1.5, mt: 1.5, mb: 1 }}
+          action={
+            <Button color="inherit" size="small" onClick={onRetryProxyRefresh}>
+              立即刷新
+            </Button>
+          }
+        >
+          当前运行态刷新失败，页面继续展示上一份成功节点数据，避免误判为订阅缩水。
+          {profileHealth.lastError ? ` 最近错误：${profileHealth.lastError}` : ""}
+          {staleProxyData ? " 当前列表为 last-good 快照。" : ""}
+        </Alert>
+      )}
       <ProxyGroups
         mode={curMode ?? "rule"}
         isChainMode={isChainMode}

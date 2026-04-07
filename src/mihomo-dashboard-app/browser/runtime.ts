@@ -50,6 +50,15 @@ export type WebCommandResult<T = unknown> = {
   data?: T;
 };
 
+export type RuntimeProfileHealth = {
+  status: "ready" | "degraded";
+  activeProfileId: string;
+  lastGoodProfileId: string;
+  lastAppliedAt: string;
+  lastError: string;
+  providerCounts: Record<string, number>;
+};
+
 export type RuntimeInfo = {
   platform: string;
   appVersion: string;
@@ -64,6 +73,7 @@ export type RuntimeInfo = {
     checkedAt: string;
     details?: string;
   };
+  profileHealth?: RuntimeProfileHealth;
 };
 
 export type RuntimeContractWarning = {

@@ -5,6 +5,10 @@ import {
   Rule,
   RuleProvider,
 } from "tauri-plugin-mihomo-api";
+import type {
+  RuntimeInfo,
+  RuntimeProfileHealth,
+} from "@root/browser/runtime";
 
 export interface AppDataContextType {
   proxies: any;
@@ -16,6 +20,9 @@ export interface AppDataContextType {
   proxyProviders: Record<string, ProxyProvider>;
   ruleProviders: Record<string, RuleProvider>;
   systemProxyAddress: string;
+  runtimeInfo: RuntimeInfo | null;
+  profileHealth: RuntimeProfileHealth | null;
+  staleProxyData: boolean;
 
   refreshProxy: () => Promise<any>;
   refreshClashConfig: () => Promise<any>;

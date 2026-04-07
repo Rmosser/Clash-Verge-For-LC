@@ -1,11 +1,12 @@
 import { listen } from "@tauri-apps/api/event";
-import React, { useCallback, useEffect, useMemo } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import {
   getBaseConfig,
   getRuleProviders,
   getRules,
 } from "tauri-plugin-mihomo-api";
+import { vergeJson, type RuntimeInfo } from "@root/browser/runtime";
 
 import { useVerge } from "@/hooks/use-verge";
 import {
@@ -16,6 +17,13 @@ import {
   getSystemProxy,
 } from "@/services/cmds";
 import { SWR_DEFAULTS, SWR_MIHOMO } from "@/services/config";
+import {
+  getProfileHealth,
+  hasUsableProxyProviderSnapshot,
+  hasUsableProxySnapshot,
+  shouldFreezeProxySnapshots,
+  shouldRefreshAfterRecovery,
+} from "@/services/profile-health";
 
 import { AppDataContext, AppDataContextType } from "./app-data-context";
 
@@ -43,6 +51,16 @@ export const AppDataProvider = ({
     "getProxyProviders",
     calcuProxyProviders,
     SWR_MIHOMO,
+  );
+
+  const { data: runtimeInfo, mutate: refreshRuntimeInfo } = useSWR(
+    "getRuntimeInfo",
+    () => vergeJson<RuntimeInfo>("/runtime-info"),
+    {
+      ...SWR_DEFAULTS,
+      refreshInterval: 5000,
+      errorRetryCount: 1,
+    },
   );
 
   const { data: ruleProviders, mutate: refreshRuleProviders } = useSWR(
@@ -242,6 +260,51 @@ export const AppDataProvider = ({
     errorRetryCount: 1,
   });
 
+  const profileHealth = getProfileHealth(runtimeInfo);
+  const [stableProxiesData, setStableProxiesData] = useState<any>(null);
+  const [stableProxyProviders, setStableProxyProviders] = useState<
+    Record<string, unknown> | null
+  >(null);
+  const previousProfileHealthRef = useRef(profileHealth);
+
+  useEffect(() => {
+    if (!shouldFreezeProxySnapshots(profileHealth) && hasUsableProxySnapshot(proxiesData)) {
+      setStableProxiesData(proxiesData);
+    }
+  }, [profileHealth, proxiesData]);
+
+  useEffect(() => {
+    if (
+      !shouldFreezeProxySnapshots(profileHealth) &&
+      hasUsableProxyProviderSnapshot(proxyProviders)
+    ) {
+      setStableProxyProviders(proxyProviders);
+    }
+  }, [profileHealth, proxyProviders]);
+
+  useEffect(() => {
+    const previous = previousProfileHealthRef.current;
+    if (shouldRefreshAfterRecovery(previous, profileHealth)) {
+      void Promise.allSettled([
+        refreshProxy(),
+        refreshProxyProviders(),
+        refreshRuntimeInfo(),
+      ]);
+    }
+    previousProfileHealthRef.current = profileHealth;
+  }, [profileHealth, refreshProxy, refreshProxyProviders, refreshRuntimeInfo]);
+
+  const effectiveProxiesData =
+    shouldFreezeProxySnapshots(profileHealth) && stableProxiesData
+      ? stableProxiesData
+      : (proxiesData ?? stableProxiesData);
+  const effectiveProxyProviders =
+    shouldFreezeProxySnapshots(profileHealth) && stableProxyProviders
+      ? stableProxyProviders
+      : (proxyProviders ?? stableProxyProviders ?? {});
+  const staleProxyData =
+    shouldFreezeProxySnapshots(profileHealth) && !!stableProxiesData;
+
   // 提供统一的刷新方法
   const refreshAll = useCallback(async () => {
     await Promise.all([
@@ -251,6 +314,7 @@ export const AppDataProvider = ({
       refreshSysproxy(),
       refreshProxyProviders(),
       refreshRuleProviders(),
+      refreshRuntimeInfo(),
     ]);
   }, [
     refreshProxy,
@@ -259,6 +323,7 @@ export const AppDataProvider = ({
     refreshSysproxy,
     refreshProxyProviders,
     refreshRuleProviders,
+    refreshRuntimeInfo,
   ]);
 
   // 聚合所有数据
@@ -296,7 +361,7 @@ export const AppDataProvider = ({
 
     return {
       // 数据
-      proxies: proxiesData,
+      proxies: effectiveProxiesData,
       clashConfig,
       rules: rulesData?.rules ?? [],
       sysproxy,
@@ -304,8 +369,11 @@ export const AppDataProvider = ({
       uptime: uptimeData || 0,
 
       // 提供者数据
-      proxyProviders: proxyProviders || {},
+      proxyProviders: effectiveProxyProviders as AppDataContextType["proxyProviders"],
       ruleProviders: ruleProviders?.providers || {},
+      runtimeInfo: runtimeInfo || null,
+      profileHealth,
+      staleProxyData,
 
       systemProxyAddress: calculateSystemProxyAddress(),
 
@@ -320,13 +388,18 @@ export const AppDataProvider = ({
     } as AppDataContextType;
   }, [
     proxiesData,
+    effectiveProxiesData,
     clashConfig,
     rulesData,
     sysproxy,
     runningMode,
     uptimeData,
     proxyProviders,
+    effectiveProxyProviders,
     ruleProviders,
+    runtimeInfo,
+    profileHealth,
+    staleProxyData,
     verge,
     refreshProxy,
     refreshClashConfig,
@@ -334,6 +407,7 @@ export const AppDataProvider = ({
     refreshSysproxy,
     refreshProxyProviders,
     refreshRuleProviders,
+    refreshRuntimeInfo,
     refreshAll,
   ]);
 
