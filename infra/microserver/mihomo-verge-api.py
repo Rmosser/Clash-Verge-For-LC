@@ -59,6 +59,7 @@ OVERLAY_JSON_PATH = DATA_ROOT / "system-overlay.json"
 OVERLAY_YAML_PATH = DATA_ROOT / "system-overlay.yaml"
 DNS_CONFIG_PATH = DATA_ROOT / "dns-config.json"
 PROXY_CHAIN_PATH = DATA_ROOT / "proxy-chain.json"
+RUNTIME_PROFILE_HEALTH_PATH = DATA_ROOT / "runtime-profile-health.json"
 OPERATIONS_LOG_PATH = LOGS_DIR / "operations.log"
 VERGE_API_SECRET_PATH = Path(
     os.environ.get("VERGE_API_SECRET_FILE", "/etc/mihomo/verge-api.secret")
@@ -116,7 +117,15 @@ DEFAULT_TUN_CONFIG = {
 }
 
 PUBLIC_DNS_SERVERS = ["223.5.5.5", "119.29.29.29"]
-DNS_POLICY_DOMAINS = ("+.heiyu.space", "+.baidu.com")
+DEFAULT_DOH_SERVERS = [
+    "https://dns.alidns.com/dns-query",
+    "https://doh.pub/dns-query",
+]
+LEGACY_DOH_SERVERS = {
+    "https://1.1.1.1/dns-query",
+    "https://1.0.0.1/dns-query",
+}
+DNS_POLICY_DOMAINS = ("+.heiyu.space", "+.lazycat.cloud", "+.baidu.com")
 LEGACY_DIRECT_DNS_SERVERS = {"192.168.1.1", "fe80::1"}
 
 LEGACY_DIRECT_DNS_POLICY_KEYS = (
@@ -175,6 +184,15 @@ DEFAULT_UNLOCK_ITEMS = [
     {"name": "YouTube Premium", "status": "Pending"},
     {"name": "Spotify", "status": "Pending"},
 ]
+
+DEFAULT_RUNTIME_PROFILE_HEALTH = {
+    "status": "ready",
+    "activeProfileId": "",
+    "lastGoodProfileId": "",
+    "lastAppliedAt": "",
+    "lastError": "",
+    "providerCounts": {},
+}
 
 UNLOCK_TEST_URLS = {
     "ChatGPT": "https://chat.openai.com/cdn-cgi/trace",
@@ -335,10 +353,7 @@ def build_default_dns_config() -> dict[str, Any]:
         "respect-rules": True,
         "default-nameserver": bootstrap_servers,
         "proxy-server-nameserver": bootstrap_servers,
-        "nameserver": [
-            "https://1.1.1.1/dns-query",
-            "https://1.0.0.1/dns-query",
-        ],
+        "nameserver": list(DEFAULT_DOH_SERVERS),
         "nameserver-policy": {},
     }
 
@@ -460,6 +475,44 @@ def save_json(path: Path, data: Any, mode: int | None = None) -> None:
         path,
         json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         mode,
+    )
+
+
+def normalize_runtime_profile_health(raw: Any) -> dict[str, Any]:
+    state = copy.deepcopy(DEFAULT_RUNTIME_PROFILE_HEALTH)
+    if not isinstance(raw, dict):
+        return state
+
+    status = str(raw.get("status") or state["status"]).strip().lower()
+    state["status"] = status if status in {"ready", "degraded"} else "ready"
+    for key in ("activeProfileId", "lastGoodProfileId", "lastAppliedAt", "lastError"):
+        state[key] = str(raw.get(key) or "")
+
+    provider_counts = raw.get("providerCounts")
+    if isinstance(provider_counts, dict):
+        normalized_counts: dict[str, int] = {}
+        for key, value in provider_counts.items():
+            try:
+                normalized_counts[str(key)] = max(0, int(value))
+            except Exception:
+                continue
+        state["providerCounts"] = normalized_counts
+    return state
+
+
+def get_runtime_profile_health_state() -> dict[str, Any]:
+    ensure_dirs()
+    loaded = load_json(RUNTIME_PROFILE_HEALTH_PATH, DEFAULT_RUNTIME_PROFILE_HEALTH)
+    normalized = normalize_runtime_profile_health(loaded)
+    if normalized != loaded:
+        save_json(RUNTIME_PROFILE_HEALTH_PATH, normalized)
+    return normalized
+
+
+def save_runtime_profile_health_state(state: dict[str, Any]) -> None:
+    save_json(
+        RUNTIME_PROFILE_HEALTH_PATH,
+        normalize_runtime_profile_health(state),
     )
 
 
@@ -953,6 +1006,10 @@ def normalize_dns_config(data: dict[str, Any], enabled: bool) -> dict[str, Any]:
     ):
         merged["proxy-server-nameserver"] = bootstrap_servers
 
+    current_nameserver = list(merged.get("nameserver") or [])
+    if not current_nameserver or set(current_nameserver).issubset(LEGACY_DOH_SERVERS):
+        merged["nameserver"] = list(DEFAULT_DOH_SERVERS)
+
     policy = copy.deepcopy(merged.get("nameserver-policy") or {})
     for key in LEGACY_DIRECT_DNS_POLICY_KEYS:
         policy.pop(key, None)
@@ -1337,7 +1394,7 @@ def ensure_state() -> None:
 
     profiles = get_profiles_state()
     if (
-        not profiles.get("current")
+        profiles_explicitly_empty(profiles)
         and not ENSURING_EMPTY_RUNTIME
         and empty_runtime_requires_repair()
     ):
@@ -1575,8 +1632,52 @@ def runtime_probe_health() -> dict[str, Any]:
     return {"status": "ok", "checkedAt": iso_now()}
 
 
+def runtime_profile_provider_counts() -> dict[str, int]:
+    try:
+        payload = controller_request("GET", "/providers/proxies", timeout=6)
+    except Exception:
+        return {}
+
+    providers = payload.get("providers") if isinstance(payload, dict) else {}
+    counts: dict[str, int] = {}
+    if not isinstance(providers, dict):
+        return counts
+
+    for name, item in providers.items():
+        if not isinstance(item, dict):
+            continue
+        proxies = item.get("proxies") or []
+        if isinstance(proxies, list):
+            counts[str(name)] = len(proxies)
+    return counts
+
+
+def mark_runtime_profile_ready(active_profile_id: str) -> dict[str, Any]:
+    state = get_runtime_profile_health_state()
+    state["status"] = "ready"
+    state["activeProfileId"] = active_profile_id
+    if active_profile_id:
+        state["lastGoodProfileId"] = active_profile_id
+    state["lastAppliedAt"] = iso_now()
+    state["lastError"] = ""
+    state["providerCounts"] = runtime_profile_provider_counts()
+    save_runtime_profile_health_state(state)
+    return state
+
+
+def mark_runtime_profile_degraded(error_message: str) -> dict[str, Any]:
+    state = get_runtime_profile_health_state()
+    state["status"] = "degraded"
+    state["lastError"] = str(error_message or "")
+    if not state.get("activeProfileId"):
+        state["activeProfileId"] = str(state.get("lastGoodProfileId") or "")
+    save_runtime_profile_health_state(state)
+    return state
+
+
 def runtime_info_payload() -> dict[str, Any]:
     contract = load_runtime_contract()
+    profile_health = get_runtime_profile_health_state()
     capabilities = copy.deepcopy(
         contract.get("capabilities") or DEFAULT_RUNTIME_CONTRACT["capabilities"]
     )
@@ -1609,6 +1710,7 @@ def runtime_info_payload() -> dict[str, Any]:
         ),
         "capabilities": capabilities,
         "probeHealth": runtime_probe_health(),
+        "profileHealth": profile_health,
     }
 
 
@@ -1798,6 +1900,11 @@ def build_runtime_text_for_current_or_empty_state(
     return text, secret, None
 
 
+def profiles_explicitly_empty(profiles: dict[str, Any] | None = None) -> bool:
+    state = profiles if isinstance(profiles, dict) else get_profiles_state()
+    return not state.get("current") and not (state.get("items") or [])
+
+
 def render_proxy_chain_yaml(items: list[str]) -> str:
     block = {"proxies": [{"name": item, "type": "relay"} for item in items]}
     return render_top_level_yaml(block)
@@ -1981,20 +2088,35 @@ def apply_runtime_text(new_text: str, log_message: str) -> None:
 def apply_current_profile() -> None:
     item = current_profile_item()
     new_text, _ = build_runtime_text(item)
-    apply_runtime_text(new_text, f"applied profile {item['uid']}")
+    try:
+        apply_runtime_text(new_text, f"applied profile {item['uid']}")
+    except Exception as exc:
+        mark_runtime_profile_degraded(f"应用活动配置失败: {exc}")
+        raise
+    mark_runtime_profile_ready(str(item["uid"]))
 
 
 def apply_empty_profile_runtime() -> None:
     new_text, _ = build_runtime_text(base_text=empty_profile_runtime_text())
-    apply_runtime_text(new_text, "applied empty runtime profile")
+    try:
+        apply_runtime_text(new_text, "applied empty runtime profile")
+    except Exception as exc:
+        mark_runtime_profile_degraded(f"应用空运行态失败: {exc}")
+        raise
+    mark_runtime_profile_ready("")
 
 
 def apply_runtime_for_current_or_empty_state() -> None:
     new_text, _, item = build_runtime_text_for_current_or_empty_state()
-    if item:
-        apply_runtime_text(new_text, f"applied profile {item['uid']}")
-    else:
-        apply_runtime_text(new_text, "applied empty runtime profile")
+    try:
+        if item:
+            apply_runtime_text(new_text, f"applied profile {item['uid']}")
+        else:
+            apply_runtime_text(new_text, "applied empty runtime profile")
+    except Exception as exc:
+        mark_runtime_profile_degraded(f"应用运行时配置失败: {exc}")
+        raise
+    mark_runtime_profile_ready(str(item["uid"]) if item else "")
 
 
 def fetch_remote_profile(
@@ -2650,9 +2772,14 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
         if not item:
             raise RuntimeError("profile not found")
         if item.get("type") == "remote" and item.get("url"):
-            payload, extra, _ = fetch_remote_profile(
-                str(item["url"]), args.get("option") or item.get("option")
-            )
+            try:
+                payload, extra, _ = fetch_remote_profile(
+                    str(item["url"]), args.get("option") or item.get("option")
+                )
+            except Exception as exc:
+                if profiles.get("current") == uid:
+                    mark_runtime_profile_degraded(f"刷新活动订阅失败: {exc}")
+                raise
             atomic_write_text(profile_path(uid), payload)
             item["updated"] = now_ms()
             item["extra"] = extra
@@ -2684,6 +2811,12 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
         profiles = get_profiles_state()
         patch = args.get("profiles") or {}
         previous_current = str(profiles.get("current") or "")
+        explicit_empty_patch = (
+            "items" in patch
+            and patch.get("current") == ""
+            and isinstance(patch.get("items"), list)
+            and not patch.get("items")
+        )
         if "items" in patch and isinstance(patch["items"], list):
             profiles["items"] = patch["items"]
         if "current" in patch and patch["current"] != profiles.get("current"):
@@ -2693,18 +2826,30 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
         if profiles.get("current") != previous_current:
             if profiles.get("current"):
                 apply_current_profile()
-            else:
+            elif explicit_empty_patch:
                 apply_empty_profile_runtime()
-        elif not profiles.get("current"):
+            else:
+                mark_runtime_profile_degraded(
+                    "配置列表短暂进入空状态，继续保留上一次成功运行态。"
+                )
+                append_operation_log(
+                    "skipped applying empty runtime for transient empty profile state"
+                )
+        elif not profiles.get("current") and explicit_empty_patch:
             apply_empty_profile_runtime()
         return True
 
     if cmd == "enhance_profiles":
         try:
-            if get_profiles_state().get("current"):
+            profiles = get_profiles_state()
+            if profiles.get("current"):
                 apply_current_profile()
-            else:
+            elif profiles_explicitly_empty(profiles):
                 apply_empty_profile_runtime()
+            else:
+                mark_runtime_profile_degraded(
+                    "当前配置列表为空，继续保留上一次成功运行态。"
+                )
         except ApiError:
             raise
         except Exception as exc:

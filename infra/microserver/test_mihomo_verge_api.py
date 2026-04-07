@@ -102,6 +102,7 @@ class MihomoVergeApiTests(unittest.TestCase):
             normalized["nameserver-policy"],
             {
                 "+.heiyu.space": ["192.168.8.1"],
+                "+.lazycat.cloud": ["192.168.8.1"],
                 "+.baidu.com": ["192.168.8.1"],
                 "+.custom.internal": ["10.0.0.2"],
             },
@@ -124,6 +125,46 @@ class MihomoVergeApiTests(unittest.TestCase):
         self.assertEqual(
             normalized["proxy-server-nameserver"],
             ["192.168.8.1", "223.5.5.5", "119.29.29.29"],
+        )
+
+    def test_build_default_dns_config_prefers_cn_reachable_doh_endpoints(self) -> None:
+        with patch.object(MODULE, "detect_direct_dns_servers", return_value=["192.168.8.1"]):
+            normalized = MODULE.build_default_dns_config()
+
+        self.assertEqual(
+            normalized["nameserver"],
+            [
+                "https://dns.alidns.com/dns-query",
+                "https://doh.pub/dns-query",
+            ],
+        )
+        self.assertEqual(
+            normalized["nameserver-policy"],
+            {
+                "+.heiyu.space": ["192.168.8.1"],
+                "+.lazycat.cloud": ["192.168.8.1"],
+                "+.baidu.com": ["192.168.8.1"],
+            },
+        )
+
+    def test_normalize_dns_config_replaces_legacy_cloudflare_doh_defaults(self) -> None:
+        with patch.object(MODULE, "detect_direct_dns_servers", return_value=["192.168.8.1"]):
+            normalized = MODULE.normalize_dns_config(
+                {
+                    "nameserver": [
+                        "https://1.1.1.1/dns-query",
+                        "https://1.0.0.1/dns-query",
+                    ]
+                },
+                True,
+            )
+
+        self.assertEqual(
+            normalized["nameserver"],
+            [
+                "https://dns.alidns.com/dns-query",
+                "https://doh.pub/dns-query",
+            ],
         )
 
     def test_normalize_tun_config_keeps_diagnostic_bypass_pool(self) -> None:
@@ -149,6 +190,11 @@ class MihomoVergeApiTests(unittest.TestCase):
             patch.object(MODULE, "get_profiles_state", return_value={"current": "", "items": []}),
             patch.object(
                 MODULE,
+                "get_runtime_profile_health_state",
+                return_value=copy.deepcopy(MODULE.DEFAULT_RUNTIME_PROFILE_HEALTH),
+            ),
+            patch.object(
+                MODULE,
                 "runtime_probe_health",
                 return_value={"status": "ok", "checkedAt": "2026-03-12T00:00:00Z"},
             ),
@@ -160,6 +206,7 @@ class MihomoVergeApiTests(unittest.TestCase):
             payload["capabilities"]["runtimeProfile"]["label"],
             "空配置运行态",
         )
+        self.assertEqual(payload["profileHealth"]["status"], "ready")
 
     def test_runtime_info_payload_forces_system_proxy_disabled_even_with_contract_override(self) -> None:
         contract = copy.deepcopy(MODULE.DEFAULT_RUNTIME_CONTRACT)
@@ -171,6 +218,11 @@ class MihomoVergeApiTests(unittest.TestCase):
         with (
             patch.object(MODULE, "load_runtime_contract", return_value=contract),
             patch.object(MODULE, "get_profiles_state", return_value={"current": "", "items": []}),
+            patch.object(
+                MODULE,
+                "get_runtime_profile_health_state",
+                return_value=copy.deepcopy(MODULE.DEFAULT_RUNTIME_PROFILE_HEALTH),
+            ),
             patch.object(
                 MODULE,
                 "runtime_probe_health",
@@ -187,6 +239,30 @@ class MihomoVergeApiTests(unittest.TestCase):
             },
         )
 
+    def test_runtime_info_payload_includes_profile_health(self) -> None:
+        contract = copy.deepcopy(MODULE.DEFAULT_RUNTIME_CONTRACT)
+        profile_health = {
+            "status": "degraded",
+            "activeProfileId": "demo",
+            "lastGoodProfileId": "demo",
+            "lastAppliedAt": "2026-03-31T01:44:24Z",
+            "lastError": "订阅拉取超时（20s）",
+            "providerCounts": {"high-premium": 7},
+        }
+        with (
+            patch.object(MODULE, "load_runtime_contract", return_value=contract),
+            patch.object(MODULE, "get_profiles_state", return_value={"current": "demo", "items": [{"uid": "demo"}]}),
+            patch.object(MODULE, "get_runtime_profile_health_state", return_value=profile_health),
+            patch.object(
+                MODULE,
+                "runtime_probe_health",
+                return_value={"status": "ok", "checkedAt": "2026-03-12T00:00:00Z"},
+            ),
+        ):
+            payload = MODULE.runtime_info_payload()
+
+        self.assertEqual(payload["profileHealth"], profile_health)
+
     def test_apply_runtime_for_current_or_empty_state_uses_empty_runtime_log(self) -> None:
         with (
             patch.object(
@@ -195,6 +271,7 @@ class MihomoVergeApiTests(unittest.TestCase):
                 return_value=("runtime-yaml", "secret", None),
             ),
             patch.object(MODULE, "apply_runtime_text") as apply_runtime_text,
+            patch.object(MODULE, "mark_runtime_profile_ready") as mark_runtime_profile_ready,
         ):
             MODULE.apply_runtime_for_current_or_empty_state()
 
@@ -202,6 +279,7 @@ class MihomoVergeApiTests(unittest.TestCase):
             "runtime-yaml",
             "applied empty runtime profile",
         )
+        mark_runtime_profile_ready.assert_called_once_with("")
 
     def test_apply_runtime_for_current_or_empty_state_preserves_profile_log(self) -> None:
         with (
@@ -211,6 +289,7 @@ class MihomoVergeApiTests(unittest.TestCase):
                 return_value=("runtime-yaml", "secret", {"uid": "demo-profile"}),
             ),
             patch.object(MODULE, "apply_runtime_text") as apply_runtime_text,
+            patch.object(MODULE, "mark_runtime_profile_ready") as mark_runtime_profile_ready,
         ):
             MODULE.apply_runtime_for_current_or_empty_state()
 
@@ -218,6 +297,121 @@ class MihomoVergeApiTests(unittest.TestCase):
             "runtime-yaml",
             "applied profile demo-profile",
         )
+        mark_runtime_profile_ready.assert_called_once_with("demo-profile")
+
+    def test_apply_current_profile_records_ready_profile_health(self) -> None:
+        with (
+            patch.object(MODULE, "current_profile_item", return_value={"uid": "demo-profile"}),
+            patch.object(MODULE, "build_runtime_text", return_value=("runtime-yaml", "secret")),
+            patch.object(MODULE, "apply_runtime_text"),
+            patch.object(
+                MODULE,
+                "controller_request",
+                return_value={
+                    "providers": {
+                        "high-premium": {"proxies": [1, 2, 3]},
+                        "high-standard": {"proxies": [1]},
+                    }
+                },
+            ),
+            patch.object(
+                MODULE,
+                "get_runtime_profile_health_state",
+                return_value=copy.deepcopy(MODULE.DEFAULT_RUNTIME_PROFILE_HEALTH),
+            ),
+            patch.object(MODULE, "save_runtime_profile_health_state") as save_state,
+        ):
+            MODULE.apply_current_profile()
+
+        saved_state = save_state.call_args.args[0]
+        self.assertEqual(saved_state["status"], "ready")
+        self.assertEqual(saved_state["activeProfileId"], "demo-profile")
+        self.assertEqual(saved_state["lastGoodProfileId"], "demo-profile")
+        self.assertEqual(
+            saved_state["providerCounts"],
+            {"high-premium": 3, "high-standard": 1},
+        )
+        self.assertEqual(saved_state["lastError"], "")
+
+    def test_apply_current_profile_marks_degraded_when_apply_fails(self) -> None:
+        initial_state = {
+            "status": "ready",
+            "activeProfileId": "demo-profile",
+            "lastGoodProfileId": "demo-profile",
+            "lastAppliedAt": "2026-03-31T01:44:24Z",
+            "lastError": "",
+            "providerCounts": {"high-premium": 7},
+        }
+        with (
+            patch.object(MODULE, "current_profile_item", return_value={"uid": "demo-profile"}),
+            patch.object(MODULE, "build_runtime_text", return_value=("runtime-yaml", "secret")),
+            patch.object(MODULE, "apply_runtime_text", side_effect=RuntimeError("boom")),
+            patch.object(MODULE, "get_runtime_profile_health_state", return_value=copy.deepcopy(initial_state)),
+            patch.object(MODULE, "save_runtime_profile_health_state") as save_state,
+        ):
+            with self.assertRaises(RuntimeError):
+                MODULE.apply_current_profile()
+
+        saved_state = save_state.call_args.args[0]
+        self.assertEqual(saved_state["status"], "degraded")
+        self.assertEqual(saved_state["activeProfileId"], "demo-profile")
+        self.assertEqual(saved_state["lastGoodProfileId"], "demo-profile")
+        self.assertIn("boom", saved_state["lastError"])
+
+    def test_patch_profiles_config_keeps_last_good_runtime_for_transient_empty_state(self) -> None:
+        with (
+            patch.object(MODULE, "ensure_state"),
+            patch.object(
+                MODULE,
+                "get_profiles_state",
+                return_value={"current": "demo", "items": [{"uid": "demo"}]},
+            ),
+            patch.object(
+                MODULE,
+                "normalize_profiles_state",
+                return_value=({"current": "", "items": []}, True),
+            ),
+            patch.object(MODULE, "save_profiles_state"),
+            patch.object(MODULE, "apply_empty_profile_runtime") as apply_empty_profile_runtime,
+            patch.object(MODULE, "mark_runtime_profile_degraded") as mark_runtime_profile_degraded,
+            patch.object(MODULE, "append_operation_log") as append_operation_log,
+        ):
+            MODULE.invoke_command(
+                "patch_profiles_config",
+                {"profiles": {"current": ""}},
+            )
+
+        apply_empty_profile_runtime.assert_not_called()
+        mark_runtime_profile_degraded.assert_called_once()
+        append_operation_log.assert_called_once()
+
+    def test_update_current_remote_profile_marks_runtime_degraded_on_fetch_timeout(self) -> None:
+        timeout_error = MODULE.ApiError(
+            "PROFILE_FETCH_TIMEOUT",
+            "订阅拉取超时（20s）",
+            status=504,
+        )
+        profiles = {
+            "current": "demo",
+            "items": [
+                {
+                    "uid": "demo",
+                    "type": "remote",
+                    "url": "https://example.com/sub.yaml",
+                    "option": {},
+                }
+            ],
+        }
+        with (
+            patch.object(MODULE, "ensure_state"),
+            patch.object(MODULE, "get_profiles_state", return_value=profiles),
+            patch.object(MODULE, "fetch_remote_profile", side_effect=timeout_error),
+            patch.object(MODULE, "mark_runtime_profile_degraded") as mark_runtime_profile_degraded,
+        ):
+            with self.assertRaises(MODULE.ApiError):
+                MODULE.invoke_command("update_profile", {"index": "demo"})
+
+        mark_runtime_profile_degraded.assert_called_once()
 
     def test_patch_verge_config_forces_enable_system_proxy_false(self) -> None:
         verge_state = {
