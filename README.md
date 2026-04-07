@@ -19,8 +19,8 @@ Mihomo (Clash Meta) web dashboard for LazyCat Microservice.
 **普通用户**：想让 YouTube、ChatGPT 等网站流畅访问。打开应用、导入订阅、选好代理分组即可。
 **Casual user**: Want YouTube and ChatGPT to work. Open the app, import a subscription, pick a proxy group.
 
-**开发者**：需要 Docker 容器出网走代理。在容器中设置环境变量 `HTTP_PROXY=http://172.18.0.1:17890` 即可；详见 [docs/USER_GUIDE.md §Docker 应用如何使用代理](docs/USER_GUIDE.md#docker-应用如何使用代理--docker-apps-and-proxy)。
-**Developer**: Need Docker container egress through the proxy. Set `HTTP_PROXY=http://172.18.0.1:17890` in your container; see [docs/USER_GUIDE.md §Docker Apps and Proxy](docs/USER_GUIDE.md#docker-应用如何使用代理--docker-apps-and-proxy).
+**开发者**：需要 Docker 容器出网走代理。请按用户指南配置完整的代理环境变量组（`HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 等）；详见 [docs/USER_GUIDE.md §Docker 应用如何使用代理](docs/USER_GUIDE.md#docker-应用如何使用代理--docker-apps-and-proxy)。
+**Developer**: Need Docker container egress through the proxy. Configure the full proxy env var set (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, etc.) as described in [docs/USER_GUIDE.md §Docker Apps and Proxy](docs/USER_GUIDE.md#docker-应用如何使用代理--docker-apps-and-proxy).
 
 ## 和桌面版有什么不同 | Differences from Desktop
 
@@ -45,8 +45,8 @@ Full comparison table: [docs/USER_GUIDE.md §Web vs Desktop](docs/USER_GUIDE.md#
 
 1. 打开 `https://clash.<your-box>.heiyu.space`，用懒猫账号登录。
    Open `https://clash.<your-box>.heiyu.space` and log in with your LazyCat account.
-2. 进入 **Proxies** 页面，导入订阅链接。
-   Go to the **Proxies** page and import your subscription URL.
+2. 进入 **Profiles** 页面，导入订阅链接。
+   Go to the **Profiles** page and import your subscription URL.
 3. 选择代理分组，验证 IP 已切换到预期出口。
    Select a proxy group and verify your external IP has changed.
 

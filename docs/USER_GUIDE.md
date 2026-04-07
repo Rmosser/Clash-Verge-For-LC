@@ -53,8 +53,8 @@ Log in with your LazyCat account. The dashboard connects to the Mihomo controlle
 
 ### 第二步：导入订阅 | Import Your Subscription
 
-1. 点击左侧导航的 **Proxies（代理）**。
-   Click **Proxies** in the left nav.
+1. 点击左侧导航的 **Profiles（配置）**。
+   Click **Profiles** in the left nav.
 2. 点击右上角 **+** 或"添加订阅"，粘贴你的订阅 URL。
    Click **+** or "Add subscription", paste your subscription URL.
 3. 点击"更新"拉取节点列表。
@@ -83,8 +83,8 @@ Click any node card on the **Proxies** page, or use the latency test button to r
 
 ### 更新订阅 | Updating Subscriptions
 
-在 **Proxies** 页面的订阅卡片上点击"更新"图标，或开启自动更新（建议每 24 小时）。
-Click the refresh icon on your subscription card, or enable auto-update (recommended: every 24 hours).
+在 **Profiles** 页面的订阅卡片上点击"更新"图标，或开启自动更新（建议每 24 小时）。
+Click the refresh icon on your subscription card in **Profiles**, or enable auto-update (recommended: every 24 hours).
 
 ### 查看日志 | Viewing Logs
 
