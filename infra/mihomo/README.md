@@ -1,27 +1,19 @@
 # infra/mihomo
 
-Microserver-side (Debian) deployment artifacts for Mihomo (Clash Meta).
+宿主机部署 `mihomo` 时使用的模板和 unit 快照。
 
-## Files
+## 这里放什么
 
-- `mihomo.service`
-  - Snapshot of the systemd unit currently running on the microserver.
-  - Grants `CAP_NET_ADMIN`/`CAP_NET_RAW` so Mihomo can manage TUN + policy routing.
+- `mihomo.service`：当前 host-native 部署使用的 systemd unit 模板
+- `config.base.yaml`：安全模板；不含真实节点和凭据
 
-- `config.base.yaml`
-  - Safe template (no credentials) documenting the key settings we rely on:
-    - `external-controller: 172.18.0.1:9090` so LazyCat ingress can reach it via `host.lzcapp`
-    - `tun:` enabled with `route-exclude-address` bypasses for LazyCat
+## 这份目录解决什么问题
 
-## Runtime requirements (microserver)
+- 给 `scripts/deploy_microserver.sh` 提供稳定的模板输入
+- 固定 controller 监听地址、TUN 基础字段和默认绕行集合
+- 避免把真实私有配置写进仓库
 
-- Mihomo binary installed at `/usr/local/bin/mihomo`
-- `Country.mmdb` present at `/var/lib/mihomo/Country.mmdb` (required if rules use `GEOIP,CN`)
+## 不要在这里做什么
 
-## Deployment
-
-Use the repo scripts:
-
-- `scripts/deploy_microserver.sh`  (push config + unit, restart)
-- `scripts/deploy_dashboard.sh`    (build + install the LazyCat dashboard app)
-- `scripts/deploy_all.sh`          (both)
+- 不要把真实订阅、secret 或节点凭据写进这个目录
+- 不要把这份模板误当成目标机当前真实配置；目标机真相看 [../../docs/CURRENT_RUNTIME.md](../../docs/CURRENT_RUNTIME.md) 和 [../../docs/HOST_NATIVE_RUNBOOK.md](../../docs/HOST_NATIVE_RUNBOOK.md)

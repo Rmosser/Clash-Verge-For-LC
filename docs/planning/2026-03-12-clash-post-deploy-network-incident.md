@@ -1,5 +1,13 @@
 # 2026-03-12 Clash 部署后微服网络失联事故研判
 
+状态：历史事故文档，不是当前运行手册。
+
+阅读方式：
+
+- 本文件前半段记录重置前的事故研判和临时恢复思路
+- 后半段记录重置后的重新验证和剩余问题收敛
+- 当前执行以 [../CURRENT_RUNTIME.md](../CURRENT_RUNTIME.md)、[../HOST_NATIVE_RUNBOOK.md](../HOST_NATIVE_RUNBOOK.md) 和 [../LAZYCAT_NETWORK_REPORT.md](../LAZYCAT_NETWORK_REPORT.md) 为准
+
 ## 背景
 
 在对懒猫微服上的 Mihomo / Clash Verge Web 做深度适配并重新部署后，出现了以下连锁现象：

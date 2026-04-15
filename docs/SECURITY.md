@@ -1,24 +1,34 @@
-# Security notes
+# 安全边界
 
-## Controller exposure
+## 必守规则
 
-- Do not expose Mihomo `external-controller` to LAN/WAN.
-- This project is designed to keep the controller reachable only on the microserver host, and access it via the LazyCat app route (`/api -> host.lzcapp:9090`).
+- 不要把 Mihomo `external-controller` 暴露到 LAN/WAN
+- `external-controller` 保持在 `172.18.0.1:9090`
+- 浏览器入口只走懒猫应用路由，不走裸端口
+- `secret` 不允许为空
+- 真实配置、订阅 token 和 secret 不进 Git；只放 `var/private/` 或目标机的私有路径
 
-## Secret (Bearer token)
+## 当前访问模型
 
-- Always set a non-empty `secret:` in `/etc/mihomo/config.yaml`.
-- `scripts/deploy_microserver.sh` auto-generates one if empty and saves it locally to `var/private/mihomo.secret`.
-- Use `scripts/mihomo-manager secret show` to retrieve the current secret when configuring metacubexd.
-- The LazyCat dashboard no longer embeds runtime secrets into `lzcapp-config.js`.
-  - Browsers bootstrap runtime config from `/verge-api/public-config` behind the LazyCat login session.
-  - `/api/*` still uses the Mihomo Bearer secret, but the secret is resolved on the microserver at runtime instead of being baked into the LPK.
+- 用户访问：`https://clash.<box>.heiyu.space`
+- 浏览器运行时配置：`/verge-api/public-config`
+- 宿主机控制接口：
+  - `172.18.0.1:9090`：controller
+  - `172.18.0.1:9091`：Verge API
+  - `172.18.0.1:17890`：container proxy
 
-## TUN / transparent proxy risk
+## 高风险变更
 
-- TUN changes can break LazyCat control-plane / tunnel traffic.
-- Review `docs/LAZYCAT_NETWORK_REPORT.md` before changing TUN, and keep required bypasses (`6.6.6.6/32`, `2000::6666/128`, `fc03:1136:3800::/40`, plus local/container networks).
+以下变更都默认视为高风险：
 
-## Docker privileged risk
+- 打开或重写 `tun`
+- 打开或重写 `dns`
+- 修改 `route-exclude-address`
+- 覆盖 `.heiyu.space` / `.lazycat.cloud` 的解析策略
+- 把 compose 方案直接拿去替代当前 host-native 运行链
 
-The compose option in `deploy/` uses host networking + `NET_ADMIN` + `/dev/net/tun`, which is effectively a privileged networking setup. Only use it if you understand the risks and trust the image/source.
+动手前先读 [LAZYCAT_NETWORK_REPORT.md](LAZYCAT_NETWORK_REPORT.md)。
+
+## 额外说明
+
+`deploy/` 下的 compose 目录需要 `host network`、`NET_ADMIN` 和 `/dev/net/tun`，属于高权限网络方案。它不是当前仓库默认部署路径。

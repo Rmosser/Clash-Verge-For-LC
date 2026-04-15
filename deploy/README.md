@@ -1,35 +1,57 @@
 # deploy/
 
-Docker compose deployment option for **mihomo** on the microserver.
+这是一个可选的 Docker Compose 方案，用来在微服宿主机上运行 `mihomo` 容器。
 
-Notes:
+它不是当前仓库默认和已验证的整套部署路径。当前默认路径是 host-native，见 [../docs/CURRENT_RUNTIME.md](../docs/CURRENT_RUNTIME.md) 和 [../docs/HOST_NATIVE_RUNBOOK.md](../docs/HOST_NATIVE_RUNBOOK.md)。
 
-- The dashboard is shipped as a **LazyCat app** (`src/mihomo-dashboard-app/`), not via compose.
-- This compose setup is intended for the **microserver host** (Debian) and uses `network_mode: host`
-  so TUN + policy routing can affect the host network stack.
-- Before enabling or changing TUN, review `docs/LAZYCAT_NETWORK_REPORT.md` (avoid breaking LazyCat control-plane/tunnel).
+## 适用场景
 
-## Quick start
+只在以下场景使用：
 
-From the microserver (or any machine that controls the microserver Docker daemon):
+- 你明确要用 Docker 管理 `mihomo` core
+- 你接受 `host network`、`NET_ADMIN`、`/dev/net/tun` 带来的高权限网络风险
+- 你知道这套 compose 目录只覆盖 `mihomo` core，不自动提供当前 dashboard 依赖的完整 host-native 运行链
+
+## 不适用场景
+
+以下需求不要优先选这里：
+
+- 想得到当前仓库推荐的默认部署方案
+- 想直接复用当前 dashboard 的完整 `/verge-api/public-config` 引导链
+- 想把文档中的“当前已验证基线”原样部署到 `rainierdev` 或 `rainierspace`
+
+## 快速开始
 
 ```bash
 cd deploy
-cp .env.example .env   # optional
-./init.sh              # generates config.yaml + secret.txt if needed
+cp .env.example .env
+./init.sh
 docker compose up -d
 ```
 
-Then:
+默认情况下：
 
-- Install the LazyCat dashboard app via `scripts/deploy_dashboard.sh`.
-- Open the dashboard and set the controller secret from `deploy/secret.txt`.
+- `MIHOMO_TUN_ENABLE=1`
+- `external-controller` 必须保持 `172.18.0.1:9090`
+- `secret` 会在为空时生成到 `deploy/secret.txt`
 
-## TUN toggle
+## TUN 开关
 
-- Default is enabled (`MIHOMO_TUN_ENABLE=1`).
-- To disable TUN during init:
+关闭 TUN：
 
 ```bash
 MIHOMO_TUN_ENABLE=0 ./init.sh
+```
+
+## 当前限制
+
+- 这份 compose 目录只管 `mihomo`
+- 它不自动安装 `mihomo-verge-api`
+- 它不自动提供当前仓库默认的浏览器运行时引导路径
+
+如果你要当前仓库的默认整套链路，回到仓库根目录执行：
+
+```bash
+MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 bash scripts/deploy_microserver.sh
+bash scripts/deploy_dashboard.sh
 ```
