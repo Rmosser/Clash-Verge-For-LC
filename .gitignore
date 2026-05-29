@@ -39,6 +39,7 @@ src/mihomo-dashboard-app/dist/**
 # Runtime and tooling artifacts
 output/
 src/mihomo-dashboard-app/.pnpm-store/
+.codex-tmp/
 
 # IDE
 .idea/
