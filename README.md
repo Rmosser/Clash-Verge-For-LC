@@ -57,6 +57,7 @@ Need more detail? See [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
 
 | 文档 | 说明 |
 |------|------|
+| [docs/index.md](docs/index.md) | 文档索引与 Harness governance 入口 / Document index and Harness governance entrypoint |
 | [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | 完整用户指南：首次设置、订阅导入、Docker 代理、故障排查 / Full guide: setup, subscriptions, Docker proxy, troubleshooting |
 | [docs/SECURITY.md](docs/SECURITY.md) | 安全说明：controller 隔离、secret 管理、TUN 风险 / Security: controller isolation, secret management, TUN risks |
 | [docs/LAZYCAT_NETWORK_REPORT.md](docs/LAZYCAT_NETWORK_REPORT.md) | 网络影响评估：TUN 绕行、容器出网、Node.js 代理 / Network report: TUN bypass, container egress, Node.js proxy |
