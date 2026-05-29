@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import time
 import unittest
 import urllib.error
 from pathlib import Path
@@ -262,6 +263,47 @@ class MihomoVergeApiTests(unittest.TestCase):
             payload = MODULE.runtime_info_payload()
 
         self.assertEqual(payload["profileHealth"], profile_health)
+
+    def test_check_unlock_status_runs_items_in_parallel(self) -> None:
+        test_items = [
+            {"name": "ChatGPT", "status": "Pending"},
+            {"name": "Claude", "status": "Pending"},
+        ]
+
+        def slow_proxy_request(*_args, **_kwargs):
+            time.sleep(0.2)
+            return 200, b"ok"
+
+        with (
+            patch.object(MODULE, "DEFAULT_UNLOCK_ITEMS", test_items),
+            patch.object(
+                MODULE,
+                "UNLOCK_TEST_URLS",
+                {"ChatGPT": "https://chat.openai.com/", "Claude": "https://claude.ai/"},
+            ),
+            patch.object(MODULE, "current_region", return_value="US"),
+            patch.object(MODULE, "proxy_request", side_effect=slow_proxy_request),
+        ):
+            started = time.monotonic()
+            result = MODULE.check_unlock_status(timeout_seconds=3)
+            elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 0.35)
+        self.assertEqual(result["summary"]["total"], 2)
+        self.assertEqual(result["summary"]["success"], 2)
+
+    def test_run_unlock_probe_passes_timeout_budget_to_unlock_checks(self) -> None:
+        with patch.object(
+            MODULE,
+            "check_unlock_status",
+            return_value={
+                "items": [],
+                "summary": {"total": 0, "success": 0, "failed": 0, "timeout": 0},
+            },
+        ) as check_unlock_status:
+            MODULE.run_unlock_probe(timeout_ms=3000)
+
+        check_unlock_status.assert_called_once_with(None, timeout_seconds=3)
 
     def test_apply_runtime_for_current_or_empty_state_uses_empty_runtime_log(self) -> None:
         with (

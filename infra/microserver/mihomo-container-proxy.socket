@@ -1,10 +1,13 @@
 [Unit]
-Description=Mihomo container proxy socket (172.18.0.1:17890 -> 127.0.0.1:7890)
+Description=Mihomo container proxy socket (app bridges -> 127.0.0.1:7890)
 Requires=mihomo.service
 After=mihomo.service
 
 [Socket]
 ListenStream=172.18.0.1:17890
+ListenStream=172.19.0.1:17890
+ListenStream=172.28.3.1:17890
+FreeBind=true
 NoDelay=true
 
 [Install]

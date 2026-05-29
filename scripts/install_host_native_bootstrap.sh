@@ -14,6 +14,7 @@ HOST="${MICROSERVER_HOST:-rainierdev.heiyu.space}"
 SSH_USER="${MICROSERVER_SSH_USER:-root}"
 SSH_KEY="${MICROSERVER_SSH_KEY:-$HOME/.ssh/id_ed25519}"
 REMOTE_BOOTSTRAP_ROOT="${MIHOMO_BOOTSTRAP_REMOTE_ROOT:-/root/.config/lzc-mihomo-bootstrap}"
+BRIDGE_WAIT_SECONDS="${MIHOMO_BOOTSTRAP_BRIDGE_WAIT_SECONDS:-180}"
 REMOTE_USER_UNIT_DIR="/root/.config/systemd/user"
 REMOTE_BOOTSTRAP_SERVICE="lzc-mihomo-bootstrap.service"
 REMOTE_BOOTSTRAP_SCRIPT="$REMOTE_BOOTSTRAP_ROOT/bootstrap-apply.sh"
@@ -85,6 +86,7 @@ EOF
 ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
   "$SSH_USER@$HOST" \
   REMOTE_BOOTSTRAP_ROOT="$REMOTE_BOOTSTRAP_ROOT" \
+  BRIDGE_WAIT_SECONDS="$BRIDGE_WAIT_SECONDS" \
   REMOTE_USER_UNIT_DIR="$REMOTE_USER_UNIT_DIR" \
   REMOTE_BOOTSTRAP_SERVICE="$REMOTE_BOOTSTRAP_SERVICE" \
   REMOTE_BOOTSTRAP_SCRIPT="$REMOTE_BOOTSTRAP_SCRIPT" \
@@ -176,9 +178,24 @@ bootstrap_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 snapshot_root="$bootstrap_root/snapshot"
 state_file="$bootstrap_root/bootstrap-state.env"
 log_file="$bootstrap_root/bootstrap.log"
+bridge_wait_seconds="${BRIDGE_WAIT_SECONDS:-180}"
 
 log() {
   printf '[%s] %s\n' "$(date -Iseconds)" "$1" | tee -a "$log_file" >&2
+}
+
+wait_for_bridge() {
+  local deadline
+  deadline=$((SECONDS + bridge_wait_seconds))
+
+  while (( SECONDS < deadline )); do
+    if ip -4 addr show | grep -q '172\.18\.0\.1/'; then
+      return 0
+    fi
+    sleep 2
+  done
+
+  return 1
 }
 
 if [[ ! -d "$snapshot_root" ]]; then
@@ -258,16 +275,8 @@ chown -R mihomo:mihomo /var/lib/mihomo
 
 /usr/local/bin/mihomo -t -d /var/lib/mihomo -f /etc/mihomo/config.yaml >/dev/null
 
-bridge_ready=0
-for _ in $(seq 1 60); do
-  if ip -4 addr show | grep -q '172\.18\.0\.1/'; then
-    bridge_ready=1
-    break
-  fi
-  sleep 1
-done
-if [[ "$bridge_ready" != "1" ]]; then
-  log "container bridge address 172.18.0.1 did not appear in time"
+if ! wait_for_bridge; then
+  log "container bridge address 172.18.0.1 did not appear within ${bridge_wait_seconds}s"
   exit 1
 fi
 
@@ -321,9 +330,11 @@ cat >"$unit_path" <<UNIT
 [Unit]
 Description=LazyCat Mihomo Host-Native Bootstrap
 After=default.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
+Environment=BRIDGE_WAIT_SECONDS=$BRIDGE_WAIT_SECONDS
 ExecStart=$REMOTE_BOOTSTRAP_SCRIPT
 RemainAfterExit=yes
 Restart=on-failure

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import copy
 import datetime as dt
 import gzip
@@ -1779,9 +1780,12 @@ def run_ip_info_probe() -> dict[str, Any]:
     }
 
 
-def run_unlock_probe(target: str | None = None) -> dict[str, Any]:
+def run_unlock_probe(target: str | None = None, timeout_ms: int = 12000) -> dict[str, Any]:
     started = time.time()
-    result = check_unlock_status([target] if target else None)
+    result = check_unlock_status(
+        [target] if target else None,
+        timeout_seconds=max(1, int(timeout_ms / 1000)),
+    )
     duration_ms = int((time.time() - started) * 1000)
     summary = result.get("summary") or {}
     code = "OK"
@@ -2496,14 +2500,17 @@ def current_region() -> str | None:
         return None
 
 
-def check_unlock_status(targets: list[str] | None = None) -> dict[str, Any]:
+def check_unlock_status(
+    targets: list[str] | None = None,
+    *,
+    timeout_seconds: int = 12,
+) -> dict[str, Any]:
     region = current_region()
     normalized_targets = (
         {item.strip().lower() for item in targets if item and item.strip()}
         if targets
         else None
     )
-    results = []
     summary = {
         "total": 0,
         "success": 0,
@@ -2511,10 +2518,15 @@ def check_unlock_status(targets: list[str] | None = None) -> dict[str, Any]:
         "timeout": 0,
         "checkedAt": iso_now(),
     }
+    probe_items = []
     for item in DEFAULT_UNLOCK_ITEMS:
         item_name = str(item["name"])
         if normalized_targets and item_name.strip().lower() not in normalized_targets:
             continue
+        probe_items.append(item)
+
+    def check_item(item: dict[str, Any]) -> dict[str, Any]:
+        item_name = str(item["name"])
         url = UNLOCK_TEST_URLS.get(item["name"], "https://example.com/")
         status = "Failed"
         probe_status = "failed"
@@ -2522,7 +2534,7 @@ def check_unlock_status(targets: list[str] | None = None) -> dict[str, Any]:
         try:
             response_status, _ = proxy_request(
                 url,
-                timeout=12,
+                timeout=timeout_seconds,
                 headers={"User-Agent": f"clash-verge-webport/{APP_VERSION}"},
             )
             if response_status < 400:
@@ -2536,28 +2548,35 @@ def check_unlock_status(targets: list[str] | None = None) -> dict[str, Any]:
             public_code, error_message = classify_public_probe_error(exc)
             if public_code == "TIMEOUT":
                 probe_status = "timeout"
-                summary["timeout"] += 1
             else:
                 probe_status = "failed"
-                summary["failed"] += 1
             message = error_message
             status = "Failed"
+        return {
+            "name": item_name,
+            "status": status,
+            "probe_status": probe_status,
+            "region": region,
+            "check_time": iso_now(),
+            "message": message,
+        }
+
+    if not probe_items:
+        return {"items": [], "summary": summary}
+
+    max_workers = min(len(probe_items), 8)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        results = list(executor.map(check_item, probe_items))
+
+    for result in results:
+        if result["probe_status"] == "success":
+            summary["success"] += 1
+        elif result["probe_status"] == "timeout":
+            summary["timeout"] += 1
         else:
-            if probe_status == "success":
-                summary["success"] += 1
-            else:
-                summary["failed"] += 1
+            summary["failed"] += 1
         summary["total"] += 1
-        results.append(
-            {
-                "name": item_name,
-                "status": status,
-                "probe_status": probe_status,
-                "region": region,
-                "check_time": iso_now(),
-                "message": message,
-            }
-        )
+
     return {"items": results, "summary": summary}
 
 
@@ -3465,7 +3484,7 @@ class VergeApiHandler(BaseHTTPRequestHandler):
                 if kind == "ip_info":
                     result = run_ip_info_probe()
                 elif kind == "unlock":
-                    result = run_unlock_probe(target or None)
+                    result = run_unlock_probe(target or None, timeout_ms)
                 elif kind == "url":
                     if not target:
                         raise ApiError(
