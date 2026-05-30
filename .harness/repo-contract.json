@@ -1,0 +1,69 @@
+{
+  "contract_version": "agent-cicd-checkpoint-gate-v0",
+  "repo": "Rmosser/Clash-Verge-For-LC",
+  "mode": "repo-native-agent-cicd",
+  "purpose": "LazyCat-adapted Mihomo and Clash Verge management service",
+  "boundary": {
+    "controls": [
+      "merge_eligibility",
+      "evidence_completeness",
+      "claim_fact_consistency",
+      "pr_review_loop",
+      "post_merge_cleanup"
+    ],
+    "does_not_control": [
+      "agent_write_access_to_worktree",
+      "agent_push_access_to_pr_branch",
+      "agent_cloud_connector_access"
+    ]
+  },
+  "entrypoints": {
+    "agent_entrypoint": "AGENTS.md",
+    "docs_index": "docs/index.md",
+    "checkpoint_gate": "docs/governance/checkpoint-ci-gate.md",
+    "plan_template": "docs/exec-plans/template.md",
+    "active_plans": "docs/exec-plans/active",
+    "doc_sync_rules": "docs/doc-sync-rules.json"
+  },
+  "checkpoint_gate": {
+    "governance_doc": "docs/governance/checkpoint-ci-gate.md",
+    "planned_required_check": "loop/checkpoints",
+    "claims": [
+      "context_claim",
+      "scope_claim",
+      "change_claim",
+      "validation_claim"
+    ],
+    "reconciliation": {
+      "context_claim": "diff_class_and_doc_rules",
+      "scope_claim": "policy_active_plan_and_forbidden_paths",
+      "change_claim": "git_diff",
+      "validation_claim": "validation_registry_and_ci_result"
+    }
+  },
+  "codex_review": {
+    "required_for_non_trivial_pr": true,
+    "active_plan_records": [
+      "review_target_head_sha",
+      "heartbeat",
+      "repair_tier",
+      "repair_attempts",
+      "repair_ledger",
+      "post_merge_cleanup"
+    ],
+    "max_attempts_per_tier": 2,
+    "escalation_path": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "human"
+    ]
+  },
+  "platform_gate": {
+    "status": "not_verified",
+    "required_checks_verified": false,
+    "branch_protection_verified": false,
+    "admin_bypass_verified": false
+  }
+}

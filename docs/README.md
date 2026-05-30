@@ -4,6 +4,7 @@
 
 ## 当前有效
 
+- [index.md](index.md): canonical document index and Harness governance entrypoint
 - [CURRENT_RUNTIME.md](CURRENT_RUNTIME.md): 当前运行 contract；先读这份
 - [USER_GUIDE.md](USER_GUIDE.md): 面向最终用户的操作手册
 - [CONTAINER_PROXY_GUIDE.md](CONTAINER_PROXY_GUIDE.md): 面向开发者的容器代理说明
