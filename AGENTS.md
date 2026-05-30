@@ -16,6 +16,18 @@
 
 - 不要破坏懒猫内网穿透/控制面：任何透明代理/TUN 变更前先看 `docs/LAZYCAT_NETWORK_REPORT.md`。
 - 不要把 Mihomo 控制端口暴露到局域网：当前对外只通过懒猫登录后的应用路由访问。
+- 非平凡变更必须从当前提供的 baseline / worktree HEAD 开新分支，并维护当前唯一 Active Plan；旧分支和旧 PR 只能作为参考，除非用户明确要求继续它们。
+- 不要把本文件理解为绕过 PR、review、checks 或 branch protection 的授权；合并资格由证据门禁和平台门禁共同决定。
+- 主 Agent 负责编排、范围定义和验收；subagent 只在授权范围内执行，不自行扩大 PR 阶段，不独立提交、push、merge 或关闭 heartbeat。
+
+## 真相入口
+
+- 文档索引：`docs/index.md`
+- Harness checkpoint gate：`docs/governance/checkpoint-ci-gate.md`
+- Active Plan 模板：`docs/exec-plans/template.md`
+- 当前 Active Plan：`docs/exec-plans/active/`
+- 文档同步规则：`docs/doc-sync-rules.json`
+- 仓库治理契约：`.harness/repo-contract.json`
 
 ## 常用命令
 
