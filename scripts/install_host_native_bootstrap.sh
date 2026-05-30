@@ -259,7 +259,7 @@ chown -R mihomo:mihomo /var/lib/mihomo
 /usr/local/bin/mihomo -t -d /var/lib/mihomo -f /etc/mihomo/config.yaml >/dev/null
 
 bridge_ready=0
-for _ in 1 2 3 4 5 6 7 8 9 10; do
+for _ in $(seq 1 60); do
   if ip -4 addr show | grep -q '172\.18\.0\.1/'; then
     bridge_ready=1
     break
@@ -326,6 +326,8 @@ After=default.target
 Type=oneshot
 ExecStart=$REMOTE_BOOTSTRAP_SCRIPT
 RemainAfterExit=yes
+Restart=on-failure
+RestartSec=15s
 
 [Install]
 WantedBy=default.target

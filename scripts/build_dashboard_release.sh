@@ -34,6 +34,11 @@ if [[ $# -eq 1 ]]; then
   OUTPUT_ROOT="$1"
 fi
 
+case "$OUTPUT_ROOT" in
+  /*) ;;
+  *) OUTPUT_ROOT="$(pwd)/$OUTPUT_ROOT" ;;
+esac
+
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "ERROR: missing required command: $1" >&2

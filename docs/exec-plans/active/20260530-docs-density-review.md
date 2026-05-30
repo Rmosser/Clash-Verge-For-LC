@@ -73,27 +73,27 @@
 - Subagent result: n/a
 - Main agent review: `accepted scope after merge conflict resolution on 2026-05-30`
 - Rework requested: `no`
-- Final accepted diff: `pending final checks and Codex Review`
+- Final accepted diff: `pending final checks after Codex Review repair`
 
 ## Codex Review
 
 - Required: true
 - PR: https://github.com/Rmosser/Clash-Verge-For-LC/pull/2
-- Requested by: `pending after branch push`
-- Requested at: `pending`
+- Requested by: PR comment `@codex review`
+- Requested at: `2026-05-30`
 - Review target: `latest PR head; exact current SHA is recorded in the @codex review PR comment`
 - Heartbeat required: true while waiting for review
 - Heartbeat interval: `manual current-session polling`
 - Heartbeat stop condition: review returned, PR merged, or branch cleanup blocks are reported
-- Review result: `pending`
+- Review result: `COMMENTED with two P2 findings on scripts/build_dashboard_release.sh and scripts/install_host_native_bootstrap.sh`
 
 ## Review Repair Policy
 
 - Start tier: low
 - Current tier: low
 - Max attempts per tier: 2
-- Attempts at current tier: 0
-- Total repair attempts: 0
+- Attempts at current tier: 1
+- Total repair attempts: 1
 - Escalation path: low -> medium -> high -> xhigh -> human
 - Stop condition: review findings resolved or main agent escalates
 - Last repeated finding: none
@@ -103,7 +103,8 @@
 
 | Attempt | Tier | Finding class | Commit | Checks | Result | Next action |
 | --- | --- | --- | --- | --- | --- | --- |
-| 0 | - | none | - | - | no feedback repair yet | wait for review |
+| 0 | - | none | - | - | review returned two P2 findings | repair |
+| 1 | low | script path/retry robustness | pending commit | pending | made output root absolute; extended bridge wait and added systemd restart policy | rerun checks and request review |
 
 ## Post-Merge Cleanup
 
