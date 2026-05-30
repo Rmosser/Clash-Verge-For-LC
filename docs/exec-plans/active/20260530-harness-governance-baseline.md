@@ -82,11 +82,12 @@
 ## Codex Review
 
 - Required: true for the eventual non-trivial PR
-- Requested by: `pending until PR is opened`
-- Requested at: `pending until PR is opened`
-- Review target: `pending until pushed; exact current head is recorded in PR comment / GitHub review object`
+- PR: https://github.com/Rmosser/Clash-Verge-For-LC/pull/3
+- Requested by: PR body `@codex review`
+- Requested at: `2026-05-30`
+- Review target: `93bb99d96c15f146fdff68aee9a3bb35feac51a9`
 - Heartbeat required: true when PR is opened and waiting for review
-- Heartbeat interval: `pending`
+- Heartbeat interval: `manual current-session polling`
 - Heartbeat stop condition: review returned, PR merged, or branch cleanup blocks are reported
 - Review result: `pending`
 
