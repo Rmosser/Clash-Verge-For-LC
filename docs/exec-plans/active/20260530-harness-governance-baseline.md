@@ -34,7 +34,7 @@
 - 不新增或修改 scripts。
 - 不新增或修改 `.github/workflows`、PR template、branch protection 或 GitHub 设置。
 - 不修改代码、infra、runtime 文件、lockfile 或部署包。
-- 不 push，不开 PR，不 merge。
+- 不把旧混合分支、运行态变更或 docs-density 变更塞入本 PR。
 
 ## Scope
 
@@ -44,7 +44,7 @@
 ## Acceptance
 
 - 入口层不授权绕过 PR、review、checks 或 branch protection。
-- 当前 Active Plan 明确 subagent 状态，主 Agent 验收字段保持 pending。
+- 当前 Active Plan 明确 subagent 状态，并记录主 Agent 对 clean worktree diff 的验收结论。
 - repo contract 与 doc-sync 规则为后续 verifier / CI 提供稳定读取入口。
 - 最终 diff 不包含 infra、scripts、src、运行态旧变更或 lockfile。
 
@@ -58,6 +58,7 @@
 - `python3 -m json.tool docs/doc-sync-rules.json`
 - `python3 -m json.tool .harness/repo-contract.json`
 - `bash scripts/test.sh`
+- `git diff --check origin/main...HEAD`
 - `git diff --name-only origin/main...HEAD`
 - 归档残留关键词扫描：通过
 
@@ -74,19 +75,19 @@
 - Delegated scope: 在目标 clean worktree 内完成 Harness Engineering PR1 治理基线文件改造、本地检查和本地 commit。
 - Forbidden scope: 不触碰原始 repo；不修改 scripts、.github/workflows、PR template、branch protection、GitHub 设置、代码、infra、runtime 文件、lockfile；不 push、不 PR、不 merge。
 - Subagent result: `completed by subagent pending main review`
-- Main agent review: `pending`
-- Rework requested: `pending`
-- Final accepted diff: `pending`
+- Main agent review: `accepted by main agent on 2026-05-30 after diff scope inspection`
+- Rework requested: `no`
+- Final accepted diff: `accepted; PR1 governance-only diff, no scripts/workflows/code/infra/runtime files`
 
 ## Codex Review
 
 - Required: true for the eventual non-trivial PR
-- Requested by: `pending`
-- Requested at: `pending`
-- Review target: `pending; exact current head is recorded in PR comment / GitHub review object`
+- Requested by: `pending until PR is opened`
+- Requested at: `pending until PR is opened`
+- Review target: `pending until pushed; exact current head is recorded in PR comment / GitHub review object`
 - Heartbeat required: true when PR is opened and waiting for review
 - Heartbeat interval: `pending`
-- Heartbeat stop condition: review returned or main agent closes the loop
+- Heartbeat stop condition: review returned, PR merged, or branch cleanup blocks are reported
 - Review result: `pending`
 
 ## Review Repair Policy
