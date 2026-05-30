@@ -31,7 +31,9 @@
 ### `rainierspace`
 
 - 已部署 root `user-systemd` bootstrap
-- 还没有真实 reboot 级强验证
+- `2026-05-09` 排查到一次重启后自举失败：`172.18.0.1` bridge 在 10 秒内未出现，bootstrap 退出，导致宿主机运行链不能自动恢复
+- 当前 bootstrap 已改为等待 bridge 最多 180 秒，并在失败后由 systemd 自动重试
+- 还没有做新的真实 reboot 级强验证
 - 当前可以视为“已部署、待重启验收”，不要视为“和开发机同级可靠”
 
 ## 标准部署
