@@ -33,6 +33,7 @@
 - 要落当前基线，显式执行：
 
 ```bash
+MICROSERVER_HOST=<box>.heiyu.space \
 MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 bash scripts/deploy_microserver.sh
 ```
 
@@ -64,6 +65,7 @@ MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 bash scripts/deploy_microserver.sh
 如果改动后出现控制面退化、应用拉不起来、dashboard 卡启动页，优先回到保守基线：
 
 ```bash
+MICROSERVER_HOST=<box>.heiyu.space \
 MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 bash scripts/deploy_microserver.sh
 ```
 

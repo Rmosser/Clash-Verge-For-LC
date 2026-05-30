@@ -85,15 +85,15 @@
 - Heartbeat required: true while waiting for review
 - Heartbeat interval: `manual current-session polling`
 - Heartbeat stop condition: review returned, PR merged, or branch cleanup blocks are reported
-- Review result: `COMMENTED with two P2 findings on scripts/build_dashboard_release.sh and scripts/install_host_native_bootstrap.sh`
+- Review result: `COMMENTED with P2 findings on release output paths, bootstrap bridge retry, and explicit MICROSERVER_HOST recovery examples`
 
 ## Review Repair Policy
 
 - Start tier: low
 - Current tier: low
 - Max attempts per tier: 2
-- Attempts at current tier: 1
-- Total repair attempts: 1
+- Attempts at current tier: 2
+- Total repair attempts: 2
 - Escalation path: low -> medium -> high -> xhigh -> human
 - Stop condition: review findings resolved or main agent escalates
 - Last repeated finding: none
@@ -105,6 +105,7 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | 0 | - | none | - | - | review returned two P2 findings | repair |
 | 1 | low | script path/retry robustness | pending commit | pending | made output root absolute; extended bridge wait and added systemd restart policy | rerun checks and request review |
+| 2 | low | host-target documentation ambiguity | pending commit | pending | added explicit MICROSERVER_HOST to current-runtime/runbook/packaging/network/deploy recovery examples | rerun checks, resolve threads, and request review |
 
 ## Post-Merge Cleanup
 

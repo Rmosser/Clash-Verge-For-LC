@@ -52,6 +52,8 @@ MIHOMO_TUN_ENABLE=0 ./init.sh
 如果你要当前仓库的默认整套链路，回到仓库根目录执行：
 
 ```bash
+MICROSERVER_HOST=<box>.heiyu.space \
 MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 bash scripts/deploy_microserver.sh
+MICROSERVER_HOST=<box>.heiyu.space \
 bash scripts/deploy_dashboard.sh
 ```

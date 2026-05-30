@@ -71,6 +71,7 @@
 2. 你知道如何执行保守基线回退：
 
 ```bash
+MICROSERVER_HOST=<box>.heiyu.space \
 MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 bash scripts/deploy_microserver.sh
 ```
 

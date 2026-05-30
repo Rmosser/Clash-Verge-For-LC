@@ -41,6 +41,7 @@ output/release/<version>/
 需要宿主机运行时：
 
 ```bash
+MICROSERVER_HOST=<box>.heiyu.space \
 MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 bash scripts/deploy_microserver.sh
 ```
 
