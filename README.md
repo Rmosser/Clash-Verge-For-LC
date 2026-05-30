@@ -1,67 +1,47 @@
-# 懒猫微服版 Clash Verge / LazyCat-adapted Clash Verge
+# Clash Verge For LC
 
-懒猫微服上的 Mihomo (Clash Meta) Web 管理面板。
-Mihomo (Clash Meta) web dashboard for LazyCat Microservice.
+懒猫微服上的 Clash Verge Web 面板，以及与之配套的 Mihomo 宿主机运行链路。
 
-## 这是什么 | What Is This
+## 当前项目边界
 
-- 基于 clash-verge-rev + Mihomo，适配为可在浏览器中运行的 LazyCat 应用。
-  Browser-based LazyCat app built on clash-verge-rev and Mihomo.
-- 访问入口：`https://clash.<box>.heiyu.space`，通过懒猫登录鉴权，无需额外配置。
-  Access it at `https://clash.<box>.heiyu.space`, protected by your LazyCat login — no extra setup.
-- 默认启用 TUN 透明代理，整机流量自动分流，无需为每个应用单独配置代理。
-  TUN transparent proxy is on by default — system-wide traffic routing, no per-app config needed.
-- Controller 端口不暴露到局域网或公网；只通过 LazyCat 应用路由访问。
-  The Mihomo controller is never exposed to LAN/WAN; it's reachable only through the LazyCat app route.
+- Web 面板以懒猫应用形式发布，入口是 `https://clash.<box>.heiyu.space`
+- 宿主机运行时默认采用 host-native 路径，不以 `deploy/` 下的 compose 目录作为当前默认方案
+- 容器出网默认走显式代理入口 `172.18.0.1:17890`，不要假设 TUN 会自动覆盖容器网络
 
-## 谁适合用 | Who Is This For
+## 当前有效 contract
 
-**普通用户**：想让 YouTube、ChatGPT 等网站流畅访问。打开应用、导入订阅、选好代理分组即可。
-**Casual user**: Want YouTube and ChatGPT to work. Open the app, import a subscription, pick a proxy group.
+当前 source of truth 在 [docs/CURRENT_RUNTIME.md](docs/CURRENT_RUNTIME.md)。
 
-**开发者**：需要 Docker 容器出网走代理。请按用户指南配置完整的代理环境变量组（`HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 等）；详见 [docs/USER_GUIDE.md §Docker 应用如何使用代理](docs/USER_GUIDE.md#docker-应用如何使用代理--docker-apps-and-proxy)。
-**Developer**: Need Docker container egress through the proxy. Configure the full proxy env var set (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, etc.) as described in [docs/USER_GUIDE.md §Docker Apps and Proxy](docs/USER_GUIDE.md#docker-应用如何使用代理--docker-apps-and-proxy).
+先记三条：
 
-## 和桌面版有什么不同 | Differences from Desktop
+- 当前已验证基线是保守模式：`MIHOMO_TUN_ENABLE=0`、`MIHOMO_DNS_ENABLE=0`
+- 浏览器通过 `/verge-api/public-config` 获取运行时配置；当前默认路径不需要手填 controller secret
+- `172.18.0.1:9090` 只允许留在微服 bridge 上，不对 LAN/WAN 暴露
 
-与桌面版 Clash Verge 相比：
-Compared to the desktop Clash Verge app:
+## 文档入口
 
-- 通过浏览器访问，无需在 PC/Mac 上安装任何客户端。
-  Browser-based; no desktop client to install.
-- 代理核心实际运行在懒猫微服上，不是你的本地电脑。
-  The proxy runs on the LazyCat microserver, not your local machine.
-- 系统代理 (System Proxy)、轻量模式、UWP Tool 等桌面专属功能在 Web 版不可用，对应选项是灰色的——这是预期行为。
-  System Proxy, Lightweight Mode, UWP Tool, and other desktop-only controls are greyed out — this is expected.
-- TUN 由微服侧统一管理，无需从 Dashboard 手动开关。
-  TUN is managed server-side; you don't toggle it from the dashboard.
-- 订阅导入通过 URL 或拖拽完成，不依赖本地文件系统路径。
-  Subscription import uses URL or drag-and-drop, not local filesystem paths.
+| 文档 | 目标读者 | 用途 |
+| --- | --- | --- |
+| [docs/index.md](docs/index.md) | Agent/评审者 | 文档索引与 Harness governance 入口 |
+| [docs/CURRENT_RUNTIME.md](docs/CURRENT_RUNTIME.md) | 所有人 | 当前运行 contract；先读这份 |
+| [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | 最终用户 | 登录、导入订阅、切节点、看状态 |
+| [docs/CONTAINER_PROXY_GUIDE.md](docs/CONTAINER_PROXY_GUIDE.md) | 开发者 | Docker/容器显式代理与 Node.js 注意事项 |
+| [docs/HOST_NATIVE_RUNBOOK.md](docs/HOST_NATIVE_RUNBOOK.md) | 运维/实施者 | 宿主机部署、恢复、重启验收 |
+| [docs/LAZYCAT_NETWORK_REPORT.md](docs/LAZYCAT_NETWORK_REPORT.md) | 改网络的人 | TUN/DNS 变更约束与验证清单 |
+| [docs/SECURITY.md](docs/SECURITY.md) | 运维/评审者 | 安全边界与禁止项 |
+| [docs/PACKAGING.md](docs/PACKAGING.md) | 发布者 | 只出 LPK 安装包，不落宿主机运行时 |
+| [docs/CLASH_VERGE_WEB_SMOKE_CHECKLIST.md](docs/CLASH_VERGE_WEB_SMOKE_CHECKLIST.md) | 测试/回归者 | Web 端回归检查清单 |
+| [docs/PRD.md](docs/PRD.md) | 设计回溯者 | 历史设计文档，不是当前手册 |
 
-完整对比表格见 [docs/USER_GUIDE.md §Web 版与桌面版对比](docs/USER_GUIDE.md#web-版与桌面版对比--web-vs-desktop)。
-Full comparison table: [docs/USER_GUIDE.md §Web vs Desktop](docs/USER_GUIDE.md#web-版与桌面版对比--web-vs-desktop).
+## 历史文档
 
-## 快速开始 | Quick Start
+`docs/planning/` 下的文件保留事故研判和复盘，不作为当前操作手册。当前执行以 [docs/CURRENT_RUNTIME.md](docs/CURRENT_RUNTIME.md) 和 [docs/HOST_NATIVE_RUNBOOK.md](docs/HOST_NATIVE_RUNBOOK.md) 为准。
 
-1. 打开 `https://clash.<your-box>.heiyu.space`，用懒猫账号登录。
-   Open `https://clash.<your-box>.heiyu.space` and log in with your LazyCat account.
-2. 进入 **Profiles** 页面，导入订阅链接。
-   Go to the **Profiles** page and import your subscription URL.
-3. 选择代理分组，验证 IP 已切换到预期出口。
-   Select a proxy group and verify your external IP has changed.
+## 上游
 
-需要更详细的操作说明？见 [docs/USER_GUIDE.md](docs/USER_GUIDE.md)。
-Need more detail? See [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
-
-## 更多文档 | Documentation
-
-| 文档 | 说明 |
-|------|------|
-| [docs/index.md](docs/index.md) | 文档索引与 Harness governance 入口 / Document index and Harness governance entrypoint |
-| [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | 完整用户指南：首次设置、订阅导入、Docker 代理、故障排查 / Full guide: setup, subscriptions, Docker proxy, troubleshooting |
-| [docs/SECURITY.md](docs/SECURITY.md) | 安全说明：controller 隔离、secret 管理、TUN 风险 / Security: controller isolation, secret management, TUN risks |
-| [docs/LAZYCAT_NETWORK_REPORT.md](docs/LAZYCAT_NETWORK_REPORT.md) | 网络影响评估：TUN 绕行、容器出网、Node.js 代理 / Network report: TUN bypass, container egress, Node.js proxy |
-| [scripts/](scripts/) | 部署、健康检查、升级、回滚脚本 / Deploy, health-check, upgrade, rollback scripts |
+- [clash-verge-rev/clash-verge-rev](https://github.com/clash-verge-rev/clash-verge-rev)
+- [MetaCubeX/metacubexd](https://github.com/MetaCubeX/metacubexd)
+- [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo)
 
 ## 上游致谢 | Upstream Credit
 

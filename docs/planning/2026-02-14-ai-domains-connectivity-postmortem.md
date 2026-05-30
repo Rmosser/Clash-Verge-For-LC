@@ -1,5 +1,9 @@
 # 2026-02-14 微服内 AI 域名不可达排障复盘（OpenAI / Claude / Gemini）
 
+状态：历史复盘，不是当前默认网络配置说明。
+
+当前执行规则以 [../CURRENT_RUNTIME.md](../CURRENT_RUNTIME.md) 和 [../LAZYCAT_NETWORK_REPORT.md](../LAZYCAT_NETWORK_REPORT.md) 为准。本文件只保留当时的症状、证据和修复结论。
+
 背景：在懒猫微服（Debian 12）上启用 Mihomo（Clash Meta / MetaCubeX mihomo）+ TUN 接管整机流量后，盒子内访问 ChatGPT/Claude/Gemini 相关域名出现“有的能开、有的完全打不开”的情况。本次排障与修复目标是：在不破坏懒猫控制面/内网穿透的前提下，让 AI 相关域名稳定可用，并形成可回滚的变更机制。
 
 本复盘不包含任何 `secret`、节点账号/密码等敏感信息。

@@ -1,73 +1,39 @@
 # scripts/
 
-Operational scripts.
+这份文档只回答三个问题：什么时候用哪个脚本、它会改什么、哪些是当前默认路径。
 
-- `deploy_microserver.sh`
-  - Pushes `/etc/mihomo/config.yaml` + systemd unit to the microserver and restarts `mihomo`.
-  - Reads `.env` if present.
-  - Core upgrade flags:
-    - `--upgrade-core`: force core upgrade even when `/usr/local/bin/mihomo` already exists.
-    - `--core-version <tag>`: pin core version.
-    - `--latest-stable`: force GitHub stable latest tag.
-    - `--only-core`: upgrade core only (skip config/unit/mmdb deploy).
-    - `--no-rollback`: disable automatic rollback.
-  - Automatic rollback:
-    - On upgrade failure, restores backup core and attempts service restart.
-    - Writes metadata to `/var/lib/mihomo/rollback/latest.env`.
+## 当前默认路径
 
-- `deploy_dashboard.sh`
-  - Builds the LazyCat dashboard LPK and installs it via `lzc-cli`.
-  - `--clean-reset` removes legacy dashboard pkgm residues, purges the current app's LazyCat deploy mapping, and resets `/var/lib/mihomo/verge/` before reinstall.
-  - Verifies that the expected public route is reachable after install, and warns if `LAZYCAT_APP_DOMAIN` drifts from the public ingress domain.
-  - Verifies the real runtime chain after install: `/verge-api/healthz`, `/verge-api/public-config`, controller `/version`/`/configs`/`/proxies`, and websocket handshakes for `/traffic` + `/memory`.
-  - Does not embed controller or verge-api secrets into `dist/lzcapp-config.js`; the browser bootstraps them at runtime behind LazyCat login.
+| 脚本 | 什么时候用 | 会改什么 |
+| --- | --- | --- |
+| `deploy_microserver.sh` | 部署或重种宿主机运行时 | 下发 `mihomo`、config、systemd units、Verge API、container proxy、可选 DNS 同步 |
+| `deploy_dashboard.sh` | 安装或重装懒猫 dashboard 应用 | 构建并安装 LPK，校验 `/api`、`/verge-api` 和 websocket 链路 |
+| `build_dashboard_release.sh` | 只出可分发 LPK | 在 `output/release/<version>/` 生成版本化安装包 |
+| `install_host_native_bootstrap.sh` | 给 `rainierdev` / `rainierspace` 安装开机自举 | 采样当前 live host-native 部署并安装 root user-systemd bootstrap |
 
-- `deploy_all.sh`
-  - Runs both deploy steps.
+## 诊断与恢复
 
-- `update_metacubexd.sh`
-  - Downloads and unpacks `metacubexd` static assets into `src/mihomo-dashboard-app/dist`.
-  - Sets `defaultBackendURL` to `/api` (proxied by LazyCat ingress to the host controller).
+| 脚本 | 什么时候用 | 输出或效果 |
+| --- | --- | --- |
+| `selfcheck.sh` | 想快速看宿主机链路是否健康 | 检查服务状态、controller、`/verge-api/public-config`、绕行探针 |
+| `mihomo-manager` | 需要远程 status/logs/reload/restart/rollback | 通过 SSH 包装常用运维动作 |
+| `patch_remote_mihomo_config.py` | 想补丁化远端 `config.yaml` | 保持 secret、TUN、DNS、rules patch 的一致写法 |
 
-- `patch_remote_mihomo_config.py`
-  - Safe patcher for `/etc/mihomo/config.yaml` (avoids printing credentials).
+## 可选或专项脚本
 
-- `mihomo-manager`
-  - CLI wrapper (via SSH) for operations:
-    - `status` / `logs` / `config-test` / `reload` / `restart-core` / `update-geo` / `version` / `secret show`
-    - `upgrade-core [version]`: one-click core upgrade (default stable latest)
-    - `rollback-core [latest|/var/lib/mihomo/rollback/mihomo.<ts>.bak]`: manual rollback
-  - Prefers the remote controller secret and only falls back to local secret files when needed.
+| 脚本 | 用途 |
+| --- | --- |
+| `update_metacubexd.sh` | 更新 vendored `metacubexd` 静态资源并补当前 Web 版 patch |
+| `audit_proxy_egress.sh` | 审计每个代理节点的 IPv4/IPv6 出口 |
+| `egress_fix.sh` | 自动挑选可用节点并做一轮显式代理验收 |
+| `patch_auto_group.py` | 限定 `AUTO` 组使用的节点集合 |
+| `block_aaaa_resolved.sh` / `unblock_aaaa_resolved.sh` | 专项 IPv6 绕行 workaround |
+| `prefer_ipv4_gai.sh` / `unprefer_ipv4_gai.sh` | 调整地址族优先级的 workaround |
+| `ensure_ipv6_reject_rule.py` | 注入 IPv6 fail-fast 规则 |
+| `install_dev_host_native_bootstrap.sh` | 给 `rainierdev` 提供快捷入口，实质仍调用 `install_host_native_bootstrap.sh` |
 
-- `selfcheck.sh`
-  - Runs a quick remote health check (status, config test, `/version`, `/verge-api/public-config`, bypass probes).
-  - Includes practical traffic probes for DNS/TCP/HTTPS through TUN and the local mixed-port.
-  - Intentionally does not use `ping` as a pass/fail signal, because ICMP echo is not a reliable validation method for the current Mihomo + TUN + upstream SOCKS5 topology.
+## 当前最重要的执行约束
 
-- `audit_proxy_egress.sh`
-  - Audits each Socks5 proxy's IPv4/IPv6 egress via Mihomo controller API (/proxies/*/delay).
-  - Controller secret never leaves the microserver.
-
-- `patch_auto_group.py`
-  - Dependency-free patcher to restrict `proxy-groups.AUTO.proxies` to a specific list.
-  - Intended for `var/private/mihomo.config.yaml` (ignored, contains credentials).
-
-- `egress_fix.sh`
-  - End-to-end helper:
-    - runs `audit_proxy_egress.sh`
-    - if any V6-capable proxies exist, pins AUTO group to them
-    - deploys via `deploy_microserver.sh`
-    - runs 30x curl acceptance checks via the local mixed-port
-
-- `block_aaaa_resolved.sh` / `unblock_aaaa_resolved.sh`
-  - Optional workaround: configure `systemd-resolved` to refuse AAAA record types.
-  - Used when your proxy nodes are V4-only egress and IPv6 destinations cause stalls/EOF under TUN.
-  - Note: on some LazyCat base OS builds, `systemd-resolved.service` may not exist.
-
-- `prefer_ipv4_gai.sh` / `unprefer_ipv4_gai.sh`
-  - Workaround: tune `/etc/gai.conf` so apps prefer IPv4 destinations (without breaking IPv6 access to IPv6 proxy servers).
-  - This is the recommended fallback when `systemd-resolved` is not manageable as a unit.
-
-- `ensure_ipv6_reject_rule.py`
-  - Optional workaround: inject `IP-CIDR6,::/0,REJECT,no-resolve` before `GEOIP,CN`/`MATCH` to fail-fast on IPv6 destinations.
-  - Useful when your proxies are V4-only egress but clients still attempt IPv6 (prevents long hangs).
+- 当前已验证基线不是脚本默认值；要显式传 `MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0`
+- 改网络前先看 [../docs/LAZYCAT_NETWORK_REPORT.md](../docs/LAZYCAT_NETWORK_REPORT.md)
+- 重启恢复和机器差异看 [../docs/HOST_NATIVE_RUNBOOK.md](../docs/HOST_NATIVE_RUNBOOK.md)
