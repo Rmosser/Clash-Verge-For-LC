@@ -50,6 +50,9 @@
       ]
     }
   ],
+  "link_check_exclude_globs": [
+    "docs/planning/2026-03-12-clash-post-deploy-network-incident.md"
+  ],
   "validation_registry": [
     {
       "name": "json-doc-sync-rules",
@@ -98,5 +101,11 @@
     "**/HOST_NATIVE_RUNBOOK*",
     "**/PACKAGING*",
     "**/*lock*"
-  ]
+  ],
+  "required_check": {
+    "name": "loop/checkpoints",
+    "workflow": ".github/workflows/docs-ci.yml",
+    "emitter": "trusted_commit_status",
+    "required_on": "main"
+  }
 }

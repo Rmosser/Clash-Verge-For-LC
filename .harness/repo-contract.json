@@ -99,12 +99,19 @@
     "trusted_events": [
       "pull_request_target",
       "issue_comment",
-      "workflow_dispatch",
-      "schedule"
+      "repository_dispatch"
     ],
     "status_source_isolation": "shared_actions_app_not_isolated",
     "required_check_activation": "required_after_live_emitter_smoke",
-    "supervision_model": "repository_self_supervised"
+    "supervision_model": "repository_self_supervised",
+    "source_isolated": false,
+    "required_check_activation_scope": "per_repository",
+    "status_writer_events": [
+      "pull_request_target",
+      "issue_comment",
+      "repository_dispatch"
+    ],
+    "heartbeat_event": "schedule"
   },
   "platform_gate": {
     "status": "not_verified",

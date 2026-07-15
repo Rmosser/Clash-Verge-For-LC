@@ -5,7 +5,7 @@ on:
     - cron: "*/5 * * * *"
 
 permissions:
-  actions: write
+  contents: write
   pull-requests: read
 
 concurrency:
@@ -29,7 +29,8 @@ jobs:
           )"
           while IFS= read -r number; do
             [[ -z "${number}" ]] && continue
-            gh workflow run codex-review-gate.yml \
-              --repo "${GITHUB_REPOSITORY}" \
-              --field "pr_number=${number}"
+            gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/dispatches" \
+              -f event_type=codex-review-reconcile \
+              -F "client_payload[pr_number]=${number}"
           done <<< "${PR_NUMBERS}"

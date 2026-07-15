@@ -33,7 +33,6 @@
 <!-- 机器对账约定：反引号包裹的路径是允许清单（目录以 / 结尾，支持 fnmatch 通配且 * 跨目录）；含 forbidden / 禁止 / 不允许 等否定标记的行，其反引号路径是禁止清单并优先生效；## Non-Goals 中的反引号路径同样计入禁止清单。无反引号的文字仅供人读。 -->
 
 - Harness upgrade file: `AGENTS.md`
-- Harness upgrade file: `docs/index.md`
 - Harness upgrade file: `docs/governance/checkpoint-ci-gate.md`
 - Harness upgrade file: `docs/exec-plans/template.md`
 - Harness upgrade file: `docs/exec-plans/active/`
@@ -43,11 +42,9 @@
 - Harness upgrade file: `.github/workflows/docs-ci.yml`
 - Harness upgrade file: `.github/workflows/codex-review-gate.yml`
 - Harness upgrade file: `.github/workflows/codex-review-heartbeat.yml`
-- Harness upgrade file: `.github/workflows/codex-review-signal.yml`
 - Harness upgrade file: `.github/pull_request_template.md`
 - Harness upgrade file: `scripts/check_docs.py`
 - Harness upgrade file: `scripts/check_codex_review.py`
-- Harness upgrade file: `scripts/check_docs_project.py`
 - Harness upgrade file: `scripts/check_loop_checkpoints.py`
 - Harness upgrade file: `docs/exec-plans/active/.gitkeep`
 - Harness upgrade file: `docs/exec-plans/active/2026-07-07-harness-delegation-upgrade.md`
@@ -70,49 +67,49 @@
 ## Verification
 
 - `python3 -I -B scripts/check_docs.py --all`
-- `python3 -I -B scripts/check_loop_checkpoints.py --base HEAD`
+- `python3 -I -B scripts/check_loop_checkpoints.py --base 0d3610f1353a9a0242a9c54c7fd037f2e8da37d5 --head HEAD`
 - `python3 -m json.tool docs/doc-sync-rules.json`
 - `python3 -m json.tool .harness/repo-contract.json`
-- `python3 scripts/check_codex_review.py --fixture <fixture>`（通用 gate 仓库）
+- `python3 -I -B scripts/check_codex_review.py --fixture <fixture>`（通用 gate 仓库）
 
 ## Checkpoint 证据
 
 - Context Claim：本次只处理 repo-native Harness 入口、治理文档、模板和检查脚本；平台门禁另行验证。
 - Scope Claim：允许清单见 `## Scope`；产品行为和线上状态不属于本次语义变更。
 - Change Claim：新增或更新 AGENTS/docs/governance/docs sync/repo contract/PR template/docs CI/current-head Codex Review gate/Harness check 脚本，并归档旧 active plan 以保持 active 基数 0..1。
-- Validation Claim：以本计划 `## Verification` 中的本地命令和主 Agent 最终复核结果为准。
+- Validation Claim: repo-native docs, real `origin/main` Scope, JSON, YAML, and diff checks passed on 2026-07-15; no additional product command was removed from the prior docs workflow.
 
 ## Agent Delegation
 
 - Delegation decision: multi-repo Harness task, delegate batch review/repair to subagents while main Agent owns final acceptance.
 - Used subagent: yes
 - No-subagent fallback reason: n/a
-- Delegated scope: bounded repo batches under `/Users/rinier/Projects`; Harness files only.
+- Delegated scope: `Rmosser/Clash-Verge-For-LC` only; Harness files listed in `## Scope`.
 - Forbidden scope: product behavior, secrets, deployment/runtime state, platform settings, independent push/merge/heartbeat closure.
-- Subagent result: complete - delegated repository review and rollout preparation found no unresolved P0/P1 findings.
-- Main agent review: accepted - main Agent verified 27/27 live base bindings, 135 repository checks, 72 platform/tool tests, and repository-specific validation.
-- Rework requested: no - rollout conflicts, repo-native path differences, and stale trust-boundary fields were repaired and revalidated.
-- Final accepted diff: accepted - repository-layer self-supervised Harness only; live emitter smoke and platform protection remain separate post-merge evidence.
+- Subagent result: complete - three independent batch reviews completed and all local findings were repaired; signed repair-head Codex review remains pending
+- Main agent review: accepted on 2026-07-15 after independent diff, trust-boundary, and validation review
+- Rework requested: completed - review findings and main-agent canonical normalization are addressed
+- Final accepted diff: accepted by the main Agent for signed commit and fresh current-head Codex review
 
 ## Codex Review
 
 - Required: for non-trivial PRs before merge
-- Requested by: pending
-- Requested at: pending
-- Completed review head: pending
-- Current review target pointer: PR comment / GitHub review object
+- Requested by: Rmosser via `@codex review`
+- Requested at: 2026-07-15T10:02:11Z
+- Completed review head: `785f102ea4e5eea747e9af2f8ef75023fa654ae7`
+- Current review target pointer: PR #5 / https://github.com/Rmosser/Clash-Verge-For-LC/pull/5#pullrequestreview-4703051561
 - Heartbeat required: yes when waiting on review
 - Heartbeat interval: project policy
 - Heartbeat stop condition: review complete and repair ledger closed
-- Review result: pending
+- Review result: findings on the recorded head; repaired worktree awaits a new commit and fresh current-head review.
 
 ## Review Repair Policy
 
 - Start tier: low
-- Current tier: low
+- Current tier: medium
 - Max attempts per tier: 2
-- Attempts at current tier: 0
-- Total repair attempts: 0
+- Attempts at current tier: 1
+- Total repair attempts: 1
 - Escalation path: low -> medium -> high -> xhigh -> human
 - Stop condition: review findings closed or human intervention required
 - Last repeated finding: none
@@ -122,8 +119,10 @@
 
 | Attempt | Tier | Finding class | Commit | Checks | Result | Next action |
 | --- | --- | --- | --- | --- | --- | --- |
-| 0 | - | none | - | - | no feedback repair yet | wait for review |
 | main-1 | high | main-agent acceptance | staged worktree | 27/27 base binding; 135 repo checks; 72 platform/tool tests; repo-specific checks | pass | create signed commit and deliver by PR |
+| review-1 | low | P1/P2: CI-portable legacy links and committed PR base | `785f102ea4e5eea747e9af2f8ef75023fa654ae7` | external Codex review | two findings | Worker C repair |
+| worker-c-1 | medium | review repair and self-supervision consistency | uncommitted worktree | docs-all; checkpoint-diff against `0d3610f1353a9a0242a9c54c7fd037f2e8da37d5`; JSON; diff-check; evaluator 4-case smoke; `scripts/test.sh` | local checks pass; main acceptance and fresh review pending | main review, signed repair commit, fresh current-head review |
+| main-2 | high | main-agent canonical normalization and P1-P3 independent review repair | working tree | docs/Scope/JSON/YAML/diff + preserved product checks | passed | sign commit and request fresh current-head review |
 
 ## Post-Merge Cleanup
 

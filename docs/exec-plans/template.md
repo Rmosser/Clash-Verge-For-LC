@@ -1,6 +1,6 @@
 # Plan Title
 
-## 任务分类
+## Task Classification / 任务分类
 
 - Task class: trivial / standard / critical
 - Reasoning budget: low / medium / high
@@ -29,18 +29,22 @@
 
 -
 
-## 文档影响
+## Documentation Impact / 文档影响
 
 -
 
 ## Verification
 
--
+- `python3 -I -B scripts/check_docs.py --all`
+- `python3 -I -B scripts/check_loop_checkpoints.py`
+
+<!-- checkpoint verifier 默认从 GITHUB_BASE_REF、HARNESS_DIFF_BASE_REF 或 origin 的默认分支解析真实 base。已提交 PR 不得用 --base HEAD 做 Scope 证据。 -->
 
 ## Checkpoint 证据
 
 - Context Claim：
 - Scope Claim：
+<!-- Change Claim 只列当前 diff 实际新增、修改、删除的路径和行为。 -->
 - Change Claim：
 - Validation Claim：
 
@@ -49,6 +53,7 @@
 - Delegation decision:
 - Used subagent:
 - No-subagent fallback reason:
+<!-- Delegated scope 只写本仓库内的相对路径/职责，不写机器绝对路径或父工作区。 -->
 - Delegated scope:
 - Forbidden scope:
 - Subagent result:
@@ -61,6 +66,7 @@
 - Required:
 - Requested by:
 - Requested at:
+<!-- 已完成 review 时写完整 40 位 SHA；尚未完成时写 pending。 -->
 - Completed review head:
 - Current review target pointer: PR comment / GitHub review object
 - Heartbeat required:

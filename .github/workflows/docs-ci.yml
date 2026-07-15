@@ -1,24 +1,121 @@
 name: docs-ci
+# HARNESS_TRUSTED_DOC_STATUS_V2
 
 on:
-  pull_request:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited]
   push:
     branches:
       - main
 
+permissions: {}
+
+concurrency:
+  group: docs-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  docs:
-    name: loop/checkpoints
+  mark-checkpoints-pending:
+    name: mark-loop-checkpoints-pending
+    if: github.event_name == 'pull_request_target'
+    permissions:
+      contents: read
+      statuses: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark the live PR head pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash
+        run: |
+          gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/statuses/${PR_HEAD_SHA}" \
+            -f state=pending \
+            -f context=loop/checkpoints \
+            -f description='Reconciling trusted checkpoint evidence.' \
+            -f target_url="${RUN_URL}"
+
+  pull-request-checkpoints:
+    name: trusted-loop-checkpoints
+    if: ${{ always() && github.event_name == 'pull_request_target' }}
+    needs: mark-checkpoints-pending
+    permissions:
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the untrusted validation target as data
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          path: target
+          persist-credentials: false
+      - name: Check out verifiers from the trusted PR base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Evaluate with trusted code
+        env:
+          HARNESS_REPO_ROOT: ${{ github.workspace }}/target
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          python3 -I -B trusted/scripts/check_docs.py \
+            --all --skip-project-check
+          python3 -I -B trusted/scripts/check_loop_checkpoints.py \
+            --base "${PR_BASE_SHA}" --head "${PR_HEAD_SHA}"
+
+  publish-checkpoints-result:
+    name: publish-loop-checkpoints-result
+    if: ${{ always() && github.event_name == 'pull_request_target' }}
+    needs: [mark-checkpoints-pending, pull-request-checkpoints]
+    permissions:
+      contents: read
+      statuses: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the validation result to the live PR head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          VALIDATION_RESULT: ${{ needs.pull-request-checkpoints.result }}
+        shell: bash
+        run: |
+          if [[ "${VALIDATION_RESULT}" == success ]]; then
+            state=success
+            description='Trusted checkpoint evidence is complete.'
+          else
+            state=failure
+            description='Trusted checkpoint evidence failed.'
+          fi
+          gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/statuses/${PR_HEAD_SHA}" \
+            -f state="${state}" \
+            -f context=loop/checkpoints \
+            -f description="${description}" \
+            -f target_url="${RUN_URL}"
+
+  default-branch-checkpoints:
+    name: default-branch-docs-check
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          # full history so the checkpoint verifier can diff against the base ref
-          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - run: python3 -I -B scripts/check_docs.py --all
-      - name: Reconcile Scope Claim vs git diff
-        if: github.event_name == 'pull_request'
-        run: python3 -I -B scripts/check_loop_checkpoints.py

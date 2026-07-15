@@ -23,8 +23,10 @@ Convention:
   plan bookkeeping may change. Governance, code, CI, configuration, release,
   and security surfaces still require an Active Plan.
 
-The diff is the merge-base diff against --base plus any uncommitted working
-tree changes, so local runs and CI pull_request runs agree.
+The diff is the merge-base diff against a real PR/default-branch base plus any
+uncommitted working-tree changes. A committed PR must never use HEAD as both
+base and head; `--base HEAD` is reserved for unborn or explicit pre-commit
+worktree checks.
 """
 from __future__ import annotations
 
@@ -36,7 +38,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(
+    os.environ.get("HARNESS_REPO_ROOT", Path(__file__).resolve().parents[1])
+).expanduser().resolve()
 
 
 def exact_docs_root_name() -> str:
@@ -117,13 +121,39 @@ def default_base() -> str:
         return explicit
     base_ref = os.environ.get("GITHUB_BASE_REF", "").strip()
     if base_ref:
+        for candidate in (f"origin/{base_ref}", base_ref):
+            if ref_exists(candidate):
+                return candidate
         return f"origin/{base_ref}"
+
     result = subprocess.run(
-        ["git", "-C", str(ROOT), "rev-parse", "--verify", "origin/main"],
+        [
+            "git",
+            "-C",
+            str(ROOT),
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ],
         capture_output=True,
         text=True,
     )
-    return "origin/main" if result.returncode == 0 else "HEAD"
+    if result.returncode == 0 and ref_exists(result.stdout.strip()):
+        return result.stdout.strip()
+
+    for candidate in ("origin/main", "origin/master", "main", "master"):
+        if ref_exists(candidate):
+            return candidate
+    if not ref_exists("HEAD"):
+        return "HEAD"
+    fail([
+        "no real PR/default-branch base ref is available",
+        "fetch the default branch, set HARNESS_DIFF_BASE_REF, or pass --base "
+        "with the actual PR base; use --base HEAD only for an explicit "
+        "pre-commit worktree check",
+    ])
+    raise AssertionError("fail() exits")
 
 
 def find_active_plan() -> Path | None:
@@ -187,16 +217,17 @@ def worktree_paths() -> set[str]:
     for token in tokens:
         if len(token) < 4:
             continue
+        status = token[:2]
         path = token[3:]
-        if not any(fnmatch.fnmatch(path, pattern) for pattern in IGNORED_WORKTREE_PATTERNS):
+        ignored_untracked_noise = status == "??" and any(
+            fnmatch.fnmatch(path, pattern)
+            for pattern in IGNORED_WORKTREE_PATTERNS
+        )
+        if not ignored_untracked_noise:
             paths.add(path)
-        if "R" in token[:2] or "C" in token[:2]:
+        if "R" in status or "C" in status:
             source = next(tokens, "")
-            if not any(
-                fnmatch.fnmatch(source, pattern)
-                for pattern in IGNORED_WORKTREE_PATTERNS
-            ):
-                paths.add(source)
+            paths.add(source)
     paths.discard("")
     return paths
 
@@ -215,6 +246,17 @@ def changed_files(base: str, head: str) -> list[str]:
     files: set[str] = set()
     head_exists = ref_exists(head)
     base_exists = ref_exists(base)
+    if (
+        os.environ.get("GITHUB_BASE_REF", "").strip()
+        and head_exists
+        and base_exists
+        and git_output("rev-parse", base).strip()
+        == git_output("rev-parse", head).strip()
+    ):
+        fail([
+            f"PR base {base} resolves to the same commit as head {head}",
+            "normal PR validation must compare the live PR head with its real base",
+        ])
     if head_exists and base_exists and base != head:
         files.update(
             git_lines("diff", "--name-only", "--no-renames", f"{base}...{head}")
@@ -224,7 +266,7 @@ def changed_files(base: str, head: str) -> list[str]:
     elif base not in {"HEAD", head}:
         fail([
             f"base ref is unavailable: {base}",
-            "fetch the base ref or pass --base HEAD for an unborn/local repository",
+            "fetch the base ref or set HARNESS_DIFF_BASE_REF to the actual PR base",
         ])
     files.update(worktree_paths())
     return sorted(files)
@@ -270,15 +312,16 @@ def classify(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base", default=default_base(), help="base ref for the merge-base diff")
+    parser.add_argument("--base", help="base ref for the merge-base diff")
     parser.add_argument("--head", default="HEAD", help="head ref for the merge-base diff")
     args = parser.parse_args()
+    base = args.base or default_base()
 
     plan = find_active_plan()
     allows, denies = scope_patterns(plan) if plan else ([], [])
     problems = [
         f"{reason}: {path}"
-        for path in changed_files(args.base, args.head)
+        for path in changed_files(base, args.head)
         if (
             reason := classify(
                 path,
@@ -300,7 +343,7 @@ def main() -> None:
             "lines marked forbidden/禁止 contribute denylist entries that override allows,",
             "or move the change into its own plan / PR",
         ])
-    print(f"check_loop_checkpoints: passed against base {args.base} and head {args.head}")
+    print(f"check_loop_checkpoints: passed against base {base} and head {args.head}")
 
 
 if __name__ == "__main__":

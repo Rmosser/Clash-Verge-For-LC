@@ -51,13 +51,11 @@ NON_TRIVIAL_DOC_PATHS = (
     "docs/governance/",
     "docs/exec-plans/",
 )
-REVIEWED_COMMIT_RE = re.compile(
-    r"\*\*Reviewed commit:\*\*\s*`([0-9a-f]{40})`",
+REVIEWED_COMMIT_FIELD_RE = re.compile(
+    r"\*\*Reviewed commit:\*\*\s*`([^`]+)`",
     re.IGNORECASE,
 )
-HEAD_TOKEN_RE = re.compile(
-    r"(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])", re.IGNORECASE
-)
+VALID_REVIEWED_COMMIT_RE = re.compile(r"[0-9a-f]{10,40}", re.IGNORECASE)
 TRIGGER_RE = re.compile(r"^\s*@codex\s+review\s*$", re.IGNORECASE | re.MULTILINE)
 FINDING_RE = re.compile(
     r"(?:img\.shields\.io/badge/P[0-3]-|\bP[0-3]\s+Badge\b|"
@@ -195,15 +193,17 @@ def actor_login(item: dict[str, Any]) -> str:
 
 
 def reviewed_head(body: str, head_sha: str) -> bool:
-    matches = REVIEWED_COMMIT_RE.findall(body)
-    return any(head_sha.lower().startswith(value.lower()) for value in matches)
-
-
-def references_head(body: str, head_sha: str) -> bool:
-    return any(
-        head_sha.lower().startswith(value.lower())
-        for value in HEAD_TOKEN_RE.findall(body)
+    markers = REVIEWED_COMMIT_FIELD_RE.findall(body)
+    return bool(markers) and all(
+        VALID_REVIEWED_COMMIT_RE.fullmatch(value)
+        and head_sha.lower().startswith(value.lower())
+        for value in markers
     )
+
+
+def stale_or_invalid_review_marker(body: str, head_sha: str) -> bool:
+    markers = REVIEWED_COMMIT_FIELD_RE.findall(body)
+    return bool(markers) and not reviewed_head(body, head_sha)
 
 
 def clean_body(body: str) -> bool:
@@ -340,7 +340,6 @@ def evaluate(
         for item in issue_comments
         if actor_login(item) not in authors
         and TRIGGER_RE.search(str(item.get("body") or ""))
-        and references_head(str(item.get("body") or ""), head_sha)
         and artifact_time(item)
     ]
     if not triggers:
@@ -350,7 +349,7 @@ def evaluate(
             head_sha=head_sha,
             description=f"Codex review was not requested for head {head_sha[:10]}.",
             reasons=(
-                "no explicit @codex review request records the live PR head SHA",
+                "no explicit @codex review request precedes a current-head artifact",
             ),
         )
     latest_trigger = max(triggers, key=artifact_time)
@@ -383,7 +382,7 @@ def evaluate(
             or not finding_body(body)
         ):
             continue
-        reviewed_markers = REVIEWED_COMMIT_RE.findall(body)
+        reviewed_markers = REVIEWED_COMMIT_FIELD_RE.findall(body)
         if reviewed_markers and not reviewed_head(body, head_sha):
             # A delayed result explicitly bound to an older head cannot poison
             # the current review round. Unbound findings remain fail-closed.
@@ -398,13 +397,13 @@ def evaluate(
             blockers.append("Codex requested changes on the current head")
         if finding_body(body):
             blockers.append("Codex review body contains a current-head finding")
+        if stale_or_invalid_review_marker(body, head_sha):
+            blockers.append(
+                "Codex review body contains a stale or invalid reviewed-commit marker"
+            )
         if state == "APPROVED" and body.strip() and not clean_body(body):
             blockers.append(
                 "Codex APPROVED review contains non-clean text for the current head"
-            )
-        if state == "COMMENTED" and not finding_body(body) and not clean_body(body):
-            blockers.append(
-                "Codex COMMENTED review lacks an explicit clean marker for the current head"
             )
     if current_inline:
         blockers.append(
@@ -425,14 +424,16 @@ def evaluate(
     for review in current_reviews:
         state = str(review.get("state") or "").upper()
         body = str(review.get("body") or "")
+        marker_is_consistent = not stale_or_invalid_review_marker(body, head_sha)
         if (
             state == "APPROVED"
             and (not body.strip() or clean_body(body))
             and not finding_body(body)
+            and marker_is_consistent
         ) or (
             state == "COMMENTED"
-            and clean_body(body)
             and not finding_body(body)
+            and marker_is_consistent
         ):
             clean_artifacts.append(review)
     for comment in issue_comments:
@@ -460,7 +461,7 @@ def evaluate(
                 or artifact_time(comment) < latest_clean_time
             ):
                 continue
-            reviewed_markers = REVIEWED_COMMIT_RE.findall(body)
+            reviewed_markers = REVIEWED_COMMIT_FIELD_RE.findall(body)
             if reviewed_markers and not reviewed_head(body, head_sha):
                 continue
             ambiguous_issue_comments.append(comment)

@@ -5,15 +5,19 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 from types import ModuleType
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(
+    os.environ.get("HARNESS_REPO_ROOT", Path(__file__).resolve().parents[1])
+).expanduser().resolve()
 
 
 def exact_docs_root() -> Path:
@@ -61,7 +65,6 @@ ALLOWED_ROUTES = {
     },
 }
 REQUIRED_EVIDENCE_SECTIONS = [
-    "## 任务分类",
     "Task class",
     "Reasoning budget",
     "Delegation route",
@@ -82,11 +85,49 @@ REQUIRED_EVIDENCE_SECTIONS = [
     "Rework requested",
     "Final accepted diff",
     "## Codex Review",
+    "Requested by",
+    "Requested at",
     "Completed review head",
+    "Current review target pointer",
+    "Heartbeat required",
+    "Heartbeat interval",
+    "Heartbeat stop condition",
     "Review result",
+    "## Review Repair Policy",
+    "Start tier",
+    "Current tier",
+    "Max attempts per tier",
+    "Attempts at current tier",
+    "Total repair attempts",
+    "Escalation path",
+    "Stop condition",
+    "Last repeated finding",
+    "Human intervention required",
     "## Repair Ledger",
     "## Post-Merge Cleanup",
+    "Main synced",
+    "Local branch deleted",
+    "Heartbeat closed",
 ]
+TASK_CLASSIFICATION_HEADING_RE = re.compile(
+    r"^##\s+(?:Task Classification(?:\s*/\s*任务分类)?|"
+    r"任务分类(?:\s*/\s*Task Classification)?)\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+DOCUMENTATION_IMPACT_HEADING_RE = re.compile(
+    r"^##\s+(?:Documentation Impact(?:\s*/\s*文档影响)?|"
+    r"文档影响(?:\s*/\s*Documentation Impact)?)\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+FULL_SHA_RE = re.compile(r"[0-9a-f]{40}", re.IGNORECASE)
+ABSOLUTE_SCOPE_RE = re.compile(
+    r"(?:^|[\s`(])(?:/[^\s`,;)]+|~(?:/|\\)[^\s`,;)]+|"
+    r"[A-Za-z]:[\\/][^\s`,;)]+)"
+)
+CURRENT_HEAD_REVIEW_HEADING = "## Current-Head Codex Review\n\n"
+CURRENT_HEAD_REVIEW_SHA256 = (
+    "dfa4c08673d318d77ff20f2c62f1693094aa30065282ac18e81fc436ff198f76"
+)
 
 
 def load_json(path: Path, errors: list[str], label: str) -> dict[str, object]:
@@ -124,7 +165,7 @@ def markdown_files(manifest: dict[str, object]) -> list[Path]:
         if base.exists():
             files.extend(sorted(base.rglob("*.md")))
     patterns = [str(value) for value in manifest.get("link_check_exclude_globs", [])]
-    return [
+    selected = [
         path
         for path in files
         if path.exists()
@@ -133,6 +174,11 @@ def markdown_files(manifest: dict[str, object]) -> list[Path]:
             for pattern in patterns
         )
     ]
+    symlinks = [path for path in selected if path.is_symlink()]
+    if symlinks:
+        joined = ", ".join(path.relative_to(ROOT).as_posix() for path in symlinks)
+        raise RuntimeError(f"markdown inputs must be regular files, not symlinks: {joined}")
+    return selected
 
 
 def extract_links(markdown_path: Path) -> list[tuple[str, Path]]:
@@ -143,6 +189,13 @@ def extract_links(markdown_path: Path) -> list[tuple[str, Path]]:
         if raw.startswith(("http://", "https://", "mailto:", "#")):
             continue
         target = raw.split("#", 1)[0]
+        if (
+            target.startswith(("/", "~/", "~\\", "//"))
+            or re.match(r"^[A-Za-z]:[\\/]", target)
+        ):
+            # Absolute filesystem paths and site-root links are not portable
+            # repository links and cannot be resolved on a CI runner.
+            continue
         if target:
             links.append((raw, (markdown_path.parent / target).resolve()))
     return links
@@ -272,6 +325,12 @@ def check_delegation_contract(text: str, plan: Path, errors: list[str]) -> None:
             f"Active plan {plan.relative_to(ROOT).as_posix()} must define delegated "
             "and forbidden scope before delegated work"
         )
+    if delegated and ABSOLUTE_SCOPE_RE.search(delegated_scope):
+        errors.append(
+            f"Active plan {plan.relative_to(ROOT).as_posix()} must express "
+            "Delegated scope with repository-relative paths, not an absolute "
+            "machine or parent-workspace path"
+        )
     if not pending(accepted_diff) and (pending(subagent_result) or pending(main_review)):
         errors.append(
             f"Active plan {plan.relative_to(ROOT).as_posix()} accepts a final diff "
@@ -289,11 +348,39 @@ def check_claims_and_review(text: str, plan: Path, errors: list[str]) -> None:
     review_result = required_field(
         text, plan, "Review result", errors, allow_pending=True
     )
+    for field in (
+        "Requested by",
+        "Requested at",
+        "Current review target pointer",
+        "Heartbeat required",
+        "Heartbeat interval",
+        "Heartbeat stop condition",
+        "Start tier",
+        "Current tier",
+        "Max attempts per tier",
+        "Attempts at current tier",
+        "Total repair attempts",
+        "Escalation path",
+        "Stop condition",
+        "Last repeated finding",
+        "Human intervention required",
+        "Main synced",
+        "Local branch deleted",
+        "Heartbeat closed",
+    ):
+        required_field(text, plan, field, errors, allow_pending=True)
     if not pending(review_result) and pending(completed_head):
         errors.append(
             f"Active plan {plan.relative_to(ROOT).as_posix()} records a review result "
             "without a completed review head"
         )
+    if not pending(completed_head):
+        candidate = completed_head.strip().strip("`")
+        if not FULL_SHA_RE.fullmatch(candidate):
+            errors.append(
+                f"Active plan {plan.relative_to(ROOT).as_posix()} must record "
+                "Completed review head as a full 40-character commit SHA"
+            )
 
 
 def check_active_plans(errors: list[str]) -> None:
@@ -308,6 +395,16 @@ def check_active_plans(errors: list[str]) -> None:
         return
     for plan in plans:
         text = plan.read_text(encoding="utf-8")
+        if not TASK_CLASSIFICATION_HEADING_RE.search(text):
+            errors.append(
+                f"Active plan {plan.relative_to(ROOT).as_posix()} missing required "
+                "Task Classification / 任务分类 heading"
+            )
+        if not DOCUMENTATION_IMPACT_HEADING_RE.search(text):
+            errors.append(
+                f"Active plan {plan.relative_to(ROOT).as_posix()} missing required "
+                "Documentation Impact / 文档影响 heading"
+            )
         for section in REQUIRED_EVIDENCE_SECTIONS:
             if section not in text:
                 errors.append(
@@ -316,6 +413,179 @@ def check_active_plans(errors: list[str]) -> None:
                 )
         check_delegation_contract(text, plan, errors)
         check_claims_and_review(text, plan, errors)
+        check_required_check_name(text, plan, errors)
+
+
+def check_required_check_name(text: str, path: Path, errors: list[str]) -> None:
+    values = field_values(text, "Required check name")
+    has_merge_readiness = bool(
+        re.search(r"^## Merge Readiness\s*$", text, re.MULTILINE)
+    )
+    relative = path.relative_to(ROOT).as_posix()
+    if has_merge_readiness and len(values) != 1:
+        errors.append(
+            f"{relative} must contain exactly one 'Required check name' field"
+        )
+        return
+    if len(values) > 1:
+        errors.append(
+            f"{relative} must contain at most one 'Required check name' field"
+        )
+        return
+    if values and normalized(values[0]) != "loop/checkpoints":
+        errors.append(
+            f"{relative} Required check name must be 'loop/checkpoints'"
+        )
+
+
+def check_current_head_governance(errors: list[str]) -> None:
+    path = DOCS_ROOT / "governance" / "checkpoint-ci-gate.md"
+    text = path.read_text(encoding="utf-8")
+    count = text.count(CURRENT_HEAD_REVIEW_HEADING)
+    if count != 1:
+        errors.append(
+            "checkpoint governance must contain exactly one canonical "
+            "Current-Head Codex Review section"
+        )
+        return
+    section = CURRENT_HEAD_REVIEW_HEADING + text.split(
+        CURRENT_HEAD_REVIEW_HEADING, 1
+    )[1]
+    digest = hashlib.sha256((section.rstrip() + "\n").encode("utf-8")).hexdigest()
+    if digest != CURRENT_HEAD_REVIEW_SHA256:
+        errors.append(
+            "checkpoint governance Current-Head Codex Review section differs "
+            "from the trusted canonical contract"
+        )
+
+
+def check_document_status_workflow(
+    manifest: dict[str, object], required_paths: list[str], errors: list[str]
+) -> None:
+    candidates = [
+        value
+        for value in required_paths
+        if value in {
+            ".github/workflows/docs-ci.yml",
+            ".github/workflows/checkpoint-ci.yml",
+        }
+    ]
+    if len(candidates) != 1:
+        errors.append(
+            "doc-sync-rules must require exactly one trusted document status workflow"
+        )
+        return
+    relative = candidates[0]
+    required_check = manifest.get("required_check")
+    if not isinstance(required_check, dict):
+        errors.append("doc-sync-rules required_check must be an object")
+    else:
+        expected = {
+            "name": "loop/checkpoints",
+            "workflow": relative,
+            "emitter": "trusted_commit_status",
+            "required_on": "main",
+        }
+        for field, value in expected.items():
+            if required_check.get(field) != value:
+                errors.append(
+                    f"doc-sync-rules required_check.{field} must be {value!r}"
+                )
+    path = ROOT / relative
+    if path.is_symlink() or not path.is_file():
+        errors.append(f"Trusted document status workflow must be a regular file: {relative}")
+        return
+    text = path.read_text(encoding="utf-8")
+    markers = (
+        "  mark-checkpoints-pending:\n",
+        "  pull-request-checkpoints:\n",
+        "  publish-checkpoints-result:\n",
+        "  default-branch-checkpoints:\n",
+    )
+    if "# HARNESS_TRUSTED_DOC_STATUS_V2" not in text or any(
+        marker not in text for marker in markers
+    ):
+        errors.append(f"Trusted document status workflow contract is missing: {relative}")
+        return
+    pending_job = text.split(markers[0], 1)[1].split(markers[1], 1)[0]
+    validation_job = text.split(markers[1], 1)[1].split(markers[2], 1)[0]
+    publisher_job = text.split(markers[2], 1)[1].split(markers[3], 1)[0]
+    pre_jobs = text.split("jobs:\n", 1)[0]
+    required_fragments = (
+        "pull_request_target:",
+        "permissions: {}",
+        "ref: ${{ github.event.pull_request.head.sha }}",
+        "ref: ${{ github.event.pull_request.base.sha }}",
+        "python3 -I -B trusted/scripts/check_docs.py",
+        "--all --skip-project-check",
+        "trusted/scripts/check_loop_checkpoints.py",
+        '--base "${PR_BASE_SHA}" --head "${PR_HEAD_SHA}"',
+    )
+    if any(fragment not in text for fragment in required_fragments):
+        errors.append(f"Trusted document status workflow is incomplete: {relative}")
+    if re.search(r"^  pull_request:\s*$", pre_jobs, flags=re.MULTILINE):
+        errors.append(f"Trusted document status workflow cannot use pull_request: {relative}")
+    if "workflow_dispatch:" in pre_jobs:
+        errors.append(
+            f"Trusted document status workflow cannot use workflow_dispatch: {relative}"
+        )
+    if text.count("context=loop/checkpoints") != 2:
+        errors.append(
+            f"Trusted document status workflow must publish loop/checkpoints twice: {relative}"
+        )
+    if text.count("statuses: write") != 2:
+        errors.append(
+            f"Trusted document status workflow must isolate exactly two status writers: {relative}"
+        )
+    if text.count("actions/checkout@v4") != 3:
+        errors.append(
+            f"Trusted document status workflow must use two isolated PR checkouts and one default checkout: {relative}"
+        )
+    if validation_job.count("persist-credentials: false") != 2:
+        errors.append(
+            f"Trusted document validation checkouts must disable credential persistence: {relative}"
+        )
+    if "statuses: write" in validation_job:
+        errors.append(
+            f"Trusted document validation job cannot write statuses: {relative}"
+        )
+    if "actions/checkout" in pending_job or "actions/checkout" in publisher_job:
+        errors.append(
+            f"Trusted document status-writing jobs cannot check out repository content: {relative}"
+        )
+    if "statuses: write" not in pending_job or "statuses: write" not in publisher_job:
+        errors.append(
+            f"Trusted document pending and publisher jobs must own status writes: {relative}"
+        )
+    if "needs.pull-request-checkpoints.result" not in publisher_job:
+        errors.append(
+            f"Trusted document publisher must consume the read-only validation result: {relative}"
+        )
+
+
+def check_deferred_paths(
+    manifest: dict[str, object], required_paths: list[str], errors: list[str]
+) -> None:
+    required = set(required_paths)
+    for field, value in manifest.items():
+        if field != "deferred_paths" and not (
+            field.startswith("planned_") and field.endswith("_paths")
+        ):
+            continue
+        if not isinstance(value, list):
+            errors.append(f"doc-sync-rules {field} must be a list")
+            continue
+        for entry in value:
+            path = entry.get("path") if isinstance(entry, dict) else entry
+            if not isinstance(path, str):
+                errors.append(
+                    f"doc-sync-rules {field} entries must be paths or path objects"
+                )
+                continue
+            if path in required:
+                errors.append(
+                    f"doc-sync-rules {field} still defers required path: {path}"
+                )
 
 
 def load_project_module() -> ModuleType | None:
@@ -337,6 +607,21 @@ def check_docs(repo_root: Path | None = None):
     if not callable(project_check):
         raise ImportError("project checker does not expose check_docs(repo_root)")
     return project_check(repo_root or ROOT)
+
+
+def validate(repo_root: Path | None = None) -> list[str]:
+    """Compatibility API for repositories whose tests import validate(root)."""
+    module = load_project_module()
+    project_validate = getattr(module, "validate", None) if module else None
+    if callable(project_validate):
+        return project_validate(repo_root or ROOT)
+    requested_root = (repo_root or ROOT).expanduser().resolve()
+    if requested_root != ROOT:
+        raise ValueError(
+            "validate(repo_root) must target HARNESS_REPO_ROOT or the checker repository"
+        )
+    errors, _ = validate_repo()
+    return errors
 
 
 def run_project_check(argv: list[str]) -> int:
@@ -373,6 +658,13 @@ def validate_repo() -> tuple[list[str], dict[str, object]]:
     for relative_path in required_paths:
         if not exact_case_path_exists(relative_path):
             errors.append(f"Missing or case-mismatched required path: {relative_path}")
+    check_deferred_paths(manifest, required_paths, errors)
+    check_document_status_workflow(manifest, required_paths, errors)
+    check_current_head_governance(errors)
+    plan_template = DOCS_ROOT / "exec-plans" / "template.md"
+    check_required_check_name(
+        plan_template.read_text(encoding="utf-8"), plan_template, errors
+    )
 
     for markdown_path in markdown_files(manifest):
         for raw, linked in extract_links(markdown_path):
@@ -415,6 +707,38 @@ def validate_repo() -> tuple[list[str], dict[str, object]]:
             errors.append("repo contract mode must be repo-native-agent-cicd")
         if "delegation_contract" not in contract:
             errors.append("repo contract is missing delegation_contract")
+        checkpoint = contract.get("checkpoint_gate")
+        if not isinstance(checkpoint, dict):
+            errors.append("repo contract checkpoint_gate must be an object")
+        else:
+            for field in ("planned_required_check", "required_check"):
+                if field in checkpoint and checkpoint.get(field) != "loop/checkpoints":
+                    errors.append(
+                        f"repo contract checkpoint_gate {field} must be 'loop/checkpoints'"
+                    )
+            required_job = checkpoint.get("required_check_job")
+            if required_job is not None:
+                if not isinstance(required_job, dict):
+                    errors.append(
+                        "repo contract checkpoint_gate required_check_job must be an object"
+                    )
+                else:
+                    expected_status_contract = {
+                        "workflow": ".github/workflows/docs-ci.yml",
+                        "context": "loop/checkpoints",
+                        "emitter": "trusted_commit_status",
+                    }
+                    for field, expected in expected_status_contract.items():
+                        if required_job.get(field) != expected:
+                            errors.append(
+                                "repo contract checkpoint_gate required_check_job "
+                                f"{field} must be {expected!r}"
+                            )
+                    if "job" in required_job:
+                        errors.append(
+                            "repo contract checkpoint_gate required_check_job cannot "
+                            "name an Actions job for a trusted commit-status context"
+                        )
         review = contract.get("codex_review")
         if not isinstance(review, dict):
             errors.append("repo contract codex_review must be an object")
@@ -424,7 +748,20 @@ def validate_repo() -> tuple[list[str], dict[str, object]]:
                 "required_check": "codex-review",
                 "status_app_id": 15368,
                 "status_source_isolation": "shared_actions_app_not_isolated",
+                "source_isolated": False,
                 "required_check_activation": "required_after_live_emitter_smoke",
+                "required_check_activation_scope": "per_repository",
+                "trusted_events": [
+                    "pull_request_target",
+                    "issue_comment",
+                    "repository_dispatch",
+                ],
+                "status_writer_events": [
+                    "pull_request_target",
+                    "issue_comment",
+                    "repository_dispatch",
+                ],
+                "heartbeat_event": "schedule",
                 "artifact_binding": "live_pr_head_sha",
             }
             for field, expected in expected_review_policy.items():
@@ -442,9 +779,8 @@ def validate_repo() -> tuple[list[str], dict[str, object]]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--all", action="store_true")
+    parser.add_argument("--skip-project-check", action="store_true")
     args, passthrough = parser.parse_known_args(argv)
-    if not args.all:
-        raise SystemExit("Only --all is supported by the Harness wrapper.")
 
     errors, _ = validate_repo()
     if errors:
@@ -452,9 +788,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERROR: {error}")
         return 1
 
-    project_status = run_project_check(["--all", *passthrough])
-    if project_status != 0:
-        return project_status
+    if not args.skip_project_check:
+        project_status = run_project_check(["--all", *passthrough])
+        if project_status != 0:
+            return project_status
     print("Docs checks passed.")
     return 0
 

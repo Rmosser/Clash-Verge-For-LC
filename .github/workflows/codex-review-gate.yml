@@ -1,17 +1,13 @@
 name: codex-review-gate
-run-name: codex-review-gate pr-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+run-name: codex-review-gate pr-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr_number }}
 
 on:
   pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited]
   issue_comment:
     types: [created, edited, deleted]
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: Pull request number to reconcile
-        required: true
-        type: number
+  repository_dispatch:
+    types: [codex-review-reconcile]
 permissions:
   contents: read
   issues: read
@@ -19,7 +15,7 @@ permissions:
   statuses: write
 
 concurrency:
-  group: codex-review-gate-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+  group: codex-review-gate-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr_number }}
   cancel-in-progress: false
 
 jobs:
@@ -39,7 +35,7 @@ jobs:
       - name: Reconcile Codex evidence against the live PR head
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr_number }}
           EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
           GITHUB_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         shell: bash
