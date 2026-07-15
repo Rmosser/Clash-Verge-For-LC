@@ -107,5 +107,6 @@
     "workflow": ".github/workflows/docs-ci.yml",
     "emitter": "trusted_commit_status",
     "required_on": "main"
-  }
+  },
+  "additional_required_checks": []
 }

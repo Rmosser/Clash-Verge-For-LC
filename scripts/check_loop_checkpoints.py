@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import json
 import os
 import re
 import subprocess
@@ -57,6 +58,7 @@ def exact_docs_root_name() -> str:
 
 DOCS_ROOT_NAME = exact_docs_root_name()
 ACTIVE_DIR = ROOT / DOCS_ROOT_NAME / "exec-plans" / "active"
+RULES_PATH = ROOT / DOCS_ROOT_NAME / "doc-sync-rules.json"
 ALWAYS_ALLOWED_PREFIXES = (
     f"{DOCS_ROOT_NAME}/exec-plans/active/",
     f"{DOCS_ROOT_NAME}/exec-plans/completed/",
@@ -280,7 +282,31 @@ def matches_pattern(path: str, pattern: str) -> bool:
     return path == pattern
 
 
-def trivial_without_plan(path: str) -> bool:
+def active_plan_required_patterns() -> list[str]:
+    try:
+        payload = json.loads(RULES_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail([
+            f"cannot read active-plan policy from "
+            f"{RULES_PATH.relative_to(ROOT)}: {exc}"
+        ])
+    diff_classes = payload.get("diff_classes", {})
+    if not isinstance(diff_classes, dict):
+        fail(["doc-sync-rules diff_classes must be an object when present"])
+    patterns: list[str] = []
+    for name, spec in diff_classes.items():
+        if not isinstance(spec, dict) or spec.get("requires_active_plan") is not True:
+            continue
+        paths = spec.get("paths")
+        if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
+            fail([f"diff class {name} requires an Active Plan but has invalid paths"])
+        patterns.extend(paths)
+    return patterns
+
+
+def trivial_without_plan(path: str, required_plan_patterns: list[str]) -> bool:
+    if any(matches_pattern(path, pattern) for pattern in required_plan_patterns):
+        return False
     if path in TRIVIAL_WITHOUT_PLAN_FILES:
         return True
     if not path.startswith(TRIVIAL_WITHOUT_PLAN_PREFIXES):
@@ -297,6 +323,7 @@ def classify(
     denies: list[str],
     *,
     has_active_plan: bool = True,
+    required_plan_patterns: list[str] | None = None,
 ) -> str | None:
     """Return the failure reason for path, or None when it is acceptable."""
     if any(matches_pattern(path, pattern) for pattern in denies):
@@ -304,7 +331,11 @@ def classify(
     if path.startswith(ALWAYS_ALLOWED_PREFIXES):
         return None
     if not has_active_plan:
-        return None if trivial_without_plan(path) else "requires an Active Plan"
+        return (
+            None
+            if trivial_without_plan(path, required_plan_patterns or [])
+            else "requires an Active Plan"
+        )
     if any(matches_pattern(path, pattern) for pattern in allows):
         return None
     return "not in Scope allowlist"
@@ -319,6 +350,7 @@ def main() -> None:
 
     plan = find_active_plan()
     allows, denies = scope_patterns(plan) if plan else ([], [])
+    required_plan_patterns = active_plan_required_patterns()
     problems = [
         f"{reason}: {path}"
         for path in changed_files(base, args.head)
@@ -328,6 +360,7 @@ def main() -> None:
                 allows,
                 denies,
                 has_active_plan=plan is not None,
+                required_plan_patterns=required_plan_patterns,
             )
         )
     ]

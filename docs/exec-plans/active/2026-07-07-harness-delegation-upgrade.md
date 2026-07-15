@@ -76,8 +76,8 @@
 
 - Context Claim：本次只处理 repo-native Harness 入口、治理文档、模板和检查脚本；平台门禁另行验证。
 - Scope Claim：允许清单见 `## Scope`；产品行为和线上状态不属于本次语义变更。
-- Change Claim：新增或更新 AGENTS/docs/governance/docs sync/repo contract/PR template/docs CI/current-head Codex Review gate/Harness check 脚本，并归档旧 active plan 以保持 active 基数 0..1。
-- Validation Claim: repo-native docs, real `origin/main` Scope, JSON, YAML, and diff checks passed on 2026-07-15; no additional product command was removed from the prior docs workflow.
+- Change Claim: actual `git diff origin/main...HEAD` plus worktree diff includes `.github/pull_request_template.md`, `.github/workflows/codex-review-gate.yml`, `.github/workflows/codex-review-heartbeat.yml`, `.github/workflows/docs-ci.yml`, `.harness/repo-contract.json`, `AGENTS.md`, `docs/doc-sync-rules.json`, `docs/exec-plans/active/.gitkeep`, `docs/exec-plans/active/2026-07-07-harness-delegation-upgrade.md`, `docs/exec-plans/completed/.gitkeep`, `docs/exec-plans/completed/archived-before-harness-upgrade-20260530-runtime-hardening-recovery.md`, `docs/exec-plans/template.md`, `docs/governance/checkpoint-ci-gate.md`, `scripts/check_codex_review.py`, `scripts/check_docs.py`, `scripts/check_loop_checkpoints.py`; the current repair fails closed on malformed review markers, bounds the canonical governance hash, rejects repository-escaping links, applies declared Active Plan policy, treats fork PR content as data only, rejects incomplete COMMENTED results, and binds required checks to non-colliding workflow evidence.
+- Validation Claim: repo-native docs, real `origin/main` Scope, JSON, YAML, and diff checks passed on 2026-07-15; an exact canonical control hash and negative smoke reject any target execution added to the privileged validation job; canonical skill tests passed 71/71, platform/normalizer tests passed 70/70, and delivery-state tests passed 11/11; the real 30-repository normalizer dry-run reported zero pending paths; no repository-specific product command required relocation.
 
 ## Agent Delegation
 
@@ -86,9 +86,9 @@
 - No-subagent fallback reason: n/a
 - Delegated scope: `Rmosser/Clash-Verge-For-LC` only; Harness files listed in `## Scope`.
 - Forbidden scope: product behavior, secrets, deployment/runtime state, platform settings, independent push/merge/heartbeat closure.
-- Subagent result: complete - three independent batch reviews completed and all local findings were repaired; signed repair-head Codex review remains pending
+- Subagent result: complete - independent repository, product-CI, cleanup-flow, and platform-policy reviews were reconciled; fresh signed-head Codex review remains pending
 - Main agent review: accepted on 2026-07-15 after independent diff, trust-boundary, and validation review
-- Rework requested: completed - review findings and main-agent canonical normalization are addressed
+- Rework requested: completed - malformed/incomplete review results, governance hash, link escape, Active Plan policy, fork checkout, privileged product execution, SubHub head checkout, product required-gate and check-suite binding, status/check collision, review-policy preservation, owner-specific payload, explicit protection creation, journal permission, inventory owner binding, live base binding, publish locking, and crash-idempotent review request findings are addressed
 - Final accepted diff: accepted by the main Agent for signed commit and fresh current-head Codex review
 
 ## Codex Review
@@ -123,6 +123,8 @@
 | review-1 | low | P1/P2: CI-portable legacy links and committed PR base | `785f102ea4e5eea747e9af2f8ef75023fa654ae7` | external Codex review | two findings | Worker C repair |
 | worker-c-1 | medium | review repair and self-supervision consistency | uncommitted worktree | docs-all; checkpoint-diff against `0d3610f1353a9a0242a9c54c7fd037f2e8da37d5`; JSON; diff-check; evaluator 4-case smoke; `scripts/test.sh` | local checks pass; main acceptance and fresh review pending | main review, signed repair commit, fresh current-head review |
 | main-2 | high | main-agent canonical normalization and P1-P3 independent review repair | working tree | docs/Scope/JSON/YAML/diff + preserved product checks | passed | sign commit and request fresh current-head review |
+| review-2 | high | independent canonical and platform findings: incomplete COMMENTED result, false dry-run, status/check collision, suite binding, review-policy preservation, owner payload, explicit protection authorization, journal mode, inventory owner, live base, and publish concurrency | 5891d55a40a1d30d52bdda9d7d7017c2404c3b34 | canonical skill review plus repository review batch | repair applied | main-agent validation |
+| main-3 | high | canonical fail-closed review and platform proof repair | working tree | docs/Scope/JSON/YAML/Python/diff + preserved product checks + 71 skill tests + 70 platform/normalizer tests + 11 delivery-state tests + 30-repo zero-diff preview | passed | sign commit and request fresh current-head review |
 
 ## Post-Merge Cleanup
 

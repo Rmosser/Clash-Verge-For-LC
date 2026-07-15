@@ -73,6 +73,23 @@ CLEAN_BODY_RE = re.compile(
     r"(?:Comment\s+[`\"']?@codex\s+review[`\"']?\s+to\s+run\s+again\.?\s*)?$",
     re.IGNORECASE | re.DOTALL,
 )
+COMMENTED_CLEAN_BODY_RE = re.compile(
+    r"^\s*#{1,6}\s*[^\r\n]*Codex Review\s*"
+    r"Here are some automated review suggestions for this pull request\.\s*"
+    r"\*\*Reviewed commit:\*\*\s*`[0-9a-f]{10,40}`\s*"
+    r"<details>\s*<summary>[^\r\n]*About Codex in GitHub</summary>[\s\S]*"
+    r"If Codex has suggestions, it will comment; otherwise it will react with[\s\S]*"
+    r"</details>\s*$",
+    re.IGNORECASE,
+)
+INCOMPLETE_REVIEW_RE = re.compile(
+    r"(?:\btimed?\s+out\b|\btimeout\b|"
+    r"\b(?:analysis|review)\s+(?:is\s+|was\s+)?incomplete\b|"
+    r"\bpartial(?:ly)?\s+(?:analysis|review)\b|"
+    r"\b(?:could not|unable to|failed to)\s+(?:complete|finish)\b|"
+    r"\bencountered an error\b)",
+    re.IGNORECASE,
+)
 
 
 class GateError(RuntimeError):
@@ -206,12 +223,30 @@ def stale_or_invalid_review_marker(body: str, head_sha: str) -> bool:
     return bool(markers) and not reviewed_head(body, head_sha)
 
 
+def explicitly_stale_review_marker(body: str, head_sha: str) -> bool:
+    markers = REVIEWED_COMMIT_FIELD_RE.findall(body)
+    return bool(markers) and all(
+        VALID_REVIEWED_COMMIT_RE.fullmatch(value)
+        and not head_sha.lower().startswith(value.lower())
+        for value in markers
+    )
+
+
 def clean_body(body: str) -> bool:
     return bool(CLEAN_BODY_RE.fullmatch(body))
 
 
 def finding_body(body: str) -> bool:
     return bool(FINDING_RE.search(body))
+
+
+def recognized_commented_review_body(body: str, head_sha: str) -> bool:
+    if INCOMPLETE_REVIEW_RE.search(body):
+        return False
+    return clean_body(body) or (
+        reviewed_head(body, head_sha)
+        and bool(COMMENTED_CLEAN_BODY_RE.fullmatch(body))
+    )
 
 
 def trivial_path(path: str) -> bool:
@@ -382,10 +417,10 @@ def evaluate(
             or not finding_body(body)
         ):
             continue
-        reviewed_markers = REVIEWED_COMMIT_FIELD_RE.findall(body)
-        if reviewed_markers and not reviewed_head(body, head_sha):
+        if explicitly_stale_review_marker(body, head_sha):
             # A delayed result explicitly bound to an older head cannot poison
-            # the current review round. Unbound findings remain fail-closed.
+            # the current review round. Malformed or mixed markers remain
+            # fail-closed because they are not trustworthy stale bindings.
             continue
         current_issue_findings.append(item)
 
@@ -434,6 +469,7 @@ def evaluate(
             state == "COMMENTED"
             and not finding_body(body)
             and marker_is_consistent
+            and recognized_commented_review_body(body, head_sha)
         ):
             clean_artifacts.append(review)
     for comment in issue_comments:
@@ -461,8 +497,7 @@ def evaluate(
                 or artifact_time(comment) < latest_clean_time
             ):
                 continue
-            reviewed_markers = REVIEWED_COMMIT_FIELD_RE.findall(body)
-            if reviewed_markers and not reviewed_head(body, head_sha):
+            if explicitly_stale_review_marker(body, head_sha):
                 continue
             ambiguous_issue_comments.append(comment)
         if ambiguous_issue_comments:

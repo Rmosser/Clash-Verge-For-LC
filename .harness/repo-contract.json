@@ -68,7 +68,8 @@
         "change_claim narrative vs git diff (machine check only bounds the diff to Scope)",
         "validation_claim coverage adequacy"
       ]
-    }
+    },
+    "additional_required_check_jobs": []
   },
   "codex_review": {
     "required_for_non_trivial_pr": true,

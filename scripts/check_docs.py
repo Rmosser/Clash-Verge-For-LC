@@ -41,6 +41,7 @@ PENDING_VALUES = {"", "-", "n/a", "na", "none", "pending", "unknown", "`pending`
 TRUE_VALUES = {"yes", "true", "used"}
 FALSE_VALUES = {"no", "false", "not used", "none", "n/a", "na", "-"}
 VALID_TASK_CLASSES = {"trivial", "standard", "critical"}
+GITHUB_ACTIONS_APP_ID = 15368
 VALID_REASONING_BUDGETS = {"low", "medium", "high"}
 VALID_DELEGATION_ROUTES = {
     "single-agent",
@@ -126,7 +127,10 @@ ABSOLUTE_SCOPE_RE = re.compile(
 )
 CURRENT_HEAD_REVIEW_HEADING = "## Current-Head Codex Review\n\n"
 CURRENT_HEAD_REVIEW_SHA256 = (
-    "dfa4c08673d318d77ff20f2c62f1693094aa30065282ac18e81fc436ff198f76"
+    "fd6c635bd11942af98c2c9ecaf7f4d61930d6c7731075ee7228b1bab9cda5165"
+)
+TRUSTED_DOC_CONTROL_SHA256 = (
+    "1acac5e32199bebca6074c4d43b96fc88ab125acac2d456d511a707c6d17efc2"
 )
 
 
@@ -448,9 +452,9 @@ def check_current_head_governance(errors: list[str]) -> None:
             "Current-Head Codex Review section"
         )
         return
-    section = CURRENT_HEAD_REVIEW_HEADING + text.split(
-        CURRENT_HEAD_REVIEW_HEADING, 1
-    )[1]
+    section_body = text.split(CURRENT_HEAD_REVIEW_HEADING, 1)[1]
+    section_body = re.split(r"(?=^## )", section_body, maxsplit=1, flags=re.MULTILINE)[0]
+    section = CURRENT_HEAD_REVIEW_HEADING + section_body
     digest = hashlib.sha256((section.rstrip() + "\n").encode("utf-8")).hexdigest()
     if digest != CURRENT_HEAD_REVIEW_SHA256:
         errors.append(
@@ -507,6 +511,14 @@ def check_document_status_workflow(
     ):
         errors.append(f"Trusted document status workflow contract is missing: {relative}")
         return
+    control_text = text.split(markers[3], 1)[0]
+    control_digest = hashlib.sha256(
+        (control_text.rstrip() + "\n").encode("utf-8")
+    ).hexdigest()
+    if control_digest != TRUSTED_DOC_CONTROL_SHA256:
+        errors.append(
+            f"Trusted document status workflow control plane differs from the canonical contract: {relative}"
+        )
     pending_job = text.split(markers[0], 1)[1].split(markers[1], 1)[0]
     validation_job = text.split(markers[1], 1)[1].split(markers[2], 1)[0]
     publisher_job = text.split(markers[2], 1)[1].split(markers[3], 1)[0]
@@ -514,8 +526,12 @@ def check_document_status_workflow(
     required_fragments = (
         "pull_request_target:",
         "permissions: {}",
+        "repository: ${{ github.event.pull_request.head.repo.full_name }}",
         "ref: ${{ github.event.pull_request.head.sha }}",
+        "allow-unsafe-pr-checkout: true",
         "ref: ${{ github.event.pull_request.base.sha }}",
+        'git -c protocol.file.allow=always -C target fetch',
+        '"${GITHUB_WORKSPACE}/trusted" "${PR_BASE_SHA}"',
         "python3 -I -B trusted/scripts/check_docs.py",
         "--all --skip-project-check",
         "trusted/scripts/check_loop_checkpoints.py",
@@ -545,6 +561,23 @@ def check_document_status_workflow(
         errors.append(
             f"Trusted document validation checkouts must disable credential persistence: {relative}"
         )
+    if text.count("allow-unsafe-pr-checkout: true") != 1:
+        errors.append(
+            f"Trusted document target checkout must use exactly one explicit data-only fork opt-out: {relative}"
+        )
+    if (
+        len(
+            re.findall(
+                r"^\s+(?:-\s+)?uses:", validation_job, flags=re.MULTILINE
+            )
+        )
+        != 3
+        or len(re.findall(r"^        run:", validation_job, flags=re.MULTILINE)) != 2
+        or "working-directory:" in validation_job
+    ):
+        errors.append(
+            f"Trusted document validation job may only fetch data and run trusted checkers: {relative}"
+        )
     if "statuses: write" in validation_job:
         errors.append(
             f"Trusted document validation job cannot write statuses: {relative}"
@@ -561,6 +594,59 @@ def check_document_status_workflow(
         errors.append(
             f"Trusted document publisher must consume the read-only validation result: {relative}"
         )
+
+
+def check_additional_required_checks(
+    manifest: dict[str, object], required_paths: list[str], errors: list[str]
+) -> None:
+    checks = manifest.get("additional_required_checks", [])
+    if not isinstance(checks, list):
+        errors.append("doc-sync-rules additional_required_checks must be a list")
+        return
+    names: set[str] = set()
+    for index, spec in enumerate(checks):
+        label = f"doc-sync-rules additional_required_checks[{index}]"
+        if not isinstance(spec, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        expected_fields = {
+            "emitter": "actions_check_run",
+            "required_on": "main",
+            "app_id": GITHUB_ACTIONS_APP_ID,
+        }
+        for field, expected in expected_fields.items():
+            if spec.get(field) != expected:
+                errors.append(f"{label}.{field} must be {expected!r}")
+        name = spec.get("name")
+        workflow = spec.get("workflow")
+        digest = spec.get("workflow_sha256")
+        if not isinstance(name, str) or not name.strip():
+            errors.append(f"{label}.name must be a non-empty string")
+        elif name in {"loop/checkpoints", "codex-review"}:
+            errors.append(f"{label}.name cannot reuse a Harness status context")
+        elif name in names:
+            errors.append(f"{label}.name is duplicated: {name}")
+        else:
+            names.add(name)
+        if not isinstance(workflow, str) or not workflow.startswith(
+            ".github/workflows/"
+        ):
+            errors.append(f"{label}.workflow must name a workflow path")
+            continue
+        if workflow not in required_paths:
+            errors.append(f"{label}.workflow must also appear in required_paths")
+        path = ROOT / workflow
+        if path.is_symlink() or not path.is_file():
+            errors.append(f"{label}.workflow must be a regular file: {workflow}")
+            continue
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            errors.append(f"{label}.workflow_sha256 must be a lowercase SHA-256")
+            continue
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != digest:
+            errors.append(
+                f"{label}.workflow_sha256 does not match the required workflow"
+            )
 
 
 def check_deferred_paths(
@@ -660,6 +746,7 @@ def validate_repo() -> tuple[list[str], dict[str, object]]:
             errors.append(f"Missing or case-mismatched required path: {relative_path}")
     check_deferred_paths(manifest, required_paths, errors)
     check_document_status_workflow(manifest, required_paths, errors)
+    check_additional_required_checks(manifest, required_paths, errors)
     check_current_head_governance(errors)
     plan_template = DOCS_ROOT / "exec-plans" / "template.md"
     check_required_check_name(
@@ -668,7 +755,12 @@ def validate_repo() -> tuple[list[str], dict[str, object]]:
 
     for markdown_path in markdown_files(manifest):
         for raw, linked in extract_links(markdown_path):
-            if not linked.exists():
+            if not linked.is_relative_to(ROOT):
+                errors.append(
+                    f"Repository link escapes the checkout in "
+                    f"{markdown_path.relative_to(ROOT).as_posix()}: {raw}"
+                )
+            elif not linked.exists():
                 errors.append(
                     f"Broken link in {markdown_path.relative_to(ROOT).as_posix()}: {raw}"
                 )
