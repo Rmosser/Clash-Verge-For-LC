@@ -1,0 +1,35 @@
+name: codex-review-heartbeat
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+
+permissions:
+  actions: write
+  pull-requests: read
+
+concurrency:
+  group: codex-review-heartbeat
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    name: dispatch-codex-review-heartbeats
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch one trusted reconciliation per open PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          PR_NUMBERS="$(
+            gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100" \
+              --jq '.[].number'
+          )"
+          while IFS= read -r number; do
+            [[ -z "${number}" ]] && continue
+            gh workflow run codex-review-gate.yml \
+              --repo "${GITHUB_REPOSITORY}" \
+              --field "pr_number=${number}"
+          done <<< "${PR_NUMBERS}"

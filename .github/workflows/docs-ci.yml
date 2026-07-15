@@ -1,0 +1,24 @@
+name: docs-ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  docs:
+    name: loop/checkpoints
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # full history so the checkpoint verifier can diff against the base ref
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python3 -I -B scripts/check_docs.py --all
+      - name: Reconcile Scope Claim vs git diff
+        if: github.event_name == 'pull_request'
+        run: python3 -I -B scripts/check_loop_checkpoints.py

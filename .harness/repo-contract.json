@@ -1,5 +1,5 @@
 {
-  "contract_version": "agent-cicd-checkpoint-gate-v0",
+  "contract_version": "agent-cicd-checkpoint-gate-v1",
   "repo": "Rmosser/Clash-Verge-For-LC",
   "mode": "repo-native-agent-cicd",
   "purpose": "LazyCat-adapted Mihomo and Clash Verge management service",
@@ -7,14 +7,20 @@
     "controls": [
       "merge_eligibility",
       "evidence_completeness",
-      "claim_fact_consistency",
-      "pr_review_loop",
-      "post_merge_cleanup"
+      "claim_fact_consistency"
     ],
     "does_not_control": [
       "agent_write_access_to_worktree",
       "agent_push_access_to_pr_branch",
       "agent_cloud_connector_access"
+    ],
+    "external_controls_required": [
+      "agent_write_access_to_worktree",
+      "agent_push_access_to_pr_branch",
+      "agent_cloud_connector_access",
+      "github_required_checks",
+      "github_branch_protection_or_ruleset",
+      "codex_review"
     ]
   },
   "entrypoints": {
@@ -35,16 +41,40 @@
       "validation_claim"
     ],
     "reconciliation": {
-      "context_claim": "diff_class_and_doc_rules",
-      "scope_claim": "policy_active_plan_and_forbidden_paths",
-      "change_claim": "git_diff",
-      "validation_claim": "validation_registry_and_ci_result"
+      "context_claim": {
+        "against": "diff_class_and_doc_rules",
+        "performed_by": "human"
+      },
+      "scope_claim": {
+        "against": "policy_active_plan_and_forbidden_paths",
+        "performed_by": "machine: scripts/check_loop_checkpoints.py"
+      },
+      "change_claim": {
+        "against": "git_diff",
+        "performed_by": "human; machine only bounds the diff to the Scope allowlist"
+      },
+      "validation_claim": {
+        "against": "validation_registry_and_ci_result",
+        "performed_by": "ci_unit_checks + human coverage judgment"
+      }
+    },
+    "enforcement": {
+      "machine_checked": [
+        "docs structure, links, active plan cardinality and evidence sections (scripts/check_docs.py)",
+        "scope_claim vs git diff: changed files must stay inside the active plan Scope allowlist (scripts/check_loop_checkpoints.py)"
+      ],
+      "human_reconciliation": [
+        "context_claim vs diff class / doc rules",
+        "change_claim narrative vs git diff (machine check only bounds the diff to Scope)",
+        "validation_claim coverage adequacy"
+      ]
     }
   },
   "codex_review": {
     "required_for_non_trivial_pr": true,
     "active_plan_records": [
-      "review_target_head_sha",
+      "completed_review_head_sha",
+      "current_review_target_pointer",
       "heartbeat",
       "repair_tier",
       "repair_attempts",
@@ -58,12 +88,74 @@
       "high",
       "xhigh",
       "human"
-    ]
+    ],
+    "required_check": "codex-review",
+    "trusted_status_workflow": ".github/workflows/codex-review-gate.yml",
+    "artifact_binding": "live_pr_head_sha",
+    "accepted_authors": [
+      "chatgpt-codex-connector[bot]"
+    ],
+    "status_app_id": 15368,
+    "trusted_events": [
+      "pull_request_target",
+      "issue_comment",
+      "workflow_dispatch",
+      "schedule"
+    ],
+    "status_source_isolation": "shared_actions_app_not_isolated",
+    "required_check_activation": "required_after_live_emitter_smoke",
+    "supervision_model": "repository_self_supervised"
   },
   "platform_gate": {
     "status": "not_verified",
     "required_checks_verified": false,
     "branch_protection_verified": false,
     "admin_bypass_verified": false
+  },
+  "delegation_contract": {
+    "task_classes": [
+      "trivial",
+      "standard",
+      "critical"
+    ],
+    "reasoning_budgets": [
+      "low",
+      "medium",
+      "high"
+    ],
+    "default_routes": {
+      "trivial": "single-agent",
+      "standard": "main+subagent_or_work-thread",
+      "critical": "main+parallel-subagents_or_work-threads"
+    },
+    "no_subagent_fallback_allowed_only_when": [
+      "user_explicitly_forbids_subagents",
+      "subagent_or_work_thread_tooling_unavailable",
+      "task_cannot_be_split_without_expanding_risk"
+    ],
+    "main_agent_responsibilities": [
+      "task_class_and_reasoning_budget",
+      "active_plan_scope_and_claims",
+      "delegated_scope_and_forbidden_scope",
+      "diff_semantic_review",
+      "independent_validation",
+      "final_acceptance"
+    ],
+    "subagent_restrictions": [
+      "no_scope_expansion",
+      "no_independent_push_merge_or_heartbeat_close",
+      "result_requires_main_agent_review"
+    ]
+  },
+  "commit_signing": {
+    "default_enabled": true,
+    "format": "ssh",
+    "dedicated_key_required": true,
+    "github_signing_key_registration_required": true,
+    "verification": "empty commit signs successfully via the key agent"
+  },
+  "readiness": {
+    "repo_harness_ready": "repo_files_and_local_checks",
+    "platform_gate_ready": "not_claimed_without_github_settings_verification"
   }
 }

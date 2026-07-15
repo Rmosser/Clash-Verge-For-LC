@@ -7,7 +7,14 @@
     "docs/exec-plans/active",
     "docs/exec-plans/completed",
     "docs/doc-sync-rules.json",
-    ".harness/repo-contract.json"
+    ".harness/repo-contract.json",
+    ".github/workflows/docs-ci.yml",
+    ".github/pull_request_template.md",
+    "scripts/check_docs.py",
+    "scripts/check_loop_checkpoints.py",
+    ".github/workflows/codex-review-gate.yml",
+    "scripts/check_codex_review.py",
+    ".github/workflows/codex-review-heartbeat.yml"
   ],
   "entrypoint_links": [
     {

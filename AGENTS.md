@@ -51,3 +51,29 @@ cd src/mihomo-dashboard-app
 lzc-cli project build -f lzc-build.yml -o mihomo-dashboard.lpk
 lzc-cli app install mihomo-dashboard.lpk
 ```
+
+## Harness Engineering
+
+本仓库采用 repo-native Agent CI/CD 治理模型；平台门禁和仓库证据分层报告，不互相冒充。
+
+入口：
+
+- [docs/index.md](docs/index.md)
+- [docs/governance/checkpoint-ci-gate.md](docs/governance/checkpoint-ci-gate.md)
+- [docs/exec-plans/template.md](docs/exec-plans/template.md)
+- [docs/doc-sync-rules.json](docs/doc-sync-rules.json)
+- [.harness/repo-contract.json](.harness/repo-contract.json)
+
+任务分级：
+
+- Task class `trivial` / Reasoning budget `low`：小、局部、可逆、低风险；不触及代码行为、CI、配置、发布、安全、文档索引或平台门禁；默认单 Agent。
+- Task class `standard` / Reasoning budget `medium`：非平凡但范围清楚；默认主 Agent + subagent / work thread。
+- Task class `critical` / Reasoning budget `high`：跨 PR 阶段、CI/verifier、平台门禁、review repair、merge cleanup、发布、安全或多仓库工作；主 Agent 保持编排和验收位，执行/验证拆给 subagent / work thread。
+
+Agent-native 协作：
+
+- Delegation route 必须写入 Active Plan；非平凡任务默认 `main+subagent` 或 `main+work-thread`。
+- 只有用户明确禁止、工具不可用或任务不可合理拆分时才走 no-subagent fallback，并在 Active Plan 记录原因。
+- 主 Agent 维护 Active Plan、定义 delegated scope / forbidden scope、复核 diff、语义和关键检查；subagent result 不是最终验收。
+- subagent 只在授权范围内执行，不独立扩大 PR 阶段，不独立提交、push、merge 或关闭 heartbeat。
+- 新任务默认从当前 provided baseline / worktree HEAD 开始；旧分支或旧 PR 只能作为参考，除非用户明确要求继续。

@@ -104,6 +104,11 @@
 
 ## Post-Merge Cleanup
 
+## Harness Upgrade Disposition (2026-07-10)
+
+- This plan was unfinished when archived: `Final accepted diff` remained pending final checks and Codex Review.
+- Archival is administrative only. The runtime-hardening work remains unaccepted and must receive its own branch-bound reactivation or explicit closure outside this Harness repair.
+
 - Main synced: `pending`
 - Local branch deleted: `pending`
 - Heartbeat closed: `pending`
