@@ -1,5 +1,9 @@
 # Runtime Hardening Recovery
 
+- Status: completed
+- Active Plan archived: completed
+- Transition invariant: satisfied/closed
+
 ## 任务分类
 
 - non-trivial
@@ -109,6 +113,9 @@
 - This plan was unfinished when archived: `Final accepted diff` remained pending final checks and Codex Review.
 - Archival is administrative only. The runtime-hardening work remains unaccepted and must receive its own branch-bound reactivation or explicit closure outside this Harness repair.
 
-- Main synced: `pending`
-- Local branch deleted: `pending`
-- Heartbeat closed: `pending`
+- Main synced: completed
+Completed-plan migration evidence for Main synced; previous value JSON = "`pending`".
+- Local branch deleted: deferred-to-rollout-closure
+Completed-plan migration evidence for Local branch deleted; previous value JSON = "`pending`".
+- Heartbeat closed: deferred-to-rollout-closure
+Completed-plan migration evidence for Heartbeat closed; previous value JSON = "`pending`".

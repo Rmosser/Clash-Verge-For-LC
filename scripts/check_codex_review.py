@@ -34,6 +34,9 @@ TRIVIAL_FILES = {
     "LICENSE.md",
 }
 TRIVIAL_DOC_PREFIXES = ("docs/",)
+TRIVIAL_DOC_SUFFIXES = (".adoc", ".md", ".mdx", ".rst", ".txt")
+TRUSTED_TRIGGER_ASSOCIATIONS = {"COLLABORATOR", "MEMBER", "OWNER"}
+REACTIONS_FIELD = "_codex_trigger_reactions"
 TRUSTED_CONTROL_PATHS = {
     ".harness/repo-contract.json",
     "Docs",
@@ -53,12 +56,40 @@ NON_TRIVIAL_DOC_PATHS = (
     "docs/governance/",
     "docs/exec-plans/",
 )
+NON_TRIVIAL_DOC_TOKENS = {
+    "architecture",
+    "architectures",
+    "config",
+    "configs",
+    "configuration",
+    "configurations",
+    "design",
+    "designs",
+    "golden",
+    "prd",
+    "prds",
+    "release",
+    "releases",
+    "secure",
+    "security",
+    "spec",
+    "specification",
+    "specifications",
+    "specs",
+    "threat",
+    "threats",
+    "threatmodel",
+}
 REVIEWED_COMMIT_FIELD_RE = re.compile(
     r"\*\*Reviewed commit:\*\*\s*`([^`]+)`",
     re.IGNORECASE,
 )
 VALID_REVIEWED_COMMIT_RE = re.compile(r"[0-9a-f]{10,40}", re.IGNORECASE)
 TRIGGER_RE = re.compile(r"^\s*@codex\s+review\s*$", re.IGNORECASE | re.MULTILINE)
+TRIGGER_HEAD_RE = re.compile(
+    r"^\s*(?:\*\*)?Head SHA(?:\*\*)?:\s*`?([0-9a-f]{40})`?\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 FINDING_RE = re.compile(
     r"(?:img\.shields\.io/badge/P[0-3]-|\bP[0-3]\s+Badge\b|"
     r"\[\s*P[0-3]\s*\]|\bP[0-3]\s*(?::|-)\s*\S|"
@@ -121,8 +152,9 @@ LEGACY_COMMENTED_DETAILS_PATTERN = (
 )
 FULL_CLEAN_ISSUE_COMMENT_RE = re.compile(
     r"^\s*Codex Review:\s*Didn't find any major issues\.\s*"
+    r"(?:"
     + CLEAN_CELEBRATION_PATTERN
-    + r"\s*"
+    + r"\s*)?"
     r"\*\*Reviewed commit:\*\*\s*`[0-9a-f]{10,40}`\s*"
     + STANDARD_CODEX_DETAILS_PATTERN
     + r"\s*$",
@@ -299,17 +331,42 @@ def accepted_authors(contract: dict[str, Any]) -> set[str]:
     raw = review_contract(contract).get("accepted_authors", DEFAULT_AUTHORS)
     if not isinstance(raw, list) and not isinstance(raw, tuple):
         raise GateError("codex_review.accepted_authors must be a list")
-    authors = {str(value).strip().lower() for value in raw if str(value).strip()}
+    authors = {normalize_login(value) for value in raw if normalize_login(value)}
     if not authors:
         raise GateError("codex_review.accepted_authors cannot be empty")
     return authors
 
 
+def normalize_login(value: Any) -> str:
+    login = str(value or "").strip().casefold()
+    if login.endswith("[bot]"):
+        login = login[:-5]
+    return login
+
+
 def actor_login(item: dict[str, Any]) -> str:
     user = item.get("user")
     if isinstance(user, dict):
-        return str(user.get("login") or "").lower()
+        return normalize_login(user.get("login"))
     return ""
+
+
+def trusted_trigger(
+    item: dict[str, Any], authors: set[str]
+) -> bool:
+    return bool(
+        actor_login(item)
+        and actor_login(item) not in authors
+        and str(item.get("author_association") or "").upper()
+        in TRUSTED_TRIGGER_ASSOCIATIONS
+        and TRIGGER_RE.search(str(item.get("body") or ""))
+        and artifact_time(item)
+    )
+
+
+def trigger_bound_to_full_head(item: dict[str, Any], head_sha: str) -> bool:
+    markers = TRIGGER_HEAD_RE.findall(str(item.get("body") or ""))
+    return len(markers) == 1 and markers[0].casefold() == head_sha.casefold()
 
 
 def reviewed_head(body: str, head_sha: str) -> bool:
@@ -362,6 +419,21 @@ def trivial_path(path: str, review_required_patterns: tuple[str, ...]) -> bool:
         return True
     normalized = path.casefold()
     if not normalized.startswith(TRIVIAL_DOC_PREFIXES):
+        return False
+    if not normalized.endswith(TRIVIAL_DOC_SUFFIXES):
+        return False
+    semantic_tokens = [
+        tuple(filter(None, re.split(r"[-_.]+", component)))
+        for component in normalized.split("/")[1:]
+    ]
+    if any(
+        NON_TRIVIAL_DOC_TOKENS.intersection(tokens)
+        or any(
+            tokens[index : index + 2] == ("threat", "model")
+            for index in range(len(tokens) - 1)
+        )
+        for tokens in semantic_tokens
+    ):
         return False
     return not any(
         normalized == blocked.casefold() or normalized.startswith(blocked.casefold())
@@ -483,49 +555,65 @@ def evaluate(
     triggers = [
         item
         for item in issue_comments
+        if trusted_trigger(item, authors)
+    ]
+    latest_trigger = max(triggers, key=artifact_time) if triggers else None
+    trigger_time = artifact_time(latest_trigger) if latest_trigger else ""
+
+    request_contexts = [
+        item
+        for item in issue_comments
         if actor_login(item) not in authors
         and TRIGGER_RE.search(str(item.get("body") or ""))
         and artifact_time(item)
     ]
-    if not triggers:
-        return GateResult(
-            state="failure",
-            classification="non-trivial",
-            head_sha=head_sha,
-            description=f"Codex review was not requested for head {head_sha[:10]}.",
-            reasons=(
-                "no explicit @codex review request precedes a current-head artifact",
-            ),
-        )
-    latest_trigger = max(triggers, key=artifact_time)
-    trigger_time = artifact_time(latest_trigger)
 
     def after_latest_trigger(item: dict[str, Any]) -> bool:
         timestamp = artifact_time(item)
+        if latest_trigger is None:
+            return bool(timestamp)
         # GitHub exposes only second precision here. Equal timestamps cannot
         # prove causal order across the issue, review, and inline-comment APIs.
         return bool(timestamp and timestamp > trigger_time)
 
-    current_reviews = [
+    def at_or_after_latest_trigger(item: dict[str, Any]) -> bool:
+        timestamp = artifact_time(item)
+        if latest_trigger is None:
+            return bool(timestamp)
+        return bool(timestamp and timestamp >= trigger_time)
+
+    def issue_clean_has_provenance(item: dict[str, Any], body: str) -> bool:
+        if FULL_CLEAN_ISSUE_COMMENT_RE.fullmatch(body):
+            return True
+        timestamp = artifact_time(item)
+        return bool(
+            timestamp
+            and any(artifact_time(request) < timestamp for request in triggers)
+        )
+
+    current_review_round = [
         item
         for item in reviews
         if actor_login(item) in authors
         and str(item.get("commit_id") or "").lower() == head_sha
-        and after_latest_trigger(item)
+        and at_or_after_latest_trigger(item)
+    ]
+    current_reviews = [
+        item for item in current_review_round if after_latest_trigger(item)
     ]
     current_inline = [
         item
         for item in review_comments
         if actor_login(item) in authors
         and str(item.get("commit_id") or "").lower() == head_sha
-        and after_latest_trigger(item)
+        and at_or_after_latest_trigger(item)
     ]
     current_issue_findings: list[dict[str, Any]] = []
     for item in issue_comments:
         body = str(item.get("body") or "")
         if (
             actor_login(item) not in authors
-            or not after_latest_trigger(item)
+            or not at_or_after_latest_trigger(item)
             or not finding_body(body)
         ):
             continue
@@ -537,9 +625,13 @@ def evaluate(
         current_issue_findings.append(item)
 
     blockers: list[str] = []
-    for review in current_reviews:
+    for review in current_review_round:
         state = str(review.get("state") or "").upper()
         body = str(review.get("body") or "")
+        if state not in {"APPROVED", "COMMENTED", "CHANGES_REQUESTED"}:
+            blockers.append(
+                f"Codex review has unsupported current-head state: {state or 'MISSING'}"
+            )
         if state == "CHANGES_REQUESTED":
             blockers.append("Codex requested changes on the current head")
         if finding_body(body):
@@ -598,8 +690,27 @@ def evaluate(
             and clean_body(body)
             and not finding_body(body)
             and after_latest_trigger(comment)
+            and issue_clean_has_provenance(comment, body)
         ):
             clean_artifacts.append(comment)
+
+    if latest_trigger and trigger_bound_to_full_head(latest_trigger, head_sha):
+        reactions = latest_trigger.get(REACTIONS_FIELD, [])
+        if not isinstance(reactions, list) or not all(
+            isinstance(item, dict) for item in reactions
+        ):
+            raise GateError("trusted trigger reactions must be a list of objects")
+        for reaction in reactions:
+            created_at = reaction.get("created_at")
+            if (
+                reaction.get("content") == "+1"
+                and actor_login(reaction) in authors
+                and isinstance(created_at, str)
+                and created_at > trigger_time
+            ):
+                reaction_artifact = dict(reaction)
+                reaction_artifact["html_url"] = artifact_url(latest_trigger)
+                clean_artifacts.append(reaction_artifact)
 
     ambiguous_issue_comments: list[dict[str, Any]] = []
     if clean_artifacts:
@@ -608,7 +719,7 @@ def evaluate(
             body = str(comment.get("body") or "")
             if (
                 actor_login(comment) not in authors
-                or not after_latest_trigger(comment)
+                or not at_or_after_latest_trigger(comment)
                 or comment in clean_artifacts
                 or comment in current_issue_findings
                 or artifact_time(comment) < latest_clean_time
@@ -624,30 +735,43 @@ def evaluate(
             )
 
     if blockers:
+        blocker_evidence = (
+            current_inline
+            or current_issue_findings
+            or ambiguous_issue_comments
+            or current_review_round
+            or ([latest_trigger] if latest_trigger else [])
+        )
         return GateResult(
             state="failure",
             classification="non-trivial",
             head_sha=head_sha,
             description=f"Codex review has findings for current head {head_sha[:10]}.",
             reasons=tuple(dict.fromkeys(blockers)),
-            evidence_url=artifact_url(
-                (
-                    current_inline
-                    or current_issue_findings
-                    or ambiguous_issue_comments
-                    or current_reviews
-                    or [latest_trigger]
-                )[0]
+            evidence_url=(
+                artifact_url(blocker_evidence[0]) if blocker_evidence else None
             ),
         )
     if not clean_artifacts:
+        request_was_observed = bool(latest_trigger or request_contexts)
+        description = (
+            f"Codex review is missing for current head {head_sha[:10]}."
+            if request_was_observed
+            else f"Codex review was not requested for head {head_sha[:10]}."
+        )
+        reason = (
+            "no clean Codex artifact is explicitly bound to the live PR head"
+            if request_was_observed
+            else "no automatic current-head artifact or trusted explicit review request "
+            "produced clean evidence"
+        )
         return GateResult(
             state="failure",
             classification="non-trivial",
             head_sha=head_sha,
-            description=f"Codex review is missing for current head {head_sha[:10]}.",
-            reasons=("no clean Codex artifact is explicitly bound to the live PR head",),
-            evidence_url=artifact_url(latest_trigger),
+            description=description,
+            reasons=(reason,),
+            evidence_url=artifact_url(latest_trigger) if latest_trigger else None,
         )
 
     latest = max(clean_artifacts, key=artifact_time)
@@ -733,17 +857,34 @@ def live_payload(
     repository: str,
     pr_number: int,
     expected_identity: PullIdentity,
+    contract: dict[str, Any],
 ) -> dict[str, Any]:
     base = f"/repos/{repo_path(repository)}"
     pull = live_pull(api, repository, pr_number)
     if not same_pull_identity(pull_identity(pull, repository), expected_identity):
         raise GateError("pull request identity changed during review reconciliation")
+    issue_comments = api.get_pages(f"{base}/issues/{pr_number}/comments")
+    authors = accepted_authors(contract)
+    enriched_issue_comments: list[dict[str, Any]] = []
+    for comment in issue_comments:
+        enriched = dict(comment)
+        comment_id = comment.get("id")
+        if (
+            trusted_trigger(comment, authors)
+            and trigger_bound_to_full_head(comment, expected_identity.head_sha)
+            and isinstance(comment_id, int)
+            and comment_id > 0
+        ):
+            enriched[REACTIONS_FIELD] = api.get_pages(
+                f"{base}/issues/comments/{comment_id}/reactions"
+            )
+        enriched_issue_comments.append(enriched)
     return {
         "pull": pull,
         "files": api.get_pages(f"{base}/pulls/{pr_number}/files"),
         "reviews": api.get_pages(f"{base}/pulls/{pr_number}/reviews"),
         "review_comments": api.get_pages(f"{base}/pulls/{pr_number}/comments"),
-        "issue_comments": api.get_pages(f"{base}/issues/{pr_number}/comments"),
+        "issue_comments": enriched_issue_comments,
     }
 
 
@@ -897,6 +1038,44 @@ def publish_status_if_changed(
     )
 
 
+def invalidate_status_after_exception(
+    api: GitHubAPI,
+    repository: str,
+    pr_number: int,
+    expected_identity: PullIdentity,
+    context: str,
+    target_url: str,
+) -> bool:
+    result = GateResult(
+        state="failure",
+        classification="gate-error",
+        head_sha=expected_identity.head_sha,
+        description=(
+            "Codex review gate failed closed for current head "
+            f"{expected_identity.head_sha[:10]}."
+        ),
+        reasons=("gate evaluation or publication raised an exception",),
+    )
+    latest_status = latest_status_for_identity(
+        api,
+        repository,
+        pr_number,
+        expected_identity,
+        context,
+    )
+    if status_matches_result(latest_status, result, context):
+        return True
+    return publish_status(
+        api,
+        repository,
+        pr_number,
+        expected_identity,
+        result,
+        context,
+        target_url,
+    )
+
+
 def parse_pr_number(value: str) -> int:
     try:
         number = int(value)
@@ -921,6 +1100,10 @@ def main() -> int:
     parser.add_argument("--target-url", default=os.environ.get("GITHUB_RUN_URL", ""))
     args = parser.parse_args()
 
+    api: GitHubAPI | None = None
+    pr_number: int | None = None
+    initial_identity: PullIdentity | None = None
+    context = args.context or DEFAULT_CONTEXT
     try:
         contract = load_contract()
         if args.bootstrap_control_plane_review and (
@@ -931,8 +1114,6 @@ def main() -> int:
             )
         config = review_contract(contract)
         context = args.context or str(config.get("required_check") or DEFAULT_CONTEXT)
-        api: GitHubAPI | None = None
-        pr_number: int | None = None
         if args.fixture:
             payload = json.loads(args.fixture.read_text(encoding="utf-8"))
             if not isinstance(payload, dict):
@@ -958,7 +1139,7 @@ def main() -> int:
                 }
             else:
                 payload = live_payload(
-                    api, args.repository, pr_number, initial_identity
+                    api, args.repository, pr_number, initial_identity, contract
                 )
         result = evaluate(
             payload,
@@ -978,7 +1159,11 @@ def main() -> int:
                 # or overwritten by an older run.
                 result = evaluate(
                     live_payload(
-                        api, args.repository, pr_number, initial_identity
+                        api,
+                        args.repository,
+                        pr_number,
+                        initial_identity,
+                        contract,
                     ),
                     contract,
                     args.expected_head,
@@ -1000,8 +1185,35 @@ def main() -> int:
                     reasons=("final status was not published to a changed PR identity",),
                     publish=False,
                 )
-    except (GateError, OSError, json.JSONDecodeError) as exc:
+    except Exception as exc:
         print(f"check_codex_review: {exc}", file=sys.stderr)
+        if (
+            args.publish
+            and api is not None
+            and pr_number is not None
+            and initial_identity is not None
+        ):
+            try:
+                invalidated = invalidate_status_after_exception(
+                    api,
+                    args.repository,
+                    pr_number,
+                    initial_identity,
+                    context,
+                    args.target_url,
+                )
+                if not invalidated:
+                    print(
+                        "check_codex_review: could not invalidate status because "
+                        "the live PR identity changed",
+                        file=sys.stderr,
+                    )
+            except Exception as invalidation_exc:
+                print(
+                    "check_codex_review: failed to invalidate prior status: "
+                    f"{invalidation_exc}",
+                    file=sys.stderr,
+                )
         return 2
 
     print(json.dumps(asdict(result), ensure_ascii=False, indent=2))

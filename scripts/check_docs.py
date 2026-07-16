@@ -10,9 +10,12 @@ import importlib.util
 import json
 import os
 import re
+import selectors
+import shlex
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path, PurePosixPath
 from types import ModuleType
 
@@ -22,6 +25,8 @@ TRUSTED_ROOT = Path(
     os.environ.get("HARNESS_TRUSTED_REPO_ROOT", CHECKER_ROOT)
 ).expanduser().resolve()
 MAX_GOVERNANCE_TEXT_BYTES = 1024 * 1024
+STANDALONE_BASE_ENV = "HARNESS_STANDALONE_BASE_SHA"
+ZERO_COMMIT_SHA = "0" * 40
 
 
 def exact_docs_root_at(root: Path, label: str) -> Path:
@@ -43,6 +48,7 @@ def exact_docs_root_at(root: Path, label: str) -> Path:
 DOCS_ROOT = exact_docs_root_at(ROOT, "validation target")
 TRUSTED_DOCS_ROOT = exact_docs_root_at(TRUSTED_ROOT, "trusted verifier checkout")
 ACTIVE_PLAN_DIR = DOCS_ROOT / "exec-plans" / "active"
+COMPLETED_PLAN_DIR = DOCS_ROOT / "exec-plans" / "completed"
 PROJECT_CHECK = ROOT / "scripts" / "check_docs_project.py"
 INLINE_LINK_RE = re.compile(
     r"!?\[[^\]]*\]\(\s*(?:<([^>\r\n]+)>|([^\s)]+))"
@@ -55,6 +61,24 @@ FIELD_RE_TEMPLATE = r"^[ \t]*-[ \t]*{field}[ \t]*[:：][ \t]*(.*)$"
 PENDING_VALUES = {"", "-", "n/a", "na", "none", "pending", "unknown", "`pending`", "`unknown`"}
 TRUE_VALUES = {"yes", "true", "used"}
 FALSE_VALUES = {"no", "false", "not used", "none", "n/a", "na", "-"}
+COMPLETED_TRANSITION_VALUES = {"satisfied/closed"}
+DEFERRED_ROLLOUT_CLOSURE_VALUES = {"deferred-to-rollout-closure"}
+PLAN_LIFECYCLE_FIELDS = (
+    "Status",
+    "Main synced",
+    "Active Plan archived",
+    "Transition invariant",
+    "Local branch deleted",
+    "Heartbeat closed",
+)
+COMPLETED_LIFECYCLE_CONTRACT = {
+    "Status": {"completed"},
+    "Main synced": {"completed"},
+    "Active Plan archived": {"completed"},
+    "Transition invariant": COMPLETED_TRANSITION_VALUES,
+    "Local branch deleted": DEFERRED_ROLLOUT_CLOSURE_VALUES,
+    "Heartbeat closed": DEFERRED_ROLLOUT_CLOSURE_VALUES,
+}
 VALID_TASK_CLASSES = {"trivial", "standard", "critical"}
 GITHUB_ACTIONS_APP_ID = 15368
 VALID_REASONING_BUDGETS = {"low", "medium", "high"}
@@ -142,8 +166,18 @@ OUT_OF_REPO_SCOPE_RE = re.compile(
 )
 CURRENT_HEAD_REVIEW_HEADING = "## Current-Head Codex Review\n\n"
 CURRENT_HEAD_REVIEW_SHA256 = (
-    "c3caab7d58a0df73758c7690c243a5f2119fb231d86b31be3e638a18ee19f382"
+    "164f2afe62fd133df75723bea018f8e12dc1b6a62db781da6a49c285d4aca8ba"
 )
+TRUSTED_CONTROL_FILES = (
+    ".harness/repo-contract.json",
+    ".github/workflows/codex-review-gate.yml",
+    ".github/workflows/codex-review-heartbeat.yml",
+    "scripts/check_codex_review.py",
+    "scripts/check_docs.py",
+    "scripts/check_loop_checkpoints.py",
+)
+
+
 def load_json(path: Path, errors: list[str], label: str) -> dict[str, object]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -185,6 +219,35 @@ def required_paths_from(
         errors.append(f"{label} required_paths must be a list of strings")
         return []
     return value
+
+
+def forbidden_paths_from(
+    manifest: dict[str, object], errors: list[str], label: str
+) -> list[str]:
+    value = manifest.get("forbidden_paths", [])
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        errors.append(f"{label} forbidden_paths must be a list of strings")
+        return []
+    return value
+
+
+def check_trusted_forbidden_paths(
+    manifest: dict[str, object],
+    trusted_manifest: dict[str, object],
+    errors: list[str],
+) -> None:
+    target_forbidden = set(
+        forbidden_paths_from(manifest, errors, "doc-sync-rules")
+    )
+    trusted_forbidden = forbidden_paths_from(
+        trusted_manifest, errors, "trusted doc-sync-rules"
+    )
+    missing = sorted(set(trusted_forbidden) - target_forbidden)
+    if missing:
+        errors.append(
+            "Target doc-sync-rules cannot remove trusted forbidden paths: "
+            f"{', '.join(missing)}"
+        )
 
 
 def check_trusted_required_paths(
@@ -251,6 +314,7 @@ def read_regular_text_at(
     relative_path: str,
     errors: list[str],
     max_bytes: int = MAX_GOVERNANCE_TEXT_BYTES,
+    metadata_out: list[os.stat_result] | None = None,
 ) -> str | None:
     required_flags = {
         name: getattr(os, name, None)
@@ -362,7 +426,25 @@ def read_regular_text_at(
                 f"required text input exceeds {max_bytes} bytes: {relative_path}"
             )
             return None
-        return bytes(content).decode("utf-8")
+        text = bytes(content).decode("utf-8")
+        final_metadata = os.fstat(descriptor)
+        stable_fields = (
+            "st_dev",
+            "st_ino",
+            "st_mode",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+        )
+        if any(
+            getattr(metadata, field) != getattr(final_metadata, field)
+            for field in stable_fields
+        ):
+            errors.append(f"required text input changed while reading: {relative_path}")
+            return None
+        if metadata_out is not None:
+            metadata_out.append(final_metadata)
+        return text
     except (OSError, UnicodeError, MemoryError) as exc:
         errors.append(f"cannot safely read regular file {relative_path}: {exc}")
         return None
@@ -372,6 +454,222 @@ def read_regular_text_at(
                 os.close(descriptors[index])
             except OSError:
                 pass
+
+
+def git_plumbing_output(
+    args: list[str], label: str, errors: list[str], max_bytes: int
+) -> bytes | None:
+    if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < 0:
+        errors.append(f"git plumbing byte limit must be non-negative while {label}")
+        return None
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+        }
+    )
+    process: subprocess.Popen[bytes] | None = None
+    selector: selectors.BaseSelector | None = None
+    reaped = False
+    try:
+        process = subprocess.Popen(
+            ["git", "-C", str(ROOT), *args],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=env,
+        )
+        if process.stdout is None:
+            errors.append(f"cannot {label} with git plumbing: stdout pipe unavailable")
+            return None
+        descriptor = process.stdout.fileno()
+        os.set_blocking(descriptor, False)
+        selector = selectors.DefaultSelector()
+        selector.register(descriptor, selectors.EVENT_READ)
+        deadline = time.monotonic() + 10
+        output = bytearray()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                errors.append(f"cannot {label} with git plumbing: timed out after 10 seconds")
+                return None
+            if not selector.select(remaining):
+                errors.append(f"cannot {label} with git plumbing: timed out after 10 seconds")
+                return None
+            read_limit = min(65536, max_bytes + 1 - len(output))
+            try:
+                chunk = os.read(descriptor, read_limit)
+            except BlockingIOError:
+                continue
+            if not chunk:
+                break
+            output.extend(chunk)
+            if len(output) > max_bytes:
+                errors.append(
+                    f"git plumbing output exceeds {max_bytes} bytes while {label}"
+                )
+                return None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            errors.append(f"cannot {label} with git plumbing: timed out after 10 seconds")
+            return None
+        try:
+            returncode = process.wait(timeout=remaining)
+            reaped = True
+        except subprocess.TimeoutExpired:
+            errors.append(f"cannot {label} with git plumbing: timed out after 10 seconds")
+            return None
+        if returncode != 0:
+            errors.append(f"cannot {label} with git plumbing")
+            return None
+        return bytes(output)
+    except (OSError, ValueError, MemoryError) as exc:
+        errors.append(f"cannot {label} with git plumbing: {exc}")
+        return None
+    finally:
+        if selector is not None:
+            try:
+                selector.close()
+            except (OSError, ValueError):
+                pass
+        if process is not None:
+            if not reaped:
+                try:
+                    if process.poll() is None:
+                        process.kill()
+                except OSError:
+                    pass
+                try:
+                    process.wait()
+                except OSError:
+                    pass
+            if process.stdout is not None:
+                try:
+                    process.stdout.close()
+                except OSError:
+                    pass
+
+
+def resolve_standalone_base(
+    advertised_sha: str, errors: list[str]
+) -> tuple[bool, str | None]:
+    if FULL_SHA_RE.fullmatch(advertised_sha) is None:
+        errors.append(
+            f"advertised standalone base {STANDALONE_BASE_ENV} must be an exact "
+            "40-character hexadecimal SHA"
+        )
+        return False, None
+    advertised_sha = advertised_sha.lower()
+    if advertised_sha == ZERO_COMMIT_SHA:
+        return True, None
+    output = git_plumbing_output(
+        ["rev-parse", "--verify", f"{advertised_sha}^{{commit}}"],
+        f"resolve advertised standalone base {advertised_sha}",
+        errors,
+        64,
+    )
+    if output is None:
+        return False, None
+    try:
+        resolved = output.decode("ascii").strip()
+    except UnicodeDecodeError:
+        errors.append("standalone base resolver returned non-ASCII output")
+        return False, None
+    if resolved != advertised_sha:
+        errors.append(
+            f"{STANDALONE_BASE_ENV} must resolve to the advertised commit itself"
+        )
+        return False, None
+    return True, resolved
+
+
+def standalone_tree_plan(
+    base_sha: str, relative: str, errors: list[str]
+) -> tuple[bool, str | None, bytes | None]:
+    output = git_plumbing_output(
+        ["ls-tree", "-z", "--full-tree", base_sha, "--", f":(literal){relative}"],
+        f"read standalone base tree entry for {relative}",
+        errors,
+        len(relative.encode("utf-8")) + 256,
+    )
+    if output is None:
+        return False, None, None
+    if not output:
+        return True, None, None
+    if output.count(b"\0") != 1 or not output.endswith(b"\0") or b"\t" not in output:
+        errors.append(f"malformed standalone base tree entry for {relative}")
+        return False, None, None
+    header, entry_path = output[:-1].split(b"\t", 1)
+    fields = header.split(b" ")
+    if len(fields) != 3 or entry_path != relative.encode("utf-8"):
+        errors.append(f"malformed standalone base tree entry for {relative}")
+        return False, None, None
+    try:
+        mode, object_type, object_id = (
+            fields[0].decode("ascii"),
+            fields[1].decode("ascii"),
+            fields[2].decode("ascii"),
+        )
+    except UnicodeDecodeError:
+        errors.append(f"non-ASCII standalone base tree metadata for {relative}")
+        return False, None, None
+    if object_type != "blob" or mode not in {"100644", "100755"}:
+        return True, None, None
+    if re.fullmatch(r"[0-9a-f]{40,64}", object_id) is None:
+        errors.append(f"invalid standalone base blob id for {relative}")
+        return False, None, None
+    size_output = git_plumbing_output(
+        ["cat-file", "-s", object_id],
+        f"read standalone base blob size for {relative}",
+        errors,
+        32,
+    )
+    if size_output is None:
+        return False, None, None
+    try:
+        size = int(size_output.decode("ascii").strip())
+    except (UnicodeDecodeError, ValueError):
+        errors.append(f"invalid standalone base blob size for {relative}")
+        return False, None, None
+    if size < 0 or size > MAX_GOVERNANCE_TEXT_BYTES:
+        errors.append(
+            f"standalone base blob exceeds {MAX_GOVERNANCE_TEXT_BYTES} bytes: {relative}"
+        )
+        return False, None, None
+    blob = git_plumbing_output(
+        ["cat-file", "blob", object_id],
+        f"read standalone base blob for {relative}",
+        errors,
+        size,
+    )
+    if blob is None:
+        return False, None, None
+    if len(blob) != size:
+        errors.append(f"standalone base blob size changed while reading: {relative}")
+        return False, None, None
+    try:
+        blob.decode("utf-8")
+    except UnicodeDecodeError:
+        errors.append(f"standalone base blob is not strict UTF-8: {relative}")
+        return False, None, None
+    return True, mode, blob
+
+
+def check_trusted_control_files(errors: list[str]) -> None:
+    for relative_path in TRUSTED_CONTROL_FILES:
+        target_text = read_regular_text_at(ROOT, relative_path, errors)
+        trusted_text = read_regular_text_at(TRUSTED_ROOT, relative_path, errors)
+        if target_text is None or trusted_text is None:
+            continue
+        if target_text.encode("utf-8") != trusted_text.encode("utf-8"):
+            errors.append(
+                "Target trusted control file differs byte-for-byte from the trusted "
+                f"base: {relative_path}; control-plane updates require the trusted "
+                "bootstrap path"
+            )
 
 
 def string_list_field(
@@ -433,11 +731,10 @@ def markdown_files(
         errors,
         "trusted doc-sync-rules",
     )
-    untrusted_additions = sorted(set(patterns) - set(trusted_patterns))
-    if untrusted_additions:
+    if patterns != trusted_patterns:
         errors.append(
-            "Target doc-sync-rules cannot add link-check exclusions outside trusted "
-            f"policy: {', '.join(untrusted_additions)}"
+            "Target doc-sync-rules link_check_exclude_globs must exactly match the "
+            "trusted policy; additions, removals, and reordering are not allowed"
         )
 
     files: set[Path] = set()
@@ -681,6 +978,7 @@ def check_active_plan_directories(errors: list[str]) -> bool:
     for path, label in (
         (DOCS_ROOT / "exec-plans", "exec-plans directory"),
         (ACTIVE_PLAN_DIR, "active-plan directory"),
+        (COMPLETED_PLAN_DIR, "completed-plan directory"),
     ):
         if path.is_symlink() or not path.is_dir():
             errors.append(f"{label} must be a real directory, not a symlink: {path.relative_to(ROOT)}")
@@ -688,21 +986,107 @@ def check_active_plan_directories(errors: list[str]) -> bool:
     return valid
 
 
-def active_plans(errors: list[str]) -> list[Path]:
+def plan_files(directory: Path, label: str, errors: list[str]) -> list[Path]:
     if not check_active_plan_directories(errors):
         return []
     plans: list[Path] = []
-    for path in sorted(ACTIVE_PLAN_DIR.glob("*.md")):
+    for path in sorted(directory.iterdir()):
         if path.name == ".gitkeep":
             continue
         if path.is_symlink() or not path.is_file():
             errors.append(
-                "Active plan must be a regular file, not a symlink: "
+                f"{label} must be a regular file, not a symlink or special file: "
+                f"{path.relative_to(ROOT).as_posix()}"
+            )
+            continue
+        if path.suffix != ".md":
+            errors.append(
+                f"{label} bookkeeping may contain only lowercase .md plan files: "
                 f"{path.relative_to(ROOT).as_posix()}"
             )
             continue
         plans.append(path)
     return plans
+
+
+def active_plans(errors: list[str]) -> list[Path]:
+    return plan_files(ACTIVE_PLAN_DIR, "Active plan", errors)
+
+
+def completed_plans(errors: list[str]) -> list[Path]:
+    return plan_files(COMPLETED_PLAN_DIR, "Completed plan", errors)
+
+
+def require_lifecycle_value(
+    text: str,
+    plan: Path,
+    field: str,
+    allowed: set[str],
+    errors: list[str],
+) -> None:
+    values = lifecycle_field_values(text, field)
+    relative = plan.relative_to(ROOT).as_posix()
+    if len(values) != 1:
+        errors.append(
+            f"Plan {relative} must contain exactly one '{field}' field"
+        )
+        return
+    value = normalized(values[0])
+    if value not in allowed:
+        errors.append(
+            f"Plan {relative} has invalid {field}: {values[0] or '(empty)'}; "
+            f"expected one of {', '.join(sorted(allowed))}"
+        )
+
+
+def require_canonical_lifecycle_value(
+    text: str,
+    plan: Path,
+    field: str,
+    allowed: set[str],
+    errors: list[str],
+) -> None:
+    values = lifecycle_field_values(text, field)
+    relative = plan.relative_to(ROOT).as_posix()
+    if len(values) != 1:
+        errors.append(f"Plan {relative} must contain exactly one '{field}' field")
+        return
+    if values[0] not in allowed:
+        errors.append(
+            f"Plan {relative} has invalid {field}: {values[0] or '(empty)'}; "
+            f"expected canonical value {', '.join(sorted(allowed))}"
+        )
+
+
+def lifecycle_field_values(text: str, field: str) -> list[str]:
+    pattern = re.compile(
+        FIELD_RE_TEMPLATE.format(field=re.escape(field)),
+        re.MULTILINE | re.IGNORECASE,
+    )
+    return [match.group(1).strip() for match in pattern.finditer(text)]
+
+
+def lifecycle_skeleton(text: str) -> str | None:
+    skeleton = text
+    for field in PLAN_LIFECYCLE_FIELDS:
+        pattern = re.compile(
+            rf"^(?P<prefix>[ \t]*-[ \t]*{re.escape(field)}[ \t]*[:：][ \t]*)"
+            rf"(?P<value>[^\r\n]*)(?P<line_ending>\r?)$",
+            re.MULTILINE | re.IGNORECASE,
+        )
+        matches = list(pattern.finditer(skeleton))
+        if len(matches) != 1:
+            return None
+        skeleton = pattern.sub(
+            lambda match, field=field: (
+                match.group("prefix")
+                + f"<{field}>"
+                + match.group("line_ending")
+            ),
+            skeleton,
+            count=1,
+        )
+    return skeleton
 
 
 def check_active_plans(errors: list[str]) -> None:
@@ -715,6 +1099,22 @@ def check_active_plans(errors: list[str]) -> None:
         return
     for plan in plans:
         text = plan.read_text(encoding="utf-8")
+        for field in PLAN_LIFECYCLE_FIELDS:
+            if len(lifecycle_field_values(text, field)) != 1:
+                errors.append(
+                    f"Plan {plan.relative_to(ROOT).as_posix()} must contain exactly "
+                    f"one '{field}' lifecycle field"
+                )
+        require_lifecycle_value(text, plan, "Status", {"active"}, errors)
+        archived = lifecycle_field_values(text, "Active Plan archived")
+        transition = lifecycle_field_values(text, "Transition invariant")
+        if any(normalized(value) == "completed" for value in archived) or any(
+            normalized(value) in COMPLETED_TRANSITION_VALUES for value in transition
+        ):
+            errors.append(
+                f"Active plan {plan.relative_to(ROOT).as_posix()} contains mixed "
+                "completed lifecycle state"
+            )
         if not TASK_CLASSIFICATION_HEADING_RE.search(text):
             errors.append(
                 f"Active plan {plan.relative_to(ROOT).as_posix()} missing required "
@@ -736,6 +1136,224 @@ def check_active_plans(errors: list[str]) -> None:
         check_required_check_name(text, plan, errors)
 
 
+def check_completed_plans(errors: list[str]) -> None:
+    plans = completed_plans(errors)
+    standalone_base: str | None = None
+    if TRUSTED_ROOT == ROOT:
+        advertised_sha = os.environ.get(STANDALONE_BASE_ENV)
+        if advertised_sha is None:
+            return
+        valid_base, standalone_base = resolve_standalone_base(advertised_sha, errors)
+        if not valid_base:
+            return
+    for plan in plans:
+        relative = plan.relative_to(ROOT).as_posix()
+        target_metadata: list[os.stat_result] = []
+        text = read_regular_text_at(
+            ROOT, relative, errors, metadata_out=target_metadata
+        )
+        if text is None:
+            continue
+        if TRUSTED_ROOT == ROOT and standalone_base is not None:
+            valid_entry, base_mode, base_blob = standalone_tree_plan(
+                standalone_base, relative, errors
+            )
+            if not valid_entry:
+                continue
+            target_mode = (
+                "100755" if target_metadata[0].st_mode & 0o111 else "100644"
+            )
+            if base_mode == target_mode and base_blob == text.encode("utf-8"):
+                continue
+        elif TRUSTED_ROOT != ROOT:
+            trusted_plan = exact_case_real_path_at(TRUSTED_ROOT, relative)
+            if trusted_plan is not None and trusted_plan.is_file():
+                trusted_metadata: list[os.stat_result] = []
+                trusted_text = read_regular_text_at(
+                    TRUSTED_ROOT, relative, errors, metadata_out=trusted_metadata
+                )
+                if trusted_text is None:
+                    continue
+                same_mode = stat.S_IMODE(target_metadata[0].st_mode) == stat.S_IMODE(
+                    trusted_metadata[0].st_mode
+                )
+                if same_mode and text.encode("utf-8") == trusted_text.encode("utf-8"):
+                    continue
+        for field, allowed in COMPLETED_LIFECYCLE_CONTRACT.items():
+            require_canonical_lifecycle_value(text, plan, field, allowed, errors)
+
+
+def trusted_active_plans(errors: list[str]) -> list[Path]:
+    exec_plans = TRUSTED_DOCS_ROOT / "exec-plans"
+    active = exec_plans / "active"
+    for path, label in (
+        (exec_plans, "trusted exec-plans directory"),
+        (active, "trusted active-plan directory"),
+    ):
+        if path.is_symlink() or not path.is_dir():
+            errors.append(f"{label} must be a real directory, not a symlink: {path}")
+            return []
+    plans: list[Path] = []
+    for path in sorted(active.iterdir()):
+        if path.name == ".gitkeep":
+            continue
+        if path.is_symlink() or not path.is_file():
+            errors.append(
+                "Trusted Active Plan must be a regular file, not a symlink or "
+                f"special file: {path}"
+            )
+            continue
+        if path.suffix != ".md":
+            errors.append(
+                "Trusted Active Plan bookkeeping may contain only lowercase .md "
+                f"plan files: {path}"
+            )
+            continue
+        plans.append(path)
+    return plans
+
+
+def exact_archive_index_transition(
+    index_path: str,
+    trusted_active: Path,
+    completed_plan: Path,
+    errors: list[str],
+) -> bool:
+    trusted_index = TRUSTED_ROOT / index_path
+    target_index = ROOT / index_path
+    trusted_text = read_regular_text_at(
+        TRUSTED_ROOT, index_path, errors
+    )
+    target_text = read_regular_text_at(ROOT, index_path, errors)
+    if trusted_text is None or target_text is None:
+        return False
+
+    active_links = [
+        raw
+        for raw, linked in extract_links(trusted_index)
+        if linked is not None and linked == trusted_active.resolve()
+    ]
+    if len(active_links) != 1:
+        errors.append(
+            f"trusted {index_path} must contain exactly one link to the Active Plan "
+            "for an archive cleanup transition"
+        )
+        return False
+    raw = active_links[0]
+    raw_path, separator, fragment = raw.partition("#")
+    active_relative = os.path.relpath(
+        trusted_active, trusted_index.parent
+    ).replace(os.sep, "/")
+    completed_relative = os.path.relpath(
+        completed_plan, target_index.parent
+    ).replace(os.sep, "/")
+    prefix = "./" if raw_path.startswith("./") else ""
+    if raw_path.removeprefix("./") != active_relative or trusted_text.count(raw) != 1:
+        errors.append(
+            f"trusted {index_path} Active Plan link is not an unambiguous repository-"
+            "relative archive target"
+        )
+        return False
+    completed_raw = prefix + completed_relative
+    if separator:
+        completed_raw += separator + fragment
+    expected = trusted_text.replace(raw, completed_raw, 1)
+    completed_links = [
+        linked
+        for _, linked in extract_links(target_index)
+        if linked is not None and linked == completed_plan.resolve()
+    ]
+    if len(completed_links) != 1 or target_text != expected:
+        errors.append(
+            f"{index_path} archive cleanup may only change the unique Active Plan "
+            "link from active/ to completed/"
+        )
+        return False
+    return True
+
+
+def exact_archive_cleanup(index_path: str, errors: list[str]) -> bool:
+    trusted_plans = trusted_active_plans(errors)
+    if len(trusted_plans) != 1:
+        errors.append(
+            "archive cleanup requires exactly one trusted Active Plan; found "
+            f"{len(trusted_plans)}"
+        )
+        return False
+    trusted_plan = trusted_plans[0]
+    completed_plan = COMPLETED_PLAN_DIR / trusted_plan.name
+    if completed_plan.is_symlink() or not completed_plan.is_file():
+        errors.append(
+            "archive cleanup must move the trusted Active Plan to the same regular "
+            f"completed filename: {completed_plan.relative_to(ROOT).as_posix()}"
+        )
+        return False
+
+    trusted_relative = trusted_plan.relative_to(TRUSTED_ROOT).as_posix()
+    completed_relative = completed_plan.relative_to(ROOT).as_posix()
+    trusted_metadata: list[os.stat_result] = []
+    completed_metadata: list[os.stat_result] = []
+    trusted_text = read_regular_text_at(
+        TRUSTED_ROOT, trusted_relative, errors, metadata_out=trusted_metadata
+    )
+    completed_text = read_regular_text_at(
+        ROOT, completed_relative, errors, metadata_out=completed_metadata
+    )
+    if trusted_text is None or completed_text is None:
+        return False
+    if stat.S_IMODE(trusted_metadata[0].st_mode) != stat.S_IMODE(
+        completed_metadata[0].st_mode
+    ):
+        errors.append(
+            "archive cleanup may not change the Active Plan file mode while moving "
+            "it to completed/"
+        )
+        return False
+    trusted_status = lifecycle_field_values(trusted_text, "Status")
+    if len(trusted_status) != 1 or normalized(trusted_status[0]) != "active":
+        errors.append(
+            "archive cleanup source must contain exactly one 'Status: active' field"
+        )
+        return False
+    trusted_archived = lifecycle_field_values(trusted_text, "Active Plan archived")
+    trusted_transition = lifecycle_field_values(trusted_text, "Transition invariant")
+    if (
+        len(trusted_archived) != 1
+        or normalized(trusted_archived[0]) == "completed"
+        or len(trusted_transition) != 1
+        or normalized(trusted_transition[0]) in COMPLETED_TRANSITION_VALUES
+    ):
+        errors.append(
+            "archive cleanup source contains mixed or already-completed lifecycle state"
+        )
+        return False
+    if any(
+        len(values := lifecycle_field_values(completed_text, field)) != 1
+        or values[0] not in allowed
+        for field, allowed in COMPLETED_LIFECYCLE_CONTRACT.items()
+    ):
+        errors.append(
+            "archive cleanup destination must contain the completed lifecycle contract"
+        )
+        return False
+    trusted_skeleton = lifecycle_skeleton(trusted_text)
+    completed_skeleton = lifecycle_skeleton(completed_text)
+    if trusted_skeleton is None or completed_skeleton is None:
+        errors.append(
+            "archive cleanup plans must contain exactly one of each lifecycle field"
+        )
+        return False
+    if trusted_skeleton != completed_skeleton:
+        errors.append(
+            "archive cleanup may only change the canonical lifecycle fields in the "
+            "moved plan"
+        )
+        return False
+    return exact_archive_index_transition(
+        index_path, trusted_plan, completed_plan, errors
+    )
+
+
 def check_target_invariants(
     trusted_manifest: dict[str, object], errors: list[str]
 ) -> None:
@@ -744,9 +1362,6 @@ def check_target_invariants(
         errors.append("trusted doc-sync-rules target_invariants must be a list")
         return
     plans = active_plans(errors)
-    if len(plans) != 1:
-        return
-    active_plan = plans[0].resolve()
     for index, spec in enumerate(invariants):
         label = f"trusted doc-sync-rules target_invariants[{index}]"
         if not isinstance(spec, dict):
@@ -767,6 +1382,15 @@ def check_target_invariants(
         if source.is_symlink() or not source.is_file():
             errors.append(f"{label}.index must be a regular file: {index_path}")
             continue
+        if len(plans) == 0:
+            trusted_plans = trusted_active_plans(errors)
+            if len(trusted_plans) == 0:
+                continue
+            exact_archive_cleanup(index_path, errors)
+            continue
+        if len(plans) != 1:
+            continue
+        active_plan = plans[0].resolve()
         linked_targets = {
             linked for _, linked in extract_links(source) if linked is not None
         }
@@ -904,6 +1528,7 @@ def check_document_status_workflow(
     validation_job = text.split(markers[2], 1)[1].split(markers[3], 1)[0]
     publisher_job = text.split(markers[3], 1)[1].split(markers[4], 1)[0]
     fanout_job = text.split(markers[4], 1)[1].split(markers[5], 1)[0]
+    default_branch_job = text.split(markers[5], 1)[1]
     pre_jobs = text.split("jobs:\n", 1)[0]
     required_fragments = (
         "pull_request_target:",
@@ -927,7 +1552,6 @@ def check_document_status_workflow(
         "python3 -I -B trusted/scripts/check_docs.py",
         "--all --skip-project-check",
         "trusted/scripts/check_loop_checkpoints.py",
-        '--base "${PR_BASE_SHA}" --head "${PR_HEAD_SHA}"',
         '"${live_head_sha}" != "${EXPECTED_HEAD_SHA}"',
         '"${live_head_repository}" != "${EXPECTED_HEAD_REPOSITORY}"',
         '"${live_base_sha}" != "${EXPECTED_BASE_SHA}"',
@@ -939,6 +1563,63 @@ def check_document_status_workflow(
     )
     if any(fragment not in text for fragment in required_fragments):
         errors.append(f"Trusted document status workflow is incomplete: {relative}")
+    evaluate_marker = "      - name: Evaluate with trusted code\n"
+    if evaluate_marker not in validation_job:
+        errors.append(
+            f"Trusted document status workflow is missing its trusted evaluation step: {relative}"
+        )
+    else:
+        evaluate_step = validation_job.split(evaluate_marker, 1)[1]
+        run_marker = "        run: |\n"
+        if run_marker not in evaluate_step:
+            errors.append(
+                f"Trusted document status workflow evaluation step has no executable script: {relative}"
+            )
+        else:
+            run_body = evaluate_step.split(run_marker, 1)[1]
+            script_lines: list[str] = []
+            for line in run_body.splitlines():
+                if line and not line.startswith("          "):
+                    break
+                script_lines.append(line[10:] if line else "")
+            commands: list[str] = []
+            pending = ""
+            for line in script_lines:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                pending = f"{pending} {stripped}".strip()
+                if pending.endswith("\\"):
+                    pending = pending[:-1].rstrip()
+                    continue
+                commands.append(pending)
+                pending = ""
+            if pending:
+                commands.append(pending)
+            expected_scope_command = [
+                "python3",
+                "-I",
+                "-B",
+                "trusted/scripts/check_loop_checkpoints.py",
+                "--base",
+                "${PR_BASE_SHA}",
+                "--head",
+                "HEAD",
+            ]
+            parsed_commands: list[list[str]] = []
+            for command in commands:
+                try:
+                    parsed_commands.append(shlex.split(command))
+                except ValueError:
+                    errors.append(
+                        f"Trusted document status workflow evaluation step has invalid shell syntax: {relative}"
+                    )
+                    break
+            if expected_scope_command not in parsed_commands:
+                errors.append(
+                    "Trusted document status workflow must evaluate the synthetic merge "
+                    f"with --base ${{PR_BASE_SHA}} --head HEAD: {relative}"
+                )
     if re.search(r"^  pull_request:\s*$", pre_jobs, flags=re.MULTILINE):
         errors.append(f"Trusted document status workflow cannot use pull_request: {relative}")
     if "workflow_dispatch:" in pre_jobs:
@@ -964,6 +1645,20 @@ def check_document_status_workflow(
     if validation_job.count("fetch-depth: 0") != 2:
         errors.append(
             f"Trusted target and base checkouts must both fetch complete history: {relative}"
+        )
+    default_branch_contract = (
+        "          fetch-depth: 0\n",
+        "          HARNESS_STANDALONE_BASE_SHA: ${{ github.event.before }}\n",
+        "        run: python3 -I -B scripts/check_docs.py --all\n",
+    )
+    if (
+        default_branch_job.count("fetch-depth: 0") != 1
+        or text.count("HARNESS_STANDALONE_BASE_SHA: ${{ github.event.before }}") != 1
+        or any(fragment not in default_branch_job for fragment in default_branch_contract)
+    ):
+        errors.append(
+            "Trusted default-branch document check must fetch complete history and "
+            f"bind github.event.before only to check_docs.py: {relative}"
         )
     if text.count("allow-unsafe-pr-checkout: true") != 1:
         errors.append(
@@ -1127,6 +1822,12 @@ def check_trusted_diff_classes(
     if not isinstance(trusted_diff_classes, dict):
         errors.append("trusted doc-sync-rules diff_classes must be an object")
         return
+    unknown = sorted(set(diff_classes) - set(trusted_diff_classes))
+    if unknown:
+        errors.append(
+            "Target doc-sync-rules cannot add diff classes unknown to the trusted "
+            f"policy: {', '.join(unknown)}"
+        )
     for name, trusted_spec in trusted_diff_classes.items():
         if diff_classes.get(name) != trusted_spec:
             errors.append(
@@ -1267,6 +1968,8 @@ def validate_repo() -> tuple[list[str], dict[str, object]]:
         if not exact_case_path_exists(relative_path):
             errors.append(f"Missing or case-mismatched required path: {relative_path}")
     check_trusted_required_paths(trusted_manifest, required_paths, errors)
+    check_trusted_control_files(errors)
+    check_trusted_forbidden_paths(manifest, trusted_manifest, errors)
     check_deferred_paths(manifest, required_paths, errors)
     check_trusted_diff_classes(manifest, trusted_manifest, errors)
     check_document_status_workflow(
@@ -1378,6 +2081,7 @@ def validate_repo() -> tuple[list[str], dict[str, object]]:
                     )
 
     check_active_plans(errors)
+    check_completed_plans(errors)
     check_target_invariants(trusted_manifest, errors)
     return errors, manifest
 

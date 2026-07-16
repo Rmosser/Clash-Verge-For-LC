@@ -38,6 +38,8 @@ jobs:
           PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number || github.event.client_payload.pull_request_number }}
         shell: bash
         run: |
+          set -euo pipefail
+
           if [[ ! "${PULL_REQUEST_NUMBER}" =~ ^[1-9][0-9]*$ ]]; then
             echo "Invalid pull request number: ${PULL_REQUEST_NUMBER}" >&2
             exit 1
@@ -71,26 +73,105 @@ jobs:
     needs: resolve-pull-request
     permissions:
       contents: read
+      pull-requests: read
       statuses: write
     runs-on: ubuntu-latest
     steps:
       - name: Mark the live PR head pending
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_HEAD_SHA: ${{ needs.resolve-pull-request.outputs.head_sha }}
+          PULL_REQUEST_NUMBER: ${{ needs.resolve-pull-request.outputs.pull_request_number }}
+          EXPECTED_HEAD_SHA: ${{ needs.resolve-pull-request.outputs.head_sha }}
+          EXPECTED_HEAD_REPOSITORY: ${{ needs.resolve-pull-request.outputs.head_repository }}
+          EXPECTED_BASE_SHA: ${{ needs.resolve-pull-request.outputs.base_sha }}
+          STATUS_CONTEXT: loop/checkpoints
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         shell: bash
         run: |
+          set -euo pipefail
+
+          verify_live_identity() {
+            local pull_json live_state live_base_repository live_base_ref
+            local live_base_sha live_head_repository live_head_sha
+            pull_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}")"
+            live_state="$(jq -r '.state' <<<"${pull_json}")"
+            live_base_repository="$(jq -r '.base.repo.full_name' <<<"${pull_json}")"
+            live_base_ref="$(jq -r '.base.ref' <<<"${pull_json}")"
+            live_base_sha="$(jq -r '.base.sha' <<<"${pull_json}")"
+            live_head_repository="$(jq -r '.head.repo.full_name // empty' <<<"${pull_json}")"
+            live_head_sha="$(jq -r '.head.sha' <<<"${pull_json}")"
+            if [[ "${live_state}" != open || "${live_base_repository}" != "${GITHUB_REPOSITORY}" || "${live_base_ref}" != main || "${live_head_repository}" != "${EXPECTED_HEAD_REPOSITORY}" || "${live_head_sha}" != "${EXPECTED_HEAD_SHA}" || "${live_base_sha}" != "${EXPECTED_BASE_SHA}" ]]; then
+              echo "Pull request identity no longer matches the pending status binding." >&2
+              return 1
+            fi
+          }
+
+          fail_closed_after_status_write() {
+            local drift_description statuses_json latest_status
+            if verify_live_identity; then
+              return 0
+            fi
+            drift_description="PR identity changed after status write; base=${EXPECTED_BASE_SHA}."
+            gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/statuses/${EXPECTED_HEAD_SHA}" \
+              -f state=failure \
+              -f context="${STATUS_CONTEXT}" \
+              -f description="${drift_description}" \
+              -f target_url="${RUN_URL}"
+            statuses_json="$(
+              gh api --paginate --slurp \
+                "repos/${GITHUB_REPOSITORY}/commits/${EXPECTED_HEAD_SHA}/statuses?per_page=100"
+            )"
+            latest_status="$(
+              jq -c --arg context "${STATUS_CONTEXT}" \
+                '[.[][] | select(.context == $context)][0] // {}' \
+                <<<"${statuses_json}"
+            )"
+            if [[ "$(jq -r '.state // empty' <<<"${latest_status}")" != failure || "$(jq -r '.description // empty' <<<"${latest_status}")" != "${drift_description}" ]]; then
+              echo "Failed to leave the bound head with the latest fail-closed status." >&2
+              return 1
+            fi
+            echo "Pull request identity drifted after the pending write; the bound head was failed closed." >&2
+            return 1
+          }
+
+          pending_description="Reconciling trusted checkpoint evidence; base=${EXPECTED_BASE_SHA}."
+          success_description="Trusted checkpoint evidence is complete; base=${EXPECTED_BASE_SHA}."
+          failure_description="Trusted checkpoint evidence failed; base=${EXPECTED_BASE_SHA}."
+          pending_failure_description="Pending status failed; validation did not run; base=${EXPECTED_BASE_SHA}."
+          verify_live_identity || exit 1
+          statuses_json="$(
+            gh api --paginate --slurp \
+              "repos/${GITHUB_REPOSITORY}/commits/${EXPECTED_HEAD_SHA}/statuses?per_page=100"
+          )"
+          latest_status="$(
+            jq -c --arg context "${STATUS_CONTEXT}" \
+              '[.[][] | select(.context == $context)][0] // {}' \
+              <<<"${statuses_json}"
+          )"
+          latest_state="$(jq -r '.state // empty' <<<"${latest_status}")"
+          latest_description="$(jq -r '.description // empty' <<<"${latest_status}")"
+          verify_live_identity || exit 1
+          case "${latest_state}:${latest_description}" in
+            "pending:${pending_description}"|\
+            "success:${success_description}"|\
+            "failure:${failure_description}"|\
+            "failure:${pending_failure_description}")
+              echo "Current PR identity already has a reconciled ${STATUS_CONTEXT} status; skipping duplicate pending write."
+              exit 0
+              ;;
+          esac
           gh api --method POST \
-            "repos/${GITHUB_REPOSITORY}/statuses/${PR_HEAD_SHA}" \
+            "repos/${GITHUB_REPOSITORY}/statuses/${EXPECTED_HEAD_SHA}" \
             -f state=pending \
             -f context=loop/checkpoints \
-            -f description='Reconciling trusted checkpoint evidence.' \
+            -f description="${pending_description}" \
             -f target_url="${RUN_URL}"
+          fail_closed_after_status_write
 
   pull-request-checkpoints:
     name: trusted-loop-checkpoints
-    if: ${{ always() && needs.resolve-pull-request.result == 'success' }}
+    if: ${{ always() && needs.resolve-pull-request.result == 'success' && needs.mark-checkpoints-pending.result == 'success' }}
     needs: [resolve-pull-request, mark-checkpoints-pending]
     permissions:
       contents: read
@@ -121,6 +202,8 @@ jobs:
           PR_HEAD_SHA: ${{ needs.resolve-pull-request.outputs.head_sha }}
         shell: bash
         run: |
+          set -euo pipefail
+
           git -c protocol.file.allow=always -C target fetch \
             --no-tags --no-recurse-submodules \
             "${GITHUB_WORKSPACE}/trusted" "${PR_BASE_SHA}"
@@ -154,10 +237,12 @@ jobs:
           PR_HEAD_SHA: ${{ needs.resolve-pull-request.outputs.head_sha }}
         shell: bash
         run: |
+          set -euo pipefail
+
           python3 -I -B trusted/scripts/check_docs.py \
             --all --skip-project-check
           python3 -I -B trusted/scripts/check_loop_checkpoints.py \
-            --base "${PR_BASE_SHA}" --head "${PR_HEAD_SHA}"
+            --base "${PR_BASE_SHA}" --head HEAD
 
   publish-checkpoints-result:
     name: publish-loop-checkpoints-result
@@ -176,27 +261,85 @@ jobs:
           EXPECTED_HEAD_SHA: ${{ needs.resolve-pull-request.outputs.head_sha }}
           EXPECTED_HEAD_REPOSITORY: ${{ needs.resolve-pull-request.outputs.head_repository }}
           EXPECTED_BASE_SHA: ${{ needs.resolve-pull-request.outputs.base_sha }}
+          STATUS_CONTEXT: loop/checkpoints
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PENDING_RESULT: ${{ needs.mark-checkpoints-pending.result }}
           VALIDATION_RESULT: ${{ needs.pull-request-checkpoints.result }}
         shell: bash
         run: |
-          pull_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}")"
-          live_state="$(jq -r '.state' <<<"${pull_json}")"
-          live_base_repository="$(jq -r '.base.repo.full_name' <<<"${pull_json}")"
-          live_base_ref="$(jq -r '.base.ref' <<<"${pull_json}")"
-          live_base_sha="$(jq -r '.base.sha' <<<"${pull_json}")"
-          live_head_repository="$(jq -r '.head.repo.full_name // empty' <<<"${pull_json}")"
-          live_head_sha="$(jq -r '.head.sha' <<<"${pull_json}")"
-          if [[ "${live_state}" != open || "${live_base_repository}" != "${GITHUB_REPOSITORY}" || "${live_base_ref}" != main || "${live_head_repository}" != "${EXPECTED_HEAD_REPOSITORY}" || "${live_head_sha}" != "${EXPECTED_HEAD_SHA}" || "${live_base_sha}" != "${EXPECTED_BASE_SHA}" ]]; then
-            echo "Pull request identity changed during validation; refusing a stale status write."
-            exit 1
-          fi
-          if [[ "${VALIDATION_RESULT}" == success ]]; then
+          set -euo pipefail
+
+          verify_live_identity() {
+            local pull_json live_state live_base_repository live_base_ref
+            local live_base_sha live_head_repository live_head_sha
+            pull_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}")"
+            live_state="$(jq -r '.state' <<<"${pull_json}")"
+            live_base_repository="$(jq -r '.base.repo.full_name' <<<"${pull_json}")"
+            live_base_ref="$(jq -r '.base.ref' <<<"${pull_json}")"
+            live_base_sha="$(jq -r '.base.sha' <<<"${pull_json}")"
+            live_head_repository="$(jq -r '.head.repo.full_name // empty' <<<"${pull_json}")"
+            live_head_sha="$(jq -r '.head.sha' <<<"${pull_json}")"
+            if [[ "${live_state}" != open || "${live_base_repository}" != "${GITHUB_REPOSITORY}" || "${live_base_ref}" != main || "${live_head_repository}" != "${EXPECTED_HEAD_REPOSITORY}" || "${live_head_sha}" != "${EXPECTED_HEAD_SHA}" || "${live_base_sha}" != "${EXPECTED_BASE_SHA}" ]]; then
+              echo "Pull request identity changed during validation; refusing a stale status write." >&2
+              return 1
+            fi
+          }
+
+          fail_closed_after_status_write() {
+            local drift_description statuses_json latest_status
+            if verify_live_identity; then
+              return 0
+            fi
+            drift_description="PR identity changed after status write; base=${EXPECTED_BASE_SHA}."
+            gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/statuses/${EXPECTED_HEAD_SHA}" \
+              -f state=failure \
+              -f context="${STATUS_CONTEXT}" \
+              -f description="${drift_description}" \
+              -f target_url="${RUN_URL}"
+            statuses_json="$(
+              gh api --paginate --slurp \
+                "repos/${GITHUB_REPOSITORY}/commits/${EXPECTED_HEAD_SHA}/statuses?per_page=100"
+            )"
+            latest_status="$(
+              jq -c --arg context "${STATUS_CONTEXT}" \
+                '[.[][] | select(.context == $context)][0] // {}' \
+                <<<"${statuses_json}"
+            )"
+            if [[ "$(jq -r '.state // empty' <<<"${latest_status}")" != failure || "$(jq -r '.description // empty' <<<"${latest_status}")" != "${drift_description}" ]]; then
+              echo "Failed to leave the bound head with the latest fail-closed status." >&2
+              return 1
+            fi
+            echo "Pull request identity drifted after the final write; the bound head was failed closed." >&2
+            return 1
+          }
+
+          if [[ "${PENDING_RESULT}" != success ]]; then
+            state=failure
+            description="Pending status failed; validation did not run; base=${EXPECTED_BASE_SHA}."
+          elif [[ "${VALIDATION_RESULT}" == success ]]; then
             state=success
-            description='Trusted checkpoint evidence is complete.'
+            description="Trusted checkpoint evidence is complete; base=${EXPECTED_BASE_SHA}."
           else
             state=failure
-            description='Trusted checkpoint evidence failed.'
+            description="Trusted checkpoint evidence failed; base=${EXPECTED_BASE_SHA}."
+          fi
+          verify_live_identity || exit 1
+          statuses_json="$(
+            gh api --paginate --slurp \
+              "repos/${GITHUB_REPOSITORY}/commits/${EXPECTED_HEAD_SHA}/statuses?per_page=100"
+          )"
+          latest_status="$(
+            jq -c --arg context "${STATUS_CONTEXT}" \
+              '[.[][] | select(.context == $context)][0] // {}' \
+              <<<"${statuses_json}"
+          )"
+          latest_state="$(jq -r '.state // empty' <<<"${latest_status}")"
+          latest_description="$(jq -r '.description // empty' <<<"${latest_status}")"
+          verify_live_identity || exit 1
+          if [[ "${latest_state}" == "${state}" && "${latest_description}" == "${description}" ]]; then
+            echo "Current PR identity already has the requested ${STATUS_CONTEXT} result; skipping duplicate final write."
+            exit 0
           fi
           gh api --method POST \
             "repos/${GITHUB_REPOSITORY}/statuses/${EXPECTED_HEAD_SHA}" \
@@ -204,6 +347,7 @@ jobs:
             -f context=loop/checkpoints \
             -f description="${description}" \
             -f target_url="${RUN_URL}"
+          fail_closed_after_status_write
 
   dispatch-open-pull-requests:
     name: reconcile-open-pull-requests
@@ -220,6 +364,8 @@ jobs:
           DEFAULT_SHA: ${{ github.sha }}
         shell: bash
         run: |
+          set -euo pipefail
+
           gh api --paginate \
             "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
             --jq '.[].number' |
@@ -242,7 +388,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: python3 -I -B scripts/check_docs.py --all
+      - env:
+          HARNESS_STANDALONE_BASE_SHA: ${{ github.event.before }}
+        run: python3 -I -B scripts/check_docs.py --all

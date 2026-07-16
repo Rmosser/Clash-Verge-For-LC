@@ -1,5 +1,7 @@
 # Plan Title
 
+- Status: active
+
 ## Task Classification / 任务分类
 
 - Task class: trivial / standard / critical
@@ -95,5 +97,7 @@
 ## Post-Merge Cleanup
 
 - Main synced:
+- Active Plan archived:
+- Transition invariant: if this plan lands under `active/`, no unrelated PR may merge and rollout completion, required-check activation, or local deletion must wait until the immediate archive cleanup PR empties the active slot.
 - Local branch deleted:
 - Heartbeat closed:
