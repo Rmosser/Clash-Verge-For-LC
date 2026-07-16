@@ -21,6 +21,7 @@ ROOT = Path(os.environ.get("HARNESS_REPO_ROOT", CHECKER_ROOT)).expanduser().reso
 TRUSTED_ROOT = Path(
     os.environ.get("HARNESS_TRUSTED_REPO_ROOT", CHECKER_ROOT)
 ).expanduser().resolve()
+MAX_GOVERNANCE_TEXT_BYTES = 1024 * 1024
 
 
 def exact_docs_root_at(root: Path, label: str) -> Path:
@@ -245,30 +246,132 @@ def exact_case_path_exists(relative_path: str) -> bool:
     return exact_case_path_exists_at(ROOT, relative_path)
 
 
-def read_regular_text_no_follow(
-    path: Path, relative_path: str, errors: list[str]
+def read_regular_text_at(
+    root: Path,
+    relative_path: str,
+    errors: list[str],
+    max_bytes: int = MAX_GOVERNANCE_TEXT_BYTES,
 ) -> str | None:
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(path, flags)
-    except OSError as exc:
+    required_flags = {
+        name: getattr(os, name, None)
+        for name in (
+            "O_CLOEXEC",
+            "O_DIRECTORY",
+            "O_NOCTTY",
+            "O_NOFOLLOW",
+            "O_NONBLOCK",
+        )
+    }
+    if not all(
+        isinstance(value, int) and not isinstance(value, bool) and value != 0
+        for value in required_flags.values()
+    ):
         errors.append(
-            f"cannot safely open regular file {relative_path}: {exc.strerror or exc}"
+            f"safe descriptor traversal is unavailable for regular file: {relative_path}"
         )
         return None
+    if (
+        os.open not in os.supports_dir_fd
+        or os.listdir not in os.supports_fd
+        or os.stat not in os.supports_dir_fd
+        or os.stat not in os.supports_follow_symlinks
+    ):
+        errors.append(
+            f"descriptor-relative traversal is unavailable for regular file: {relative_path}"
+        )
+        return None
+    relative = PurePosixPath(relative_path)
+    if relative.is_absolute() or not relative.parts or any(
+        part in {"", ".", ".."} for part in relative.parts
+    ):
+        errors.append(f"regular text path must stay repository-relative: {relative_path}")
+        return None
+    if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < 1:
+        errors.append(f"regular text size limit must be positive: {relative_path}")
+        return None
+
+    directory_flags = (
+        os.O_RDONLY
+        | required_flags["O_CLOEXEC"]
+        | required_flags["O_DIRECTORY"]
+        | required_flags["O_NOFOLLOW"]
+    )
+    file_flags = (
+        os.O_RDONLY
+        | required_flags["O_CLOEXEC"]
+        | required_flags["O_NOCTTY"]
+        | required_flags["O_NOFOLLOW"]
+        | required_flags["O_NONBLOCK"]
+    )
     try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        descriptors = [-1] * (len(relative.parts) + 1)
+    except MemoryError:
+        errors.append(f"cannot allocate safe descriptor state for: {relative_path}")
+        return None
+    opened_count = 0
+    try:
+        current = os.open(root, directory_flags)
+        descriptors[opened_count] = current
+        opened_count += 1
+        for part in relative.parts[:-1]:
+            if part not in os.listdir(current):
+                errors.append(
+                    f"required text path is missing or has wrong case: {relative_path}"
+                )
+                return None
+            current = os.open(part, directory_flags, dir_fd=current)
+            descriptors[opened_count] = current
+            opened_count += 1
+        if relative.parts[-1] not in os.listdir(current):
+            errors.append(
+                f"required text path is missing or has wrong case: {relative_path}"
+            )
+            return None
+        before_open = os.stat(
+            relative.parts[-1], dir_fd=current, follow_symlinks=False
+        )
+        if not stat.S_ISREG(before_open.st_mode):
             errors.append(f"required text input is not a regular file: {relative_path}")
             return None
-        with os.fdopen(descriptor, encoding="utf-8") as handle:
-            descriptor = -1
-            return handle.read()
-    except (OSError, UnicodeError) as exc:
+        descriptor = os.open(relative.parts[-1], file_flags, dir_fd=current)
+        descriptors[opened_count] = descriptor
+        opened_count += 1
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            errors.append(f"required text input is not a regular file: {relative_path}")
+            return None
+        if (metadata.st_dev, metadata.st_ino) != (
+            before_open.st_dev,
+            before_open.st_ino,
+        ):
+            errors.append(f"required text input changed while opening: {relative_path}")
+            return None
+        if metadata.st_size > max_bytes:
+            errors.append(
+                f"required text input exceeds {max_bytes} bytes: {relative_path}"
+            )
+            return None
+        content = bytearray()
+        while len(content) <= max_bytes:
+            chunk = os.read(descriptor, min(65536, max_bytes + 1 - len(content)))
+            if not chunk:
+                break
+            content.extend(chunk)
+        if len(content) > max_bytes:
+            errors.append(
+                f"required text input exceeds {max_bytes} bytes: {relative_path}"
+            )
+            return None
+        return bytes(content).decode("utf-8")
+    except (OSError, UnicodeError, MemoryError) as exc:
         errors.append(f"cannot safely read regular file {relative_path}: {exc}")
         return None
     finally:
-        if descriptor >= 0:
-            os.close(descriptor)
+        for index in range(opened_count - 1, -1, -1):
+            try:
+                os.close(descriptors[index])
+            except OSError:
+                pass
 
 
 def string_list_field(
@@ -698,16 +801,9 @@ def check_required_check_name(text: str, path: Path, errors: list[str]) -> None:
 
 def check_current_head_governance(errors: list[str]) -> None:
     relative = f"{DOCS_ROOT.name}/governance/checkpoint-ci-gate.md"
-    path = exact_case_real_path_at(ROOT, relative)
-    if path is None or not path.is_file():
-        errors.append(
-            "checkpoint governance must be a regular file, not a symlink: "
-            f"{relative}"
-        )
-        return
-    # Reopen without following the final component and verify the descriptor.
-    # This keeps the read fail-closed if the target changes after path traversal.
-    text = read_regular_text_no_follow(path, relative, errors)
+    # Pin every parent directory with no-follow descriptors, then open the final
+    # component non-blocking and read only after bounded regular-file validation.
+    text = read_regular_text_at(ROOT, relative, errors)
     if text is None:
         return
     count = text.count(CURRENT_HEAD_REVIEW_HEADING)
