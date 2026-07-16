@@ -118,11 +118,31 @@ jobs:
       - name: Make the trusted base available to the validation clone
         env:
           PR_BASE_SHA: ${{ needs.resolve-pull-request.outputs.base_sha }}
+          PR_HEAD_SHA: ${{ needs.resolve-pull-request.outputs.head_sha }}
         shell: bash
         run: |
           git -c protocol.file.allow=always -C target fetch \
             --no-tags --no-recurse-submodules \
             "${GITHUB_WORKSPACE}/trusted" "${PR_BASE_SHA}"
+          merge_tree="$(
+            git -C target merge-tree --write-tree \
+              "${PR_BASE_SHA}" "${PR_HEAD_SHA}"
+          )"
+          if [[ ! "${merge_tree}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Unable to materialize the pull request merge tree." >&2
+            exit 1
+          fi
+          merge_commit="$(
+            printf '%s\n' 'Synthetic merge tree for trusted validation.' |
+            env \
+              GIT_AUTHOR_NAME='Harness Validator' \
+              GIT_AUTHOR_EMAIL='harness-validator@invalid' \
+              GIT_COMMITTER_NAME='Harness Validator' \
+              GIT_COMMITTER_EMAIL='harness-validator@invalid' \
+              git -c core.hooksPath=/dev/null -C target commit-tree \
+                "${merge_tree}" -p "${PR_BASE_SHA}" -p "${PR_HEAD_SHA}"
+          )"
+          git -C target reset --hard "${merge_commit}"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -187,7 +207,7 @@ jobs:
 
   dispatch-open-pull-requests:
     name: reconcile-open-pull-requests
-    if: github.event_name == 'push'
+    if: ${{ always() && github.event_name == 'push' }}
     needs: default-branch-checkpoints
     permissions:
       contents: write

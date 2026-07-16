@@ -134,24 +134,21 @@ DOCUMENTATION_IMPACT_HEADING_RE = re.compile(
     re.MULTILINE | re.IGNORECASE,
 )
 FULL_SHA_RE = re.compile(r"[0-9a-f]{40}", re.IGNORECASE)
-ABSOLUTE_SCOPE_RE = re.compile(
-    r"(?:^|[\s`(])(?:/[^\s`,;)]+|~(?:/|\\)[^\s`,;)]+|"
-    r"[A-Za-z]:[\\/][^\s`,;)]+)"
+OUT_OF_REPO_SCOPE_RE = re.compile(
+    r"(?:^|[\s`(,;])(?:\.\.(?:/|\\)[^\s`,;)]*|/[^\s`,;)]+|"
+    r"~(?:/|\\)[^\s`,;)]+|[A-Za-z]:[\\/][^\s`,;)]+)"
 )
 CURRENT_HEAD_REVIEW_HEADING = "## Current-Head Codex Review\n\n"
 CURRENT_HEAD_REVIEW_SHA256 = (
-    "1a8d53d7703b38ac6134b8199eb97407294c98d71998fe4dd058326f8087b225"
+    "c3caab7d58a0df73758c7690c243a5f2119fb231d86b31be3e638a18ee19f382"
 )
-TRUSTED_DOC_CONTROL_SHA256 = (
-    "a351a475e0bf75e777799b439e200d3f2141a3dcad1569f415fb45c316146ec7"
-)
-
-
 def load_json(path: Path, errors: list[str], label: str) -> dict[str, object]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        errors.append(f"Missing {label}: {path.relative_to(ROOT).as_posix()}")
+    except OSError as exc:
+        errors.append(
+            f"Cannot read {label} {path.relative_to(ROOT).as_posix()}: {exc}"
+        )
         return {}
     except json.JSONDecodeError as exc:
         errors.append(f"Invalid {label}: {exc}")
@@ -247,26 +244,94 @@ def exact_case_path_exists(relative_path: str) -> bool:
     return exact_case_path_exists_at(ROOT, relative_path)
 
 
-def markdown_files(manifest: dict[str, object]) -> list[Path]:
-    files = [ROOT / "AGENTS.md"]
+def string_list_field(
+    manifest: dict[str, object], field: str, errors: list[str], label: str
+) -> list[str]:
+    value = manifest.get(field, [])
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        errors.append(f"{label} {field} must be a list of strings")
+        return []
+    return value
+
+
+def safe_markdown_tree(base: Path, errors: list[str]) -> list[Path]:
+    if base.is_symlink() or (base.exists() and not base.is_dir()):
+        errors.append(
+            f"markdown scan root must be a real directory, not a symlink: "
+            f"{base.relative_to(ROOT).as_posix()}"
+        )
+        return []
+    if not base.exists():
+        return []
+
+    files: list[Path] = []
+    for current, dirnames, filenames in os.walk(base, topdown=True, followlinks=False):
+        current_path = Path(current)
+        for dirname in list(dirnames):
+            candidate = current_path / dirname
+            if candidate.is_symlink():
+                errors.append(
+                    "markdown scan cannot traverse a symlinked directory: "
+                    f"{candidate.relative_to(ROOT).as_posix()}"
+                )
+                dirnames.remove(dirname)
+        for filename in filenames:
+            if not filename.endswith(".md"):
+                continue
+            candidate = current_path / filename
+            if candidate.is_symlink() or not candidate.is_file():
+                errors.append(
+                    "markdown input must be a regular file, not a symlink: "
+                    f"{candidate.relative_to(ROOT).as_posix()}"
+                )
+                continue
+            files.append(candidate)
+    return files
+
+
+def markdown_files(
+    manifest: dict[str, object],
+    trusted_manifest: dict[str, object],
+    errors: list[str],
+) -> list[Path]:
+    patterns = string_list_field(
+        manifest, "link_check_exclude_globs", errors, "doc-sync-rules"
+    )
+    trusted_patterns = string_list_field(
+        trusted_manifest,
+        "link_check_exclude_globs",
+        errors,
+        "trusted doc-sync-rules",
+    )
+    untrusted_additions = sorted(set(patterns) - set(trusted_patterns))
+    if untrusted_additions:
+        errors.append(
+            "Target doc-sync-rules cannot add link-check exclusions outside trusted "
+            f"policy: {', '.join(untrusted_additions)}"
+        )
+
+    files: set[Path] = set()
+    for candidate in ROOT.iterdir():
+        if candidate.suffix != ".md":
+            continue
+        if candidate.is_symlink() or not candidate.is_file():
+            errors.append(
+                "root markdown input must be a regular file, not a symlink: "
+                f"{candidate.relative_to(ROOT).as_posix()}"
+            )
+            continue
+        files.add(candidate)
     for base in (DOCS_ROOT, ROOT / ".github"):
-        if base.exists():
-            files.extend(sorted(base.rglob("*.md")))
-    patterns = [str(value) for value in manifest.get("link_check_exclude_globs", [])]
+        files.update(safe_markdown_tree(base, errors))
     selected = [
         path
         for path in files
-        if path.exists()
-        and not any(
+        if not any(
             fnmatch.fnmatch(path.relative_to(ROOT).as_posix(), pattern)
             for pattern in patterns
         )
     ]
-    symlinks = [path for path in selected if path.is_symlink()]
-    if symlinks:
-        joined = ", ".join(path.relative_to(ROOT).as_posix() for path in symlinks)
-        raise RuntimeError(f"markdown inputs must be regular files, not symlinks: {joined}")
-    return selected
+    return sorted(selected)
 
 
 def extract_links(markdown_path: Path) -> list[tuple[str, Path | None]]:
@@ -423,7 +488,7 @@ def check_delegation_contract(text: str, plan: Path, errors: list[str]) -> None:
             f"Active plan {plan.relative_to(ROOT).as_posix()} must define delegated "
             "and forbidden scope before delegated work"
         )
-    if delegated and ABSOLUTE_SCOPE_RE.search(delegated_scope):
+    if delegated and OUT_OF_REPO_SCOPE_RE.search(delegated_scope):
         errors.append(
             f"Active plan {plan.relative_to(ROOT).as_posix()} must express "
             "Delegated scope with repository-relative paths, not an absolute "
@@ -496,9 +561,18 @@ def check_active_plan_directories(errors: list[str]) -> bool:
 def active_plans(errors: list[str]) -> list[Path]:
     if not check_active_plan_directories(errors):
         return []
-    return sorted(
-        path for path in ACTIVE_PLAN_DIR.glob("*.md") if path.name != ".gitkeep"
-    )
+    plans: list[Path] = []
+    for path in sorted(ACTIVE_PLAN_DIR.glob("*.md")):
+        if path.name == ".gitkeep":
+            continue
+        if path.is_symlink() or not path.is_file():
+            errors.append(
+                "Active plan must be a regular file, not a symlink: "
+                f"{path.relative_to(ROOT).as_posix()}"
+            )
+            continue
+        plans.append(path)
+    return plans
 
 
 def check_active_plans(errors: list[str]) -> None:
@@ -596,7 +670,14 @@ def check_required_check_name(text: str, path: Path, errors: list[str]) -> None:
 
 
 def check_current_head_governance(errors: list[str]) -> None:
-    path = DOCS_ROOT / "governance" / "checkpoint-ci-gate.md"
+    relative = f"{DOCS_ROOT.name}/governance/checkpoint-ci-gate.md"
+    path = exact_case_real_path_at(ROOT, relative)
+    if path is None or not path.is_file():
+        errors.append(
+            "checkpoint governance must be a regular file, not a symlink: "
+            f"{relative}"
+        )
+        return
     text = path.read_text(encoding="utf-8")
     count = text.count(CURRENT_HEAD_REVIEW_HEADING)
     if count != 1:
@@ -617,7 +698,10 @@ def check_current_head_governance(errors: list[str]) -> None:
 
 
 def check_document_status_workflow(
-    manifest: dict[str, object], required_paths: list[str], errors: list[str]
+    manifest: dict[str, object],
+    trusted_manifest: dict[str, object],
+    required_paths: list[str],
+    errors: list[str],
 ) -> None:
     candidates = [
         value
@@ -634,6 +718,7 @@ def check_document_status_workflow(
         return
     relative = candidates[0]
     required_check = manifest.get("required_check")
+    trusted_required_check = trusted_manifest.get("required_check")
     if not isinstance(required_check, dict):
         errors.append("doc-sync-rules required_check must be an object")
     else:
@@ -648,6 +733,22 @@ def check_document_status_workflow(
                 errors.append(
                     f"doc-sync-rules required_check.{field} must be {value!r}"
                 )
+    if not isinstance(trusted_required_check, dict):
+        errors.append("trusted doc-sync-rules required_check must be an object")
+        trusted_required_check = {}
+    elif required_check != trusted_required_check:
+        errors.append(
+            "Target doc-sync-rules cannot remove or rewrite the trusted required_check"
+        )
+    trusted_workflow_sha256 = trusted_required_check.get("workflow_sha256")
+    if (
+        not isinstance(trusted_workflow_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", trusted_workflow_sha256) is None
+    ):
+        errors.append(
+            "trusted doc-sync-rules required_check.workflow_sha256 must be a "
+            "lowercase SHA-256"
+        )
     path = ROOT / relative
     if path.is_symlink() or not path.is_file():
         errors.append(f"Trusted document status workflow must be a regular file: {relative}")
@@ -666,13 +767,10 @@ def check_document_status_workflow(
     ):
         errors.append(f"Trusted document status workflow contract is missing: {relative}")
         return
-    control_text = text.split(markers[5], 1)[0]
-    control_digest = hashlib.sha256(
-        (control_text.rstrip() + "\n").encode("utf-8")
-    ).hexdigest()
-    if control_digest != TRUSTED_DOC_CONTROL_SHA256:
+    workflow_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if workflow_digest != trusted_workflow_sha256:
         errors.append(
-            f"Trusted document status workflow control plane differs from the canonical contract: {relative}"
+            f"Trusted document status workflow differs from the trusted whole-file digest: {relative}"
         )
     resolver_job = text.split(markers[0], 1)[1].split(markers[1], 1)[0]
     pending_job = text.split(markers[1], 1)[1].split(markers[2], 1)[0]
@@ -696,6 +794,9 @@ def check_document_status_workflow(
         "HARNESS_TRUSTED_REPO_ROOT: ${{ github.workspace }}/trusted",
         'git -c protocol.file.allow=always -C target fetch',
         '"${GITHUB_WORKSPACE}/trusted" "${PR_BASE_SHA}"',
+        'git -C target merge-tree --write-tree',
+        'git -c core.hooksPath=/dev/null -C target commit-tree',
+        'git -C target reset --hard "${merge_commit}"',
         "python3 -I -B trusted/scripts/check_docs.py",
         "--all --skip-project-check",
         "trusted/scripts/check_loop_checkpoints.py",
@@ -707,6 +808,7 @@ def check_document_status_workflow(
         "repos/${GITHUB_REPOSITORY}/dispatches",
         "event_type=loop-checkpoints-reconcile",
         "client_payload[pull_request_number]",
+        "if: ${{ always() && github.event_name == 'push' }}",
     )
     if any(fragment not in text for fragment in required_fragments):
         errors.append(f"Trusted document status workflow is incomplete: {relative}")
@@ -783,12 +885,34 @@ def check_document_status_workflow(
 
 
 def check_additional_required_checks(
-    manifest: dict[str, object], required_paths: list[str], errors: list[str]
+    manifest: dict[str, object],
+    trusted_manifest: dict[str, object],
+    required_paths: list[str],
+    errors: list[str],
 ) -> None:
     checks = manifest.get("additional_required_checks", [])
     if not isinstance(checks, list):
         errors.append("doc-sync-rules additional_required_checks must be a list")
         return
+    trusted_checks = trusted_manifest.get("additional_required_checks", [])
+    if not isinstance(trusted_checks, list):
+        errors.append(
+            "trusted doc-sync-rules additional_required_checks must be a list"
+        )
+        trusted_checks = []
+    for trusted_spec in trusted_checks:
+        if not isinstance(trusted_spec, dict):
+            errors.append(
+                "trusted doc-sync-rules additional_required_checks contains a "
+                "non-object entry"
+            )
+            continue
+        if trusted_spec not in checks:
+            name = trusted_spec.get("name", "<unnamed>")
+            errors.append(
+                "Target doc-sync-rules cannot remove or rewrite trusted additional "
+                f"required check: {name}"
+            )
     names: set[str] = set()
     for index, spec in enumerate(checks):
         label = f"doc-sync-rules additional_required_checks[{index}]"
@@ -819,10 +943,13 @@ def check_additional_required_checks(
         ):
             errors.append(f"{label}.workflow must name a workflow path")
             continue
+        if ".." in PurePosixPath(workflow).parts:
+            errors.append(f"{label}.workflow must stay inside .github/workflows")
+            continue
         if workflow not in required_paths:
             errors.append(f"{label}.workflow must also appear in required_paths")
-        path = ROOT / workflow
-        if path.is_symlink() or not path.is_file():
+        path = exact_case_real_path_at(ROOT, workflow)
+        if path is None or not path.is_file():
             errors.append(f"{label}.workflow must be a regular file: {workflow}")
             continue
         if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
@@ -858,6 +985,92 @@ def check_deferred_paths(
                 errors.append(
                     f"doc-sync-rules {field} still defers required path: {path}"
                 )
+
+
+def check_trusted_diff_classes(
+    manifest: dict[str, object],
+    trusted_manifest: dict[str, object],
+    errors: list[str],
+) -> None:
+    diff_classes = manifest.get("diff_classes", {})
+    trusted_diff_classes = trusted_manifest.get("diff_classes", {})
+    if not isinstance(diff_classes, dict):
+        errors.append("doc-sync-rules diff_classes must be an object")
+        diff_classes = {}
+    if not isinstance(trusted_diff_classes, dict):
+        errors.append("trusted doc-sync-rules diff_classes must be an object")
+        return
+    for name, trusted_spec in trusted_diff_classes.items():
+        if diff_classes.get(name) != trusted_spec:
+            errors.append(
+                "Target doc-sync-rules cannot remove or rewrite trusted diff class: "
+                f"{name}"
+            )
+
+
+def entrypoint_map(
+    manifest: dict[str, object], errors: list[str], label: str
+) -> dict[str, set[str]]:
+    entries = manifest.get("entrypoint_links", [])
+    if not isinstance(entries, list):
+        errors.append(f"{label} entrypoint_links must be a list")
+        return {}
+    result: dict[str, set[str]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            errors.append(f"{label} entrypoint_links contains a non-object entry")
+            continue
+        source = entry.get("source")
+        targets = entry.get("targets")
+        if (
+            not isinstance(source, str)
+            or not source
+            or not isinstance(targets, list)
+            or not all(isinstance(target, str) and target for target in targets)
+        ):
+            errors.append(
+                f"{label} entrypoint link entries require a non-empty source and "
+                "string targets"
+            )
+            continue
+        result.setdefault(source, set()).update(targets)
+    return result
+
+
+def check_entrypoint_links(
+    manifest: dict[str, object],
+    trusted_manifest: dict[str, object],
+    errors: list[str],
+) -> None:
+    entrypoints = entrypoint_map(manifest, errors, "doc-sync-rules")
+    trusted_entrypoints = entrypoint_map(
+        trusted_manifest, errors, "trusted doc-sync-rules"
+    )
+    for source, trusted_targets in trusted_entrypoints.items():
+        missing = sorted(trusted_targets - entrypoints.get(source, set()))
+        if missing:
+            errors.append(
+                "Target doc-sync-rules cannot remove trusted entrypoint links from "
+                f"{source}: {', '.join(missing)}"
+            )
+
+    for source_value, targets in entrypoints.items():
+        source = exact_case_real_path_at(ROOT, source_value)
+        if source is None or not source.is_file():
+            errors.append(
+                f"Entrypoint source must be a regular file: {source_value}"
+            )
+            continue
+        linked_targets = {
+            path for _, path in extract_links(source) if path is not None
+        }
+        for target in sorted(targets):
+            expected_targets = {
+                (ROOT / target).resolve(),
+                (source.parent / target).resolve(),
+            }
+            if linked_targets.isdisjoint(expected_targets):
+                errors.append(f"Entrypoint {source_value} must link to {target}")
 
 
 def load_project_module() -> ModuleType | None:
@@ -928,15 +1141,27 @@ def validate_repo() -> tuple[list[str], dict[str, object]]:
             errors.append(f"Missing or case-mismatched required path: {relative_path}")
     check_trusted_required_paths(trusted_manifest, required_paths, errors)
     check_deferred_paths(manifest, required_paths, errors)
-    check_document_status_workflow(manifest, required_paths, errors)
-    check_additional_required_checks(manifest, required_paths, errors)
-    check_current_head_governance(errors)
-    plan_template = DOCS_ROOT / "exec-plans" / "template.md"
-    check_required_check_name(
-        plan_template.read_text(encoding="utf-8"), plan_template, errors
+    check_trusted_diff_classes(manifest, trusted_manifest, errors)
+    check_document_status_workflow(
+        manifest, trusted_manifest, required_paths, errors
     )
+    check_additional_required_checks(
+        manifest, trusted_manifest, required_paths, errors
+    )
+    check_current_head_governance(errors)
+    plan_template_relative = f"{DOCS_ROOT.name}/exec-plans/template.md"
+    plan_template = exact_case_real_path_at(ROOT, plan_template_relative)
+    if plan_template is None or not plan_template.is_file():
+        errors.append(
+            "Active Plan template must be a regular file, not a symlink: "
+            f"{plan_template_relative}"
+        )
+    else:
+        check_required_check_name(
+            plan_template.read_text(encoding="utf-8"), plan_template, errors
+        )
 
-    for markdown_path in markdown_files(manifest):
+    for markdown_path in markdown_files(manifest, trusted_manifest, errors):
         for raw, linked in extract_links(markdown_path):
             if linked is None:
                 errors.append(
@@ -953,36 +1178,7 @@ def validate_repo() -> tuple[list[str], dict[str, object]]:
                     f"Broken link in {markdown_path.relative_to(ROOT).as_posix()}: {raw}"
                 )
 
-    entrypoints = manifest.get("entrypoint_links", [])
-    if not isinstance(entrypoints, list):
-        errors.append("doc-sync-rules entrypoint_links must be a list")
-        entrypoints = []
-    for entry in entrypoints:
-        if not isinstance(entry, dict):
-            errors.append("entrypoint_links contains a non-object entry")
-            continue
-        source_value = entry.get("source")
-        targets = entry.get("targets")
-        if not isinstance(source_value, str) or not isinstance(targets, list):
-            errors.append("entrypoint link entries require source and targets")
-            continue
-        if not exact_case_path_exists(source_value):
-            errors.append(f"Entrypoint source missing or case-mismatched: {source_value}")
-            continue
-        source = ROOT / source_value
-        linked_targets = {
-            path for _, path in extract_links(source) if path is not None
-        }
-        for target in targets:
-            if not isinstance(target, str):
-                errors.append(f"Entrypoint {source_value} has a non-string target")
-                continue
-            expected_targets = {
-                (ROOT / target).resolve(),
-                (source.parent / target).resolve(),
-            }
-            if linked_targets.isdisjoint(expected_targets):
-                errors.append(f"Entrypoint {source_value} must link to {target}")
+    check_entrypoint_links(manifest, trusted_manifest, errors)
 
     if contract:
         if contract.get("mode") != "repo-native-agent-cicd":

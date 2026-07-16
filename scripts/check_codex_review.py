@@ -75,13 +75,68 @@ CLEAN_BODY_RE = re.compile(
     r"(?:Comment\s+[`\"']?@codex\s+review[`\"']?\s+to\s+run\s+again\.?\s*)?$",
     re.IGNORECASE | re.DOTALL,
 )
+STANDARD_CODEX_DETAILS_PATTERN = (
+    r"<details>\s*<summary>\s*(?:\u2139\ufe0f?\s*)?"
+    r"About Codex in GitHub\s*</summary>\s*"
+    r"<br\s*/?>\s*"
+    r"\[Your team has set up Codex to review pull requests in this repo\]"
+    r"\(https://chatgpt\.com/codex/(?:cloud/)?settings/general\)\.\s*"
+    r"Reviews are triggered when you\s*"
+    r"-\s*Open a pull request for review\s*"
+    r"-\s*Mark a draft as ready\s*"
+    r"-\s*Comment\s+[\"\u201c]@codex review[\"\u201d]\.\s*"
+    r"If Codex has suggestions, it will comment;\s*"
+    r"otherwise it will react with\s*\U0001f44d\ufe0f?\.\s*"
+    r"Codex can also answer questions or update the PR\.\s*"
+    r"Try commenting\s+[\"\u201c]@codex address that feedback[\"\u201d]\.\s*"
+    r"</details>"
+)
+ALLOWED_CLEAN_CELEBRATIONS = (
+    "Delightful!",
+    "Hooray!",
+    "Nice work!",
+    "Bravo.",
+    "Swish!",
+    "Breezy!",
+    "Keep it up!",
+    "You're on a roll.",
+    "Chef's kiss.",
+    "Can't wait for the next one!",
+    "Another round soon, please!",
+    "Already looking forward to the next diff.",
+    "More of your lovely PRs please.",
+    "What shall we delve into next?",
+    ":+1:",
+    ":rocket:",
+    ":tada:",
+)
+CLEAN_CELEBRATION_PATTERN = "(?:" + "|".join(
+    re.escape(value) for value in ALLOWED_CLEAN_CELEBRATIONS
+) + ")"
+LEGACY_COMMENTED_DETAILS_PATTERN = (
+    r"<details>\s*<summary>[^\r\n]*About Codex in GitHub</summary>\s*"
+    r"If Codex has suggestions, it will comment;\s*"
+    r"otherwise it will react with\s*(?:approval|\U0001f44d\ufe0f?)\.\s*"
+    r"</details>"
+)
+FULL_CLEAN_ISSUE_COMMENT_RE = re.compile(
+    r"^\s*Codex Review:\s*Didn't find any major issues\.\s*"
+    + CLEAN_CELEBRATION_PATTERN
+    + r"\s*"
+    r"\*\*Reviewed commit:\*\*\s*`[0-9a-f]{10,40}`\s*"
+    + STANDARD_CODEX_DETAILS_PATTERN
+    + r"\s*$",
+    re.IGNORECASE,
+)
 COMMENTED_CLEAN_BODY_RE = re.compile(
     r"^\s*#{1,6}\s*[^\r\n]*Codex Review\s*"
     r"Here are some automated review suggestions for this pull request\.\s*"
     r"\*\*Reviewed commit:\*\*\s*`[0-9a-f]{10,40}`\s*"
-    r"<details>\s*<summary>[^\r\n]*About Codex in GitHub</summary>[\s\S]*"
-    r"If Codex has suggestions, it will comment; otherwise it will react with[\s\S]*"
-    r"</details>\s*$",
+    r"(?:"
+    + STANDARD_CODEX_DETAILS_PATTERN
+    + r"|"
+    + LEGACY_COMMENTED_DETAILS_PATTERN
+    + r")\s*$",
     re.IGNORECASE,
 )
 INCOMPLETE_REVIEW_RE = re.compile(
@@ -281,7 +336,10 @@ def explicitly_stale_review_marker(body: str, head_sha: str) -> bool:
 
 
 def clean_body(body: str) -> bool:
-    return bool(CLEAN_BODY_RE.fullmatch(body))
+    return bool(
+        CLEAN_BODY_RE.fullmatch(body)
+        or FULL_CLEAN_ISSUE_COMMENT_RE.fullmatch(body)
+    )
 
 
 def finding_body(body: str) -> bool:
@@ -712,6 +770,42 @@ def post_status(
     )
 
 
+def latest_status_for_identity(
+    api: GitHubAPI,
+    repository: str,
+    pr_number: int,
+    expected_identity: PullIdentity,
+    context: str,
+) -> dict[str, Any] | None:
+    live_identity = pull_identity(live_pull(api, repository, pr_number), repository)
+    if not same_pull_identity(live_identity, expected_identity):
+        raise GateError("pull request identity changed before current status read")
+    statuses = api.get_pages(
+        f"/repos/{repo_path(repository)}/commits/"
+        f"{expected_identity.head_sha}/statuses"
+    )
+    live_identity = pull_identity(live_pull(api, repository, pr_number), repository)
+    if not same_pull_identity(live_identity, expected_identity):
+        raise GateError("pull request identity changed during current status read")
+    return next(
+        (status for status in statuses if status.get("context") == context),
+        None,
+    )
+
+
+def status_matches_result(
+    status: dict[str, Any] | None,
+    result: GateResult,
+    context: str,
+) -> bool:
+    return bool(
+        status is not None
+        and status.get("context") == context
+        and status.get("state") == result.state
+        and status.get("description") == result.description[:140]
+    )
+
+
 def publish_pending(
     api: GitHubAPI,
     repository: str,
@@ -761,6 +855,46 @@ def publish_status(
         target_url,
     )
     return True
+
+
+def publish_status_if_changed(
+    api: GitHubAPI,
+    repository: str,
+    pr_number: int,
+    expected_identity: PullIdentity,
+    result: GateResult,
+    context: str,
+    target_url: str,
+) -> bool:
+    if not result.publish or result.head_sha != expected_identity.head_sha:
+        return False
+    latest_status = latest_status_for_identity(
+        api,
+        repository,
+        pr_number,
+        expected_identity,
+        context,
+    )
+    if status_matches_result(latest_status, result, context):
+        return True
+    if not publish_pending(
+        api,
+        repository,
+        pr_number,
+        expected_identity,
+        context,
+        target_url,
+    ):
+        return False
+    return publish_status(
+        api,
+        repository,
+        pr_number,
+        expected_identity,
+        result,
+        context,
+        target_url,
+    )
 
 
 def parse_pr_number(value: str) -> int:
@@ -823,18 +957,6 @@ def main() -> int:
                     "issue_comments": [],
                 }
             else:
-                if args.publish:
-                    if not publish_pending(
-                        api,
-                        args.repository,
-                        pr_number,
-                        initial_identity,
-                        context,
-                        args.target_url,
-                    ):
-                        raise GateError(
-                            "pull request identity changed before the pending status write"
-                        )
                 payload = live_payload(
                     api, args.repository, pr_number, initial_identity
                 )
@@ -850,9 +972,10 @@ def main() -> int:
             assert api is not None
             assert pr_number is not None
             if result.publish:
-                # Re-read every artifact immediately before the final status write.
-                # Serialized workflow concurrency plus this second evaluation keeps
-                # late review findings from being overwritten by an older run.
+                # Re-read every artifact before deciding whether the current status
+                # is already the exact final result. Serialized workflow concurrency
+                # plus this second evaluation keeps late findings from being skipped
+                # or overwritten by an older run.
                 result = evaluate(
                     live_payload(
                         api, args.repository, pr_number, initial_identity
@@ -860,7 +983,7 @@ def main() -> int:
                     contract,
                     args.expected_head,
                 )
-            if result.publish and not publish_status(
+            if result.publish and not publish_status_if_changed(
                 api,
                 args.repository,
                 pr_number,
