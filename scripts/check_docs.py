@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
@@ -242,6 +243,32 @@ def exact_case_path_exists_at(root: Path, relative_path: str) -> bool:
 
 def exact_case_path_exists(relative_path: str) -> bool:
     return exact_case_path_exists_at(ROOT, relative_path)
+
+
+def read_regular_text_no_follow(
+    path: Path, relative_path: str, errors: list[str]
+) -> str | None:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        errors.append(
+            f"cannot safely open regular file {relative_path}: {exc.strerror or exc}"
+        )
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            errors.append(f"required text input is not a regular file: {relative_path}")
+            return None
+        with os.fdopen(descriptor, encoding="utf-8") as handle:
+            descriptor = -1
+            return handle.read()
+    except (OSError, UnicodeError) as exc:
+        errors.append(f"cannot safely read regular file {relative_path}: {exc}")
+        return None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 def string_list_field(
@@ -678,7 +705,11 @@ def check_current_head_governance(errors: list[str]) -> None:
             f"{relative}"
         )
         return
-    text = path.read_text(encoding="utf-8")
+    # Reopen without following the final component and verify the descriptor.
+    # This keeps the read fail-closed if the target changes after path traversal.
+    text = read_regular_text_no_follow(path, relative, errors)
+    if text is None:
+        return
     count = text.count(CURRENT_HEAD_REVIEW_HEADING)
     if count != 1:
         errors.append(
