@@ -3,25 +3,30 @@ run-name: codex-review-gate pr-${{ github.event.pull_request.number || github.ev
 
 on:
   pull_request_target:
+    branches: [main]
     types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited]
   issue_comment:
     types: [created, edited, deleted]
   repository_dispatch:
     types: [codex-review-reconcile]
-permissions:
-  contents: read
-  issues: read
-  pull-requests: read
-  statuses: write
+  push:
+    branches: [main]
+
+permissions: {}
 
 concurrency:
-  group: codex-review-gate-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr_number }}
+  group: codex-review-gate-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr_number || github.ref }}
   cancel-in-progress: false
 
 jobs:
   reconcile:
     name: refresh-codex-review-status
-    if: ${{ github.event_name != 'issue_comment' || github.event.issue.pull_request != null }}
+    if: ${{ github.event_name == 'pull_request_target' || github.event_name == 'repository_dispatch' || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null) }}
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      statuses: write
     runs-on: ubuntu-latest
     steps:
       - name: Check out the trusted default branch
@@ -45,3 +50,27 @@ jobs:
             exit 2
           fi
           python3 -I -B scripts/check_codex_review.py --publish
+
+  dispatch-open-pull-requests:
+    name: reconcile-open-main-pull-requests
+    if: github.event_name == 'push'
+    permissions:
+      contents: write
+      pull-requests: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reconcile every open PR against the new trusted base
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
+            --jq '.[].number' |
+          while IFS= read -r pull_request_number; do
+            [[ -n "${pull_request_number}" ]] || continue
+            gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/dispatches" \
+              -f event_type=codex-review-reconcile \
+              -F "client_payload[pr_number]=${pull_request_number}"
+          done

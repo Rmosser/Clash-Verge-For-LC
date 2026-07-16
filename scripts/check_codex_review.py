@@ -25,6 +25,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_AUTHORS = ("chatgpt-codex-connector[bot]",)
 DEFAULT_CONTEXT = "codex-review"
+DEFAULT_BASE_REF = "main"
 TRIVIAL_FILES = {
     "README.md",
     "CHANGELOG.md",
@@ -106,6 +107,16 @@ class GateResult:
     reasons: tuple[str, ...]
     evidence_url: str | None = None
     publish: bool = True
+
+
+@dataclass(frozen=True)
+class PullIdentity:
+    state: str
+    head_repository: str
+    head_sha: str
+    base_repository: str
+    base_ref: str
+    base_sha: str
 
 
 class GitHubAPI:
@@ -330,6 +341,7 @@ def evaluate(
     payload: dict[str, Any],
     contract: dict[str, Any],
     expected_head: str = "",
+    bootstrap_control_plane_review: bool = False,
 ) -> GateResult:
     pull = payload.get("pull")
     if not isinstance(pull, dict):
@@ -384,7 +396,7 @@ def evaluate(
         if path in TRUSTED_CONTROL_PATHS
         or any(path.startswith(prefix) for prefix in TRUSTED_CONTROL_PREFIXES)
     )
-    if changed_control_paths:
+    if changed_control_paths and not bootstrap_control_plane_review:
         return GateResult(
             state="failure",
             classification="trusted-control-change",
@@ -607,9 +619,67 @@ def pull_head(pull: dict[str, Any]) -> str:
     return sha.lower()
 
 
-def live_payload(api: GitHubAPI, repository: str, pr_number: int) -> dict[str, Any]:
+def pull_identity(pull: dict[str, Any], repository: str) -> PullIdentity:
+    state = pull.get("state")
+    head = pull.get("head")
+    base = pull.get("base")
+    head_repo = head.get("repo") if isinstance(head, dict) else None
+    base_repo = base.get("repo") if isinstance(base, dict) else None
+    head_repository = (
+        head_repo.get("full_name") if isinstance(head_repo, dict) else None
+    )
+    base_repository = (
+        base_repo.get("full_name") if isinstance(base_repo, dict) else None
+    )
+    base_ref = base.get("ref") if isinstance(base, dict) else None
+    base_sha = base.get("sha") if isinstance(base, dict) else None
+    if state != "open":
+        raise GateError("pull request must remain open")
+    if not isinstance(head_repository, str) or not head_repository:
+        raise GateError("GitHub pull request head repository is missing")
+    if (
+        not isinstance(base_repository, str)
+        or base_repository.casefold() != repository.casefold()
+        or base_ref != DEFAULT_BASE_REF
+    ):
+        raise GateError(
+            f"pull request must target {repository}:{DEFAULT_BASE_REF}"
+        )
+    if not isinstance(base_sha, str) or not re.fullmatch(
+        r"[0-9a-fA-F]{40}", base_sha
+    ):
+        raise GateError("GitHub pull request base SHA is malformed")
+    return PullIdentity(
+        state=state,
+        head_repository=head_repository,
+        head_sha=pull_head(pull),
+        base_repository=base_repository,
+        base_ref=base_ref,
+        base_sha=base_sha.lower(),
+    )
+
+
+def same_pull_identity(left: PullIdentity, right: PullIdentity) -> bool:
+    return (
+        left.state == right.state
+        and left.head_repository.casefold() == right.head_repository.casefold()
+        and left.head_sha == right.head_sha
+        and left.base_repository.casefold() == right.base_repository.casefold()
+        and left.base_ref == right.base_ref
+        and left.base_sha == right.base_sha
+    )
+
+
+def live_payload(
+    api: GitHubAPI,
+    repository: str,
+    pr_number: int,
+    expected_identity: PullIdentity,
+) -> dict[str, Any]:
     base = f"/repos/{repo_path(repository)}"
     pull = live_pull(api, repository, pr_number)
+    if not same_pull_identity(pull_identity(pull, repository), expected_identity):
+        raise GateError("pull request identity changed during review reconciliation")
     return {
         "pull": pull,
         "files": api.get_pages(f"{base}/pulls/{pr_number}/files"),
@@ -645,32 +715,41 @@ def post_status(
 def publish_pending(
     api: GitHubAPI,
     repository: str,
-    head_sha: str,
+    pr_number: int,
+    expected_identity: PullIdentity,
     context: str,
     target_url: str,
-) -> None:
+) -> bool:
+    live_identity = pull_identity(live_pull(api, repository, pr_number), repository)
+    if not same_pull_identity(live_identity, expected_identity):
+        return False
     post_status(
         api,
         repository,
-        head_sha,
+        expected_identity.head_sha,
         "pending",
         context,
-        f"Reconciling Codex review for current head {head_sha[:10]}.",
+        f"Reconciling Codex review for current head {expected_identity.head_sha[:10]}.",
         target_url,
     )
+    return True
 
 
 def publish_status(
     api: GitHubAPI,
     repository: str,
     pr_number: int,
+    expected_identity: PullIdentity,
     result: GateResult,
     context: str,
     target_url: str,
 ) -> bool:
     if not result.publish:
         return False
-    if pull_head(live_pull(api, repository, pr_number)) != result.head_sha:
+    if result.head_sha != expected_identity.head_sha:
+        return False
+    live_identity = pull_identity(live_pull(api, repository, pr_number), repository)
+    if not same_pull_identity(live_identity, expected_identity):
         return False
     post_status(
         api,
@@ -703,12 +782,19 @@ def main() -> int:
     )
     parser.add_argument("--fixture", type=Path)
     parser.add_argument("--publish", action="store_true")
+    parser.add_argument("--bootstrap-control-plane-review", action="store_true")
     parser.add_argument("--context", default=os.environ.get("REVIEW_STATUS_CONTEXT", ""))
     parser.add_argument("--target-url", default=os.environ.get("GITHUB_RUN_URL", ""))
     args = parser.parse_args()
 
     try:
         contract = load_contract()
+        if args.bootstrap_control_plane_review and (
+            not args.fixture or args.publish
+        ):
+            raise GateError(
+                "--bootstrap-control-plane-review requires --fixture and forbids --publish"
+            )
         config = review_contract(contract)
         context = args.context or str(config.get("required_check") or DEFAULT_CONTEXT)
         api: GitHubAPI | None = None
@@ -726,7 +812,8 @@ def main() -> int:
                 os.environ.get("GITHUB_API_URL", "https://api.github.com"),
             )
             initial_pull = live_pull(api, args.repository, pr_number)
-            initial_head = pull_head(initial_pull)
+            initial_identity = pull_identity(initial_pull, args.repository)
+            initial_head = initial_identity.head_sha
             if args.expected_head and args.expected_head.lower() != initial_head:
                 payload = {
                     "pull": initial_pull,
@@ -737,15 +824,26 @@ def main() -> int:
                 }
             else:
                 if args.publish:
-                    publish_pending(
+                    if not publish_pending(
                         api,
                         args.repository,
-                        initial_head,
+                        pr_number,
+                        initial_identity,
                         context,
                         args.target_url,
-                    )
-                payload = live_payload(api, args.repository, pr_number)
-        result = evaluate(payload, contract, args.expected_head)
+                    ):
+                        raise GateError(
+                            "pull request identity changed before the pending status write"
+                        )
+                payload = live_payload(
+                    api, args.repository, pr_number, initial_identity
+                )
+        result = evaluate(
+            payload,
+            contract,
+            args.expected_head,
+            args.bootstrap_control_plane_review,
+        )
         if args.publish:
             if args.fixture:
                 raise GateError("--publish cannot be used with --fixture")
@@ -756,7 +854,9 @@ def main() -> int:
                 # Serialized workflow concurrency plus this second evaluation keeps
                 # late review findings from being overwritten by an older run.
                 result = evaluate(
-                    live_payload(api, args.repository, pr_number),
+                    live_payload(
+                        api, args.repository, pr_number, initial_identity
+                    ),
                     contract,
                     args.expected_head,
                 )
@@ -764,6 +864,7 @@ def main() -> int:
                 api,
                 args.repository,
                 pr_number,
+                initial_identity,
                 result,
                 context,
                 args.target_url,
@@ -772,8 +873,8 @@ def main() -> int:
                     state="failure",
                     classification="stale-writer",
                     head_sha=result.head_sha,
-                    description="PR head changed before the final review status write.",
-                    reasons=("final status was not published to a changed PR head",),
+                    description="PR identity changed before the final review status write.",
+                    reasons=("final status was not published to a changed PR identity",),
                     publish=False,
                 )
     except (GateError, OSError, json.JSONDecodeError) as exc:
