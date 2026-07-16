@@ -15,27 +15,40 @@ import sys
 from pathlib import Path, PurePosixPath
 from types import ModuleType
 
-ROOT = Path(
-    os.environ.get("HARNESS_REPO_ROOT", Path(__file__).resolve().parents[1])
+CHECKER_ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(os.environ.get("HARNESS_REPO_ROOT", CHECKER_ROOT)).expanduser().resolve()
+TRUSTED_ROOT = Path(
+    os.environ.get("HARNESS_TRUSTED_REPO_ROOT", CHECKER_ROOT)
 ).expanduser().resolve()
 
 
-def exact_docs_root() -> Path:
+def exact_docs_root_at(root: Path, label: str) -> Path:
     candidates = [
-        child for child in ROOT.iterdir() if child.name in {"docs", "Docs"}
+        child for child in root.iterdir() if child.name in {"docs", "Docs"}
     ]
     if len(candidates) != 1:
-        raise RuntimeError("expected exactly one real docs/ or Docs/ governance root")
-    root = candidates[0]
-    if root.is_symlink() or not root.is_dir():
-        raise RuntimeError("docs/ or Docs/ governance root must be a real directory")
-    return root
+        raise RuntimeError(
+            f"expected exactly one real docs/ or Docs/ governance root in {label}"
+        )
+    docs_root = candidates[0]
+    if docs_root.is_symlink() or not docs_root.is_dir():
+        raise RuntimeError(
+            f"docs/ or Docs/ governance root in {label} must be a real directory"
+        )
+    return docs_root
 
 
-DOCS_ROOT = exact_docs_root()
+DOCS_ROOT = exact_docs_root_at(ROOT, "validation target")
+TRUSTED_DOCS_ROOT = exact_docs_root_at(TRUSTED_ROOT, "trusted verifier checkout")
 ACTIVE_PLAN_DIR = DOCS_ROOT / "exec-plans" / "active"
 PROJECT_CHECK = ROOT / "scripts" / "check_docs_project.py"
-LINK_RE = re.compile(r"!\[[^\]]+\]\(([^)]+)\)|\[[^\]]+\]\(([^)]+)\)")
+INLINE_LINK_RE = re.compile(
+    r"!?\[[^\]]*\]\(\s*(?:<([^>\r\n]+)>|([^\s)]+))"
+)
+REFERENCE_LINK_RE = re.compile(
+    r"^[ \t]{0,3}\[[^\]\r\n]+\]:[ \t]*(?:<([^>\r\n]+)>|([^\s]+))",
+    re.MULTILINE,
+)
 FIELD_RE_TEMPLATE = r"^[ \t]*-[ \t]*{field}[ \t]*[:：][ \t]*(.*)$"
 PENDING_VALUES = {"", "-", "n/a", "na", "none", "pending", "unknown", "`pending`", "`unknown`"}
 TRUE_VALUES = {"yes", "true", "used"}
@@ -130,7 +143,7 @@ CURRENT_HEAD_REVIEW_SHA256 = (
     "fd6c635bd11942af98c2c9ecaf7f4d61930d6c7731075ee7228b1bab9cda5165"
 )
 TRUSTED_DOC_CONTROL_SHA256 = (
-    "1acac5e32199bebca6074c4d43b96fc88ab125acac2d456d511a707c6d17efc2"
+    "a351a475e0bf75e777799b439e200d3f2141a3dcad1569f415fb45c316146ec7"
 )
 
 
@@ -149,18 +162,89 @@ def load_json(path: Path, errors: list[str], label: str) -> dict[str, object]:
     return payload
 
 
-def exact_case_path_exists(relative_path: str) -> bool:
-    current = ROOT
+def load_trusted_manifest(errors: list[str]) -> dict[str, object]:
+    path = TRUSTED_DOCS_ROOT / "doc-sync-rules.json"
+    if path.is_symlink():
+        errors.append("trusted doc sync rules must be a regular file, not a symlink")
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        errors.append(f"Invalid trusted doc sync rules: {exc}")
+        return {}
+    if not isinstance(payload, dict):
+        errors.append("Invalid trusted doc sync rules: top-level value must be an object")
+        return {}
+    return payload
+
+
+def required_paths_from(
+    manifest: dict[str, object], errors: list[str], label: str
+) -> list[str]:
+    value = manifest.get("required_paths", [])
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        errors.append(f"{label} required_paths must be a list of strings")
+        return []
+    return value
+
+
+def check_trusted_required_paths(
+    trusted_manifest: dict[str, object],
+    required_paths: list[str],
+    errors: list[str],
+) -> None:
+    trusted_required = required_paths_from(
+        trusted_manifest, errors, "trusted doc-sync-rules"
+    )
+    target_required = set(required_paths)
+    for relative_path in trusted_required:
+        trusted_path = exact_case_real_path_at(TRUSTED_ROOT, relative_path)
+        target_path = exact_case_real_path_at(ROOT, relative_path)
+        if trusted_path is None:
+            errors.append(
+                "Trusted required path is missing, case-mismatched, symlinked, or "
+                f"not a real file/directory: {relative_path}"
+            )
+        if relative_path not in target_required:
+            errors.append(
+                f"Target doc-sync-rules cannot remove trusted required path: {relative_path}"
+            )
+        if target_path is None:
+            errors.append(
+                "Missing or case-mismatched trusted required path, or path is "
+                f"symlinked/not a real file or directory: {relative_path}"
+            )
+        elif trusted_path is not None and (
+            trusted_path.is_dir() != target_path.is_dir()
+            or trusted_path.is_file() != target_path.is_file()
+        ):
+            errors.append(
+                f"Target required path type differs from trusted base: {relative_path}"
+            )
+
+
+def exact_case_real_path_at(root: Path, relative_path: str) -> Path | None:
+    current = root
+    if current.is_symlink() or not current.is_dir():
+        return None
     for part in PurePosixPath(relative_path).parts:
         if part in {"", "."}:
             continue
-        if part == ".." or not current.is_dir():
-            return False
-        names = {entry.name for entry in current.iterdir()}
-        if part not in names:
-            return False
-        current = current / part
-    return current.exists()
+        if part == ".." or current.is_symlink() or not current.is_dir():
+            return None
+        entries = {entry.name: entry for entry in current.iterdir()}
+        current = entries.get(part)
+        if current is None or current.is_symlink():
+            return None
+    return current if current.is_file() or current.is_dir() else None
+
+
+def exact_case_path_exists_at(root: Path, relative_path: str) -> bool:
+    return exact_case_real_path_at(root, relative_path) is not None
+
+
+def exact_case_path_exists(relative_path: str) -> bool:
+    return exact_case_path_exists_at(ROOT, relative_path)
 
 
 def markdown_files(manifest: dict[str, object]) -> list[Path]:
@@ -185,20 +269,30 @@ def markdown_files(manifest: dict[str, object]) -> list[Path]:
     return selected
 
 
-def extract_links(markdown_path: Path) -> list[tuple[str, Path]]:
+def extract_links(markdown_path: Path) -> list[tuple[str, Path | None]]:
     text = markdown_path.read_text(encoding="utf-8")
-    links: list[tuple[str, Path]] = []
-    for match in LINK_RE.finditer(text):
-        raw = (match.group(1) or match.group(2) or "").strip()
+    links: list[tuple[str, Path | None]] = []
+    matches = (
+        match
+        for pattern in (INLINE_LINK_RE, REFERENCE_LINK_RE)
+        for match in pattern.finditer(text)
+    )
+    for match in matches:
+        raw = next(
+            (group.strip() for group in match.groups() if group is not None), ""
+        )
         if raw.startswith(("http://", "https://", "mailto:", "#")):
             continue
         target = raw.split("#", 1)[0]
-        if (
-            target.startswith(("/", "~/", "~\\", "//"))
-            or re.match(r"^[A-Za-z]:[\\/]", target)
+        if target.startswith(("~/", "~\\", "//")) or re.match(
+            r"^[A-Za-z]:[\\/]", target
         ):
-            # Absolute filesystem paths and site-root links are not portable
-            # repository links and cannot be resolved on a CI runner.
+            # Explicit machine-local evidence pointers are not repository links.
+            continue
+        if target.startswith(("/Users/", "/home/", "/private/", "/Volumes/")):
+            continue
+        if target.startswith("/"):
+            links.append((raw, None))
             continue
         if target:
             links.append((raw, (markdown_path.parent / target).resolve()))
@@ -387,10 +481,28 @@ def check_claims_and_review(text: str, plan: Path, errors: list[str]) -> None:
             )
 
 
-def check_active_plans(errors: list[str]) -> None:
-    plans = sorted(
+def check_active_plan_directories(errors: list[str]) -> bool:
+    valid = True
+    for path, label in (
+        (DOCS_ROOT / "exec-plans", "exec-plans directory"),
+        (ACTIVE_PLAN_DIR, "active-plan directory"),
+    ):
+        if path.is_symlink() or not path.is_dir():
+            errors.append(f"{label} must be a real directory, not a symlink: {path.relative_to(ROOT)}")
+            valid = False
+    return valid
+
+
+def active_plans(errors: list[str]) -> list[Path]:
+    if not check_active_plan_directories(errors):
+        return []
+    return sorted(
         path for path in ACTIVE_PLAN_DIR.glob("*.md") if path.name != ".gitkeep"
     )
+
+
+def check_active_plans(errors: list[str]) -> None:
+    plans = active_plans(errors)
     if len(plans) > 1:
         errors.append(
             f"Expected at most one active plan, found {len(plans)}: "
@@ -418,6 +530,47 @@ def check_active_plans(errors: list[str]) -> None:
         check_delegation_contract(text, plan, errors)
         check_claims_and_review(text, plan, errors)
         check_required_check_name(text, plan, errors)
+
+
+def check_target_invariants(
+    trusted_manifest: dict[str, object], errors: list[str]
+) -> None:
+    invariants = trusted_manifest.get("target_invariants", [])
+    if not isinstance(invariants, list):
+        errors.append("trusted doc-sync-rules target_invariants must be a list")
+        return
+    plans = active_plans(errors)
+    if len(plans) != 1:
+        return
+    active_plan = plans[0].resolve()
+    for index, spec in enumerate(invariants):
+        label = f"trusted doc-sync-rules target_invariants[{index}]"
+        if not isinstance(spec, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        invariant_type = spec.get("type")
+        if invariant_type != "active_plan_index_link":
+            errors.append(f"{label}.type is unsupported: {invariant_type!r}")
+            continue
+        index_path = spec.get("index")
+        if not isinstance(index_path, str) or not index_path:
+            errors.append(f"{label}.index must be a non-empty repository path")
+            continue
+        if not exact_case_path_exists(index_path):
+            errors.append(f"{label}.index is missing or case-mismatched: {index_path}")
+            continue
+        source = ROOT / index_path
+        if source.is_symlink() or not source.is_file():
+            errors.append(f"{label}.index must be a regular file: {index_path}")
+            continue
+        linked_targets = {
+            linked for _, linked in extract_links(source) if linked is not None
+        }
+        if active_plan not in linked_targets:
+            errors.append(
+                f"{index_path} must link to the current Active Plan: "
+                f"{active_plan.relative_to(ROOT).as_posix()}"
+            )
 
 
 def check_required_check_name(text: str, path: Path, errors: list[str]) -> None:
@@ -501,17 +654,19 @@ def check_document_status_workflow(
         return
     text = path.read_text(encoding="utf-8")
     markers = (
+        "  resolve-pull-request:\n",
         "  mark-checkpoints-pending:\n",
         "  pull-request-checkpoints:\n",
         "  publish-checkpoints-result:\n",
+        "  dispatch-open-pull-requests:\n",
         "  default-branch-checkpoints:\n",
     )
-    if "# HARNESS_TRUSTED_DOC_STATUS_V2" not in text or any(
+    if "# HARNESS_TRUSTED_DOC_STATUS_V3" not in text or any(
         marker not in text for marker in markers
     ):
         errors.append(f"Trusted document status workflow contract is missing: {relative}")
         return
-    control_text = text.split(markers[3], 1)[0]
+    control_text = text.split(markers[5], 1)[0]
     control_digest = hashlib.sha256(
         (control_text.rstrip() + "\n").encode("utf-8")
     ).hexdigest()
@@ -519,23 +674,39 @@ def check_document_status_workflow(
         errors.append(
             f"Trusted document status workflow control plane differs from the canonical contract: {relative}"
         )
-    pending_job = text.split(markers[0], 1)[1].split(markers[1], 1)[0]
-    validation_job = text.split(markers[1], 1)[1].split(markers[2], 1)[0]
-    publisher_job = text.split(markers[2], 1)[1].split(markers[3], 1)[0]
+    resolver_job = text.split(markers[0], 1)[1].split(markers[1], 1)[0]
+    pending_job = text.split(markers[1], 1)[1].split(markers[2], 1)[0]
+    validation_job = text.split(markers[2], 1)[1].split(markers[3], 1)[0]
+    publisher_job = text.split(markers[3], 1)[1].split(markers[4], 1)[0]
+    fanout_job = text.split(markers[4], 1)[1].split(markers[5], 1)[0]
     pre_jobs = text.split("jobs:\n", 1)[0]
     required_fragments = (
         "pull_request_target:",
+        "repository_dispatch:",
+        "types: [loop-checkpoints-reconcile]",
         "permissions: {}",
-        "repository: ${{ github.event.pull_request.head.repo.full_name }}",
-        "ref: ${{ github.event.pull_request.head.sha }}",
+        'gh api "repos/${GITHUB_REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}"',
+        "head_sha: ${{ steps.resolve.outputs.head_sha }}",
+        "base_sha: ${{ steps.resolve.outputs.base_sha }}",
+        "repository: ${{ needs.resolve-pull-request.outputs.head_repository }}",
+        "ref: ${{ needs.resolve-pull-request.outputs.head_sha }}",
         "allow-unsafe-pr-checkout: true",
-        "ref: ${{ github.event.pull_request.base.sha }}",
+        "repository: ${{ github.repository }}",
+        "ref: ${{ needs.resolve-pull-request.outputs.base_sha }}",
+        "HARNESS_TRUSTED_REPO_ROOT: ${{ github.workspace }}/trusted",
         'git -c protocol.file.allow=always -C target fetch',
         '"${GITHUB_WORKSPACE}/trusted" "${PR_BASE_SHA}"',
         "python3 -I -B trusted/scripts/check_docs.py",
         "--all --skip-project-check",
         "trusted/scripts/check_loop_checkpoints.py",
         '--base "${PR_BASE_SHA}" --head "${PR_HEAD_SHA}"',
+        '"${live_head_sha}" != "${EXPECTED_HEAD_SHA}"',
+        '"${live_head_repository}" != "${EXPECTED_HEAD_REPOSITORY}"',
+        '"${live_base_sha}" != "${EXPECTED_BASE_SHA}"',
+        "refusing a stale status write",
+        "repos/${GITHUB_REPOSITORY}/dispatches",
+        "event_type=loop-checkpoints-reconcile",
+        "client_payload[pull_request_number]",
     )
     if any(fragment not in text for fragment in required_fragments):
         errors.append(f"Trusted document status workflow is incomplete: {relative}")
@@ -553,13 +724,17 @@ def check_document_status_workflow(
         errors.append(
             f"Trusted document status workflow must isolate exactly two status writers: {relative}"
         )
-    if text.count("actions/checkout@v4") != 3:
+    if text.count("actions/checkout@v7") != 3:
         errors.append(
             f"Trusted document status workflow must use two isolated PR checkouts and one default checkout: {relative}"
         )
     if validation_job.count("persist-credentials: false") != 2:
         errors.append(
             f"Trusted document validation checkouts must disable credential persistence: {relative}"
+        )
+    if validation_job.count("fetch-depth: 0") != 2:
+        errors.append(
+            f"Trusted target and base checkouts must both fetch complete history: {relative}"
         )
     if text.count("allow-unsafe-pr-checkout: true") != 1:
         errors.append(
@@ -582,9 +757,20 @@ def check_document_status_workflow(
         errors.append(
             f"Trusted document validation job cannot write statuses: {relative}"
         )
+    if "github.event.pull_request.head" in validation_job or "github.event.pull_request.base" in validation_job:
+        errors.append(
+            f"Trusted validation must consume live resolver outputs, not event PR identity: {relative}"
+        )
     if "actions/checkout" in pending_job or "actions/checkout" in publisher_job:
         errors.append(
             f"Trusted document status-writing jobs cannot check out repository content: {relative}"
+        )
+    if any(
+        "actions/checkout" in job or "statuses: write" in job
+        for job in (resolver_job, fanout_job)
+    ):
+        errors.append(
+            f"Trusted resolver and dispatch fanout cannot check out content or write statuses: {relative}"
         )
     if "statuses: write" not in pending_job or "statuses: write" not in publisher_job:
         errors.append(
@@ -734,16 +920,13 @@ def validate_repo() -> tuple[list[str], dict[str, object]]:
         contract: dict[str, object] = {}
     else:
         contract = load_json(contract_path, errors, "repo contract")
+    trusted_manifest = load_trusted_manifest(errors)
 
-    required_paths = manifest.get("required_paths", [])
-    if not isinstance(required_paths, list) or not all(
-        isinstance(value, str) for value in required_paths
-    ):
-        errors.append("doc-sync-rules required_paths must be a list of strings")
-        required_paths = []
+    required_paths = required_paths_from(manifest, errors, "doc-sync-rules")
     for relative_path in required_paths:
         if not exact_case_path_exists(relative_path):
             errors.append(f"Missing or case-mismatched required path: {relative_path}")
+    check_trusted_required_paths(trusted_manifest, required_paths, errors)
     check_deferred_paths(manifest, required_paths, errors)
     check_document_status_workflow(manifest, required_paths, errors)
     check_additional_required_checks(manifest, required_paths, errors)
@@ -755,7 +938,12 @@ def validate_repo() -> tuple[list[str], dict[str, object]]:
 
     for markdown_path in markdown_files(manifest):
         for raw, linked in extract_links(markdown_path):
-            if not linked.is_relative_to(ROOT):
+            if linked is None:
+                errors.append(
+                    f"Non-portable site-root link in "
+                    f"{markdown_path.relative_to(ROOT).as_posix()}: {raw}"
+                )
+            elif not linked.is_relative_to(ROOT):
                 errors.append(
                     f"Repository link escapes the checkout in "
                     f"{markdown_path.relative_to(ROOT).as_posix()}: {raw}"
@@ -782,7 +970,9 @@ def validate_repo() -> tuple[list[str], dict[str, object]]:
             errors.append(f"Entrypoint source missing or case-mismatched: {source_value}")
             continue
         source = ROOT / source_value
-        linked_targets = {path for _, path in extract_links(source)}
+        linked_targets = {
+            path for _, path in extract_links(source) if path is not None
+        }
         for target in targets:
             if not isinstance(target, str):
                 errors.append(f"Entrypoint {source_value} has a non-string target")
@@ -865,6 +1055,7 @@ def validate_repo() -> tuple[list[str], dict[str, object]]:
                     )
 
     check_active_plans(errors)
+    check_target_invariants(trusted_manifest, errors)
     return errors, manifest
 
 

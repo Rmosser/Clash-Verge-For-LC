@@ -108,5 +108,7 @@
     "emitter": "trusted_commit_status",
     "required_on": "main"
   },
-  "additional_required_checks": []
+  "additional_required_checks": [],
+  "diff_classes": {},
+  "target_invariants": []
 }

@@ -9,6 +9,7 @@ current head SHA and no current-head Codex finding is present.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -185,6 +186,42 @@ def load_contract() -> dict[str, Any]:
     return payload
 
 
+def load_review_required_patterns() -> tuple[str, ...]:
+    docs_roots = [
+        child for child in ROOT.iterdir() if child.name in {"docs", "Docs"}
+    ]
+    if len(docs_roots) != 1:
+        raise GateError("expected exactly one real docs/ or Docs/ governance root")
+    docs_root = docs_roots[0]
+    if docs_root.is_symlink() or not docs_root.is_dir():
+        raise GateError("docs/ or Docs/ governance root must be a real directory")
+    path = docs_root / "doc-sync-rules.json"
+    if path.is_symlink():
+        raise GateError("doc sync rules must be a regular file, not a symlink")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise GateError(f"cannot read doc sync rules: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise GateError("doc sync rules must be a JSON object")
+    diff_classes = payload.get("diff_classes", {})
+    if not isinstance(diff_classes, dict):
+        raise GateError("doc-sync-rules diff_classes must be an object")
+    patterns: list[str] = []
+    for name, spec in diff_classes.items():
+        if not isinstance(spec, dict) or spec.get("requires_codex_review") is not True:
+            continue
+        paths = spec.get("paths")
+        if not isinstance(paths, list) or not all(
+            isinstance(value, str) and value for value in paths
+        ):
+            raise GateError(
+                f"diff class {name} requires Codex review but has invalid paths"
+            )
+        patterns.extend(paths)
+    return tuple(patterns)
+
+
 def review_contract(contract: dict[str, Any]) -> dict[str, Any]:
     value = contract.get("codex_review")
     if not isinstance(value, dict):
@@ -249,7 +286,9 @@ def recognized_commented_review_body(body: str, head_sha: str) -> bool:
     )
 
 
-def trivial_path(path: str) -> bool:
+def trivial_path(path: str, review_required_patterns: tuple[str, ...]) -> bool:
+    if any(fnmatch.fnmatchcase(path, pattern) for pattern in review_required_patterns):
+        return False
     if path in TRIVIAL_FILES:
         return True
     normalized = path.casefold()
@@ -332,10 +371,11 @@ def evaluate(
         isinstance(declared_changed_files, int)
         and declared_changed_files > len(files)
     )
+    review_required_patterns = load_review_required_patterns()
     is_trivial = (
         not files_truncated
         and bool(paths)
-        and all(trivial_path(path) for path in paths)
+        and all(trivial_path(path, review_required_patterns) for path in paths)
     )
     required = review_contract(contract).get("required_for_non_trivial_pr") is True
     changed_control_paths = sorted(
@@ -392,6 +432,8 @@ def evaluate(
 
     def after_latest_trigger(item: dict[str, Any]) -> bool:
         timestamp = artifact_time(item)
+        # GitHub exposes only second precision here. Equal timestamps cannot
+        # prove causal order across the issue, review, and inline-comment APIs.
         return bool(timestamp and timestamp > trigger_time)
 
     current_reviews = [
@@ -440,6 +482,12 @@ def evaluate(
             blockers.append(
                 "Codex APPROVED review contains non-clean text for the current head"
             )
+        if state == "COMMENTED" and not recognized_commented_review_body(
+            body, head_sha
+        ):
+            blockers.append(
+                "Codex COMMENTED review is incomplete or unrecognized for the current head"
+            )
     if current_inline:
         blockers.append(
             f"Codex left {len(current_inline)} inline finding(s) on the current head"
@@ -476,7 +524,6 @@ def evaluate(
         body = str(comment.get("body") or "")
         if (
             actor_login(comment) in authors
-            and "codex review:" in body.lower()
             and reviewed_head(body, head_sha)
             and clean_body(body)
             and not finding_body(body)

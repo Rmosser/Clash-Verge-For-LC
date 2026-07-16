@@ -1,9 +1,11 @@
 name: docs-ci
-# HARNESS_TRUSTED_DOC_STATUS_V2
+# HARNESS_TRUSTED_DOC_STATUS_V3
 
 on:
   pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited]
+  repository_dispatch:
+    types: [loop-checkpoints-reconcile]
   push:
     branches:
       - main
@@ -11,13 +13,62 @@ on:
 permissions: {}
 
 concurrency:
-  group: docs-ci-${{ github.event.pull_request.number || github.ref }}
+  group: docs-ci-${{ github.event.pull_request.number || github.event.client_payload.pull_request_number || github.ref }}
   cancel-in-progress: false
 
 jobs:
+  resolve-pull-request:
+    name: resolve-live-pull-request
+    if: github.event_name == 'pull_request_target' || github.event_name == 'repository_dispatch'
+    permissions:
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    outputs:
+      pull_request_number: ${{ steps.resolve.outputs.pull_request_number }}
+      head_sha: ${{ steps.resolve.outputs.head_sha }}
+      head_repository: ${{ steps.resolve.outputs.head_repository }}
+      base_sha: ${{ steps.resolve.outputs.base_sha }}
+      base_ref: ${{ steps.resolve.outputs.base_ref }}
+    steps:
+      - name: Resolve and bind the live pull request
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number || github.event.client_payload.pull_request_number }}
+        shell: bash
+        run: |
+          if [[ ! "${PULL_REQUEST_NUMBER}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Invalid pull request number: ${PULL_REQUEST_NUMBER}" >&2
+            exit 1
+          fi
+          pull_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}")"
+          state="$(jq -r '.state' <<<"${pull_json}")"
+          base_repository="$(jq -r '.base.repo.full_name' <<<"${pull_json}")"
+          base_ref="$(jq -r '.base.ref' <<<"${pull_json}")"
+          base_sha="$(jq -r '.base.sha' <<<"${pull_json}")"
+          head_repository="$(jq -r '.head.repo.full_name // empty' <<<"${pull_json}")"
+          head_sha="$(jq -r '.head.sha' <<<"${pull_json}")"
+          if [[ "${state}" != open || "${base_repository}" != "${GITHUB_REPOSITORY}" || "${base_ref}" != main ]]; then
+            echo "Pull request is not an open PR against ${GITHUB_REPOSITORY}:main" >&2
+            exit 1
+          fi
+          if [[ -z "${head_repository}" || ! "${head_sha}" =~ ^[0-9a-f]{40}$ || ! "${base_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Pull request head/base identity is incomplete" >&2
+            exit 1
+          fi
+          {
+            echo "pull_request_number=${PULL_REQUEST_NUMBER}"
+            echo "head_sha=${head_sha}"
+            echo "head_repository=${head_repository}"
+            echo "base_sha=${base_sha}"
+            echo "base_ref=${base_ref}"
+          } >>"${GITHUB_OUTPUT}"
+
   mark-checkpoints-pending:
     name: mark-loop-checkpoints-pending
-    if: github.event_name == 'pull_request_target'
+    if: ${{ always() && needs.resolve-pull-request.result == 'success' }}
+    needs: resolve-pull-request
     permissions:
       contents: read
       statuses: write
@@ -26,7 +77,7 @@ jobs:
       - name: Mark the live PR head pending
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_SHA: ${{ needs.resolve-pull-request.outputs.head_sha }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         shell: bash
         run: |
@@ -39,32 +90,34 @@ jobs:
 
   pull-request-checkpoints:
     name: trusted-loop-checkpoints
-    if: ${{ always() && github.event_name == 'pull_request_target' }}
-    needs: mark-checkpoints-pending
+    if: ${{ always() && needs.resolve-pull-request.result == 'success' }}
+    needs: [resolve-pull-request, mark-checkpoints-pending]
     permissions:
       contents: read
       pull-requests: read
     runs-on: ubuntu-latest
     steps:
       - name: Check out the untrusted validation target as data
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
+          repository: ${{ needs.resolve-pull-request.outputs.head_repository }}
+          ref: ${{ needs.resolve-pull-request.outputs.head_sha }}
           # This checkout is parsed as data only; target code is never executed here.
           allow-unsafe-pr-checkout: true
           fetch-depth: 0
           path: target
           persist-credentials: false
       - name: Check out verifiers from the trusted PR base
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          repository: ${{ github.repository }}
+          ref: ${{ needs.resolve-pull-request.outputs.base_sha }}
+          fetch-depth: 0
           path: trusted
           persist-credentials: false
       - name: Make the trusted base available to the validation clone
         env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_SHA: ${{ needs.resolve-pull-request.outputs.base_sha }}
         shell: bash
         run: |
           git -c protocol.file.allow=always -C target fetch \
@@ -76,8 +129,9 @@ jobs:
       - name: Evaluate with trusted code
         env:
           HARNESS_REPO_ROOT: ${{ github.workspace }}/target
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HARNESS_TRUSTED_REPO_ROOT: ${{ github.workspace }}/trusted
+          PR_BASE_SHA: ${{ needs.resolve-pull-request.outputs.base_sha }}
+          PR_HEAD_SHA: ${{ needs.resolve-pull-request.outputs.head_sha }}
         shell: bash
         run: |
           python3 -I -B trusted/scripts/check_docs.py \
@@ -87,21 +141,36 @@ jobs:
 
   publish-checkpoints-result:
     name: publish-loop-checkpoints-result
-    if: ${{ always() && github.event_name == 'pull_request_target' }}
-    needs: [mark-checkpoints-pending, pull-request-checkpoints]
+    if: ${{ always() && needs.resolve-pull-request.result == 'success' }}
+    needs: [resolve-pull-request, mark-checkpoints-pending, pull-request-checkpoints]
     permissions:
       contents: read
+      pull-requests: read
       statuses: write
     runs-on: ubuntu-latest
     steps:
-      - name: Publish the validation result to the live PR head
+      - name: Publish only if the pull request identity is still live
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PULL_REQUEST_NUMBER: ${{ needs.resolve-pull-request.outputs.pull_request_number }}
+          EXPECTED_HEAD_SHA: ${{ needs.resolve-pull-request.outputs.head_sha }}
+          EXPECTED_HEAD_REPOSITORY: ${{ needs.resolve-pull-request.outputs.head_repository }}
+          EXPECTED_BASE_SHA: ${{ needs.resolve-pull-request.outputs.base_sha }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           VALIDATION_RESULT: ${{ needs.pull-request-checkpoints.result }}
         shell: bash
         run: |
+          pull_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}")"
+          live_state="$(jq -r '.state' <<<"${pull_json}")"
+          live_base_repository="$(jq -r '.base.repo.full_name' <<<"${pull_json}")"
+          live_base_ref="$(jq -r '.base.ref' <<<"${pull_json}")"
+          live_base_sha="$(jq -r '.base.sha' <<<"${pull_json}")"
+          live_head_repository="$(jq -r '.head.repo.full_name // empty' <<<"${pull_json}")"
+          live_head_sha="$(jq -r '.head.sha' <<<"${pull_json}")"
+          if [[ "${live_state}" != open || "${live_base_repository}" != "${GITHUB_REPOSITORY}" || "${live_base_ref}" != main || "${live_head_repository}" != "${EXPECTED_HEAD_REPOSITORY}" || "${live_head_sha}" != "${EXPECTED_HEAD_SHA}" || "${live_base_sha}" != "${EXPECTED_BASE_SHA}" ]]; then
+            echo "Pull request identity changed during validation; refusing a stale status write."
+            exit 1
+          fi
           if [[ "${VALIDATION_RESULT}" == success ]]; then
             state=success
             description='Trusted checkpoint evidence is complete.'
@@ -110,11 +179,38 @@ jobs:
             description='Trusted checkpoint evidence failed.'
           fi
           gh api --method POST \
-            "repos/${GITHUB_REPOSITORY}/statuses/${PR_HEAD_SHA}" \
+            "repos/${GITHUB_REPOSITORY}/statuses/${EXPECTED_HEAD_SHA}" \
             -f state="${state}" \
             -f context=loop/checkpoints \
             -f description="${description}" \
             -f target_url="${RUN_URL}"
+
+  dispatch-open-pull-requests:
+    name: reconcile-open-pull-requests
+    if: github.event_name == 'push'
+    needs: default-branch-checkpoints
+    permissions:
+      contents: write
+      pull-requests: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reconcile every open PR against the new trusted base
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
+            --jq '.[].number' |
+          while IFS= read -r pull_request_number; do
+            [[ -n "${pull_request_number}" ]] || continue
+            gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/dispatches" \
+              -f event_type=loop-checkpoints-reconcile \
+              -F "client_payload[pull_request_number]=${pull_request_number}" \
+              -f "client_payload[triggering_default_sha]=${DEFAULT_SHA}"
+          done
 
   default-branch-checkpoints:
     name: default-branch-docs-check
@@ -123,7 +219,7 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-python@v5

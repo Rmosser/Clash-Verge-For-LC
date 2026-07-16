@@ -159,6 +159,15 @@ def default_base() -> str:
 
 
 def find_active_plan() -> Path | None:
+    for path, label in (
+        (ACTIVE_DIR.parent, "exec-plans directory"),
+        (ACTIVE_DIR, "active-plan directory"),
+    ):
+        if path.is_symlink() or not path.is_dir():
+            fail([
+                f"{label} must be a real directory, not a symlink: "
+                f"{path.relative_to(ROOT)}"
+            ])
     plans = sorted(
         path for path in ACTIVE_DIR.glob("*.md") if path.name != ".gitkeep"
     )
