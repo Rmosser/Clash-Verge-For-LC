@@ -112,5 +112,10 @@
   },
   "additional_required_checks": [],
   "diff_classes": {},
-  "target_invariants": []
+  "target_invariants": [
+    {
+      "type": "active_plan_index_link",
+      "index": "docs/index.md"
+    }
+  ]
 }

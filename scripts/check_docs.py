@@ -175,6 +175,7 @@ TRUSTED_CONTROL_FILES = (
     ".harness/repo-contract.json",
     ".github/workflows/codex-review-gate.yml",
     ".github/workflows/codex-review-heartbeat.yml",
+    ".github/workflows/codex-review-signal.yml",
     "scripts/check_codex_review.py",
     "scripts/check_docs.py",
     "scripts/check_loop_checkpoints.py",

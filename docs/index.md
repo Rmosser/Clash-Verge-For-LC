@@ -14,6 +14,7 @@
 - [AGENTS.md](../AGENTS.md)：Agent 入口层和最小工作规则。
 - [docs/governance/checkpoint-ci-gate.md](governance/checkpoint-ci-gate.md)：Agent CI/CD 证据门禁。
 - [docs/exec-plans/template.md](exec-plans/template.md)：非平凡任务 Active Plan 模板。
+- [当前 Harness Active Plan](exec-plans/active/2026-07-07-harness-delegation-upgrade.md)：当前 rollout、验证和归档收尾证据。
 - [docs/exec-plans/active/](exec-plans/active/)：当前唯一 Active Plan 所在目录。
 - [docs/exec-plans/completed/](exec-plans/completed/)：已完成或被取代计划归档目录。
 - [docs/doc-sync-rules.json](doc-sync-rules.json)：文档同步和入口链接规则。

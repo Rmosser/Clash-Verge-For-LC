@@ -165,12 +165,6 @@ STANDARD_FOOTER_CLEAN_BODY_RE = re.compile(
     + r"\s*$",
     re.IGNORECASE,
 )
-LEGACY_COMMENTED_DETAILS_PATTERN = (
-    r"<details>\s*<summary>[^\r\n]*About Codex in GitHub</summary>\s*"
-    r"If Codex has suggestions, it will comment;\s*"
-    r"otherwise it will react with\s*(?:approval|\U0001f44d\ufe0f?)\.\s*"
-    r"</details>"
-)
 FULL_CLEAN_ISSUE_COMMENT_RE = re.compile(
     r"^\s*Codex Review:\s*Didn't find any major issues\.\s*"
     r"(?:"
@@ -180,18 +174,6 @@ FULL_CLEAN_ISSUE_COMMENT_RE = re.compile(
     + r"\s*`[0-9a-f]{10,40}`\s*"
     + STANDARD_CODEX_DETAILS_PATTERN
     + r"\s*$",
-    re.IGNORECASE,
-)
-COMMENTED_CLEAN_BODY_RE = re.compile(
-    r"^\s*#{1,6}\s*[^\r\n]*Codex Review\s*"
-    r"Here are some automated review suggestions for this pull request\.\s*"
-    + REVIEWED_COMMIT_LABEL_PATTERN
-    + r"\s*`[0-9a-f]{10,40}`\s*"
-    r"(?:"
-    + STANDARD_CODEX_DETAILS_PATTERN
-    + r"|"
-    + LEGACY_COMMENTED_DETAILS_PATTERN
-    + r")\s*$",
     re.IGNORECASE,
 )
 INCOMPLETE_REVIEW_RE = re.compile(
@@ -430,10 +412,7 @@ def finding_body(body: str) -> bool:
 def recognized_commented_review_body(body: str, head_sha: str) -> bool:
     if INCOMPLETE_REVIEW_RE.search(body):
         return False
-    return clean_body(body) or (
-        reviewed_head(body, head_sha)
-        and bool(COMMENTED_CLEAN_BODY_RE.fullmatch(body))
-    )
+    return clean_body(body)
 
 
 def trivial_path(path: str, review_required_patterns: tuple[str, ...]) -> bool:
