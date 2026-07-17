@@ -593,6 +593,34 @@ def resolve_standalone_base(
     return True, resolved
 
 
+def optional_standalone_head() -> str | None:
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+        }
+    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "--verify", "HEAD^{commit}"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    resolved = result.stdout.strip().lower()
+    if result.returncode != 0 or FULL_SHA_RE.fullmatch(resolved) is None:
+        return None
+    return resolved
+
+
 def standalone_tree_plan(
     base_sha: str, relative: str, errors: list[str]
 ) -> tuple[bool, str | None, bytes | None]:
@@ -663,6 +691,47 @@ def standalone_tree_plan(
         errors.append(f"standalone base blob is not strict UTF-8: {relative}")
         return False, None, None
     return True, mode, blob
+
+
+def standalone_completed_plan_relatives(
+    base_sha: str, errors: list[str]
+) -> set[str] | None:
+    docs_relative = DOCS_ROOT.relative_to(ROOT).as_posix()
+    completed_prefix = f"{docs_relative}/exec-plans/completed/"
+    output = git_plumbing_output(
+        [
+            "ls-tree",
+            "-r",
+            "-z",
+            "--name-only",
+            "--full-tree",
+            base_sha,
+            "--",
+            f":(literal){completed_prefix}",
+        ],
+        f"list standalone completed plans at {base_sha}",
+        errors,
+        1024 * 1024,
+    )
+    if output is None:
+        return None
+    if output and not output.endswith(b"\0"):
+        errors.append("malformed standalone completed-plan inventory")
+        return None
+    relatives: set[str] = set()
+    for raw_path in output.rstrip(b"\0").split(b"\0") if output else ():
+        try:
+            relative = raw_path.decode("utf-8")
+        except UnicodeDecodeError:
+            errors.append("standalone completed-plan inventory contains non-UTF-8 path")
+            return None
+        path = Path(relative)
+        if (
+            path.parent.as_posix() == completed_prefix.rstrip("/")
+            and path.suffix == ".md"
+        ):
+            relatives.add(relative)
+    return relatives
 
 
 def check_trusted_control_files(errors: list[str]) -> None:
@@ -1024,6 +1093,29 @@ def completed_plans(errors: list[str]) -> list[Path]:
     return plan_files(COMPLETED_PLAN_DIR, "Completed plan", errors)
 
 
+def trusted_completed_plan_relatives(errors: list[str]) -> set[str]:
+    directory = TRUSTED_DOCS_ROOT / "exec-plans" / "completed"
+    if directory.is_symlink() or not directory.is_dir():
+        errors.append(
+            "trusted completed-plan directory must be a real directory, not a symlink: "
+            f"{directory}"
+        )
+        return set()
+    relatives: set[str] = set()
+    for path in sorted(directory.iterdir()):
+        if path.name == ".gitkeep":
+            continue
+        relative = path.relative_to(TRUSTED_ROOT).as_posix()
+        if path.is_symlink() or not path.is_file() or path.suffix != ".md":
+            errors.append(
+                "Trusted completed-plan bookkeeping must contain only regular lowercase "
+                f".md files: {relative}"
+            )
+            continue
+        relatives.add(relative)
+    return relatives
+
+
 def require_lifecycle_value(
     text: str,
     plan: Path,
@@ -1145,14 +1237,32 @@ def check_active_plans(errors: list[str]) -> None:
 
 def check_completed_plans(errors: list[str]) -> None:
     plans = completed_plans(errors)
+    target_relatives = {plan.relative_to(ROOT).as_posix() for plan in plans}
     standalone_base: str | None = None
     if TRUSTED_ROOT == ROOT:
         advertised_sha = os.environ.get(STANDALONE_BASE_ENV)
-        if advertised_sha is None:
+        if advertised_sha is not None:
+            valid_base, standalone_base = resolve_standalone_base(advertised_sha, errors)
+            if not valid_base:
+                return
+        else:
+            standalone_base = optional_standalone_head()
+    if TRUSTED_ROOT != ROOT:
+        trusted_relatives = trusted_completed_plan_relatives(errors)
+        for relative in sorted(trusted_relatives - target_relatives):
+            errors.append(
+                "Completed plan content and mode are immutable after archival; deletion "
+                f"is forbidden: {relative}"
+            )
+    elif standalone_base is not None:
+        base_relatives = standalone_completed_plan_relatives(standalone_base, errors)
+        if base_relatives is None:
             return
-        valid_base, standalone_base = resolve_standalone_base(advertised_sha, errors)
-        if not valid_base:
-            return
+        for relative in sorted(base_relatives - target_relatives):
+            errors.append(
+                "Completed plan content and mode are immutable after archival; deletion "
+                f"is forbidden: {relative}"
+            )
     for plan in plans:
         relative = plan.relative_to(ROOT).as_posix()
         target_metadata: list[os.stat_result] = []
@@ -1595,7 +1705,7 @@ def check_document_status_workflow(
         "  dispatch-open-pull-requests:\n",
         "  default-branch-checkpoints:\n",
     )
-    if "# HARNESS_TRUSTED_DOC_STATUS_V3" not in text or any(
+    if "# HARNESS_TRUSTED_DOC_STATUS_V4" not in text or any(
         marker not in text for marker in markers
     ):
         errors.append(f"Trusted document status workflow contract is missing: {relative}")
@@ -2137,15 +2247,23 @@ def validate_repo() -> tuple[list[str], dict[str, object]]:
                 "source_isolated": False,
                 "required_check_activation": "required_after_live_emitter_smoke",
                 "required_check_activation_scope": "per_repository",
+                "trusted_status_workflow": ".github/workflows/codex-review-gate.yml",
+                "review_signal_workflow": ".github/workflows/codex-review-signal.yml",
+                "review_signal_events": [
+                    "pull_request_review",
+                    "pull_request_review_comment",
+                ],
                 "trusted_events": [
                     "pull_request_target",
                     "issue_comment",
                     "repository_dispatch",
+                    "workflow_run",
                 ],
                 "status_writer_events": [
                     "pull_request_target",
                     "issue_comment",
                     "repository_dispatch",
+                    "workflow_run",
                 ],
                 "heartbeat_event": "schedule",
                 "artifact_binding": "live_pr_head_sha",

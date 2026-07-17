@@ -1,5 +1,5 @@
 name: docs-ci
-# HARNESS_TRUSTED_DOC_STATUS_V3
+# HARNESS_TRUSTED_DOC_STATUS_V4
 
 on:
   pull_request_target:
@@ -37,6 +37,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number || github.event.client_payload.pull_request_number }}
+          TRIGGERING_DEFAULT_SHA: ${{ github.event.client_payload.triggering_default_sha || '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -59,6 +60,12 @@ jobs:
           if [[ -z "${head_repository}" || ! "${head_sha}" =~ ^[0-9a-f]{40}$ || ! "${base_sha}" =~ ^[0-9a-f]{40}$ ]]; then
             echo "Pull request head/base identity is incomplete" >&2
             exit 1
+          fi
+          if [[ "${GITHUB_EVENT_NAME}" == repository_dispatch ]]; then
+            if [[ ! "${TRIGGERING_DEFAULT_SHA}" =~ ^[0-9a-f]{40}$ || "${TRIGGERING_DEFAULT_SHA}" != "${base_sha}" ]]; then
+              echo "Stale or malformed default-branch reconciliation payload." >&2
+              exit 1
+            fi
           fi
           {
             echo "pull_request_number=${PULL_REQUEST_NUMBER}"

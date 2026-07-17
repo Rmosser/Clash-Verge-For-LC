@@ -1059,7 +1059,43 @@ def publish_pending(
         pending_status_description(expected_identity),
         target_url,
     )
-    return True
+    return fail_closed_after_status_write(
+        api,
+        repository,
+        pr_number,
+        expected_identity,
+        context,
+        target_url,
+    )
+
+
+def fail_closed_after_status_write(
+    api: GitHubAPI,
+    repository: str,
+    pr_number: int,
+    expected_identity: PullIdentity,
+    context: str,
+    target_url: str,
+) -> bool:
+    try:
+        live_identity = pull_identity(live_pull(api, repository, pr_number), repository)
+        if same_pull_identity(live_identity, expected_identity):
+            return True
+    except GateError:
+        pass
+    post_status(
+        api,
+        repository,
+        expected_identity.head_sha,
+        "failure",
+        context,
+        bound_status_description(
+            "PR identity changed after codex-review status write.",
+            expected_identity.base_sha,
+        ),
+        target_url,
+    )
+    return False
 
 
 def publish_status(
@@ -1087,7 +1123,55 @@ def publish_status(
         bound_status_description(result.description, expected_identity.base_sha),
         target_url,
     )
-    return True
+    return fail_closed_after_status_write(
+        api,
+        repository,
+        pr_number,
+        expected_identity,
+        context,
+        target_url,
+    )
+
+
+def publish_pending_before_evaluation(
+    api: GitHubAPI,
+    repository: str,
+    pr_number: int,
+    expected_identity: PullIdentity,
+    context: str,
+    target_url: str,
+    status_app_id: int,
+    *,
+    force: bool,
+) -> bool:
+    latest_status = latest_status_for_identity(
+        api,
+        repository,
+        pr_number,
+        expected_identity,
+        context,
+    )
+    if status_matches_pending(
+        latest_status, context, expected_identity, status_app_id
+    ):
+        return True
+    current_base_suffix = f"; base={expected_identity.base_sha}."
+    if (
+        not force
+        and trusted_status_writer(latest_status, status_app_id)
+        and latest_status.get("context") == context
+        and latest_status.get("state") in {"success", "failure"}
+        and str(latest_status.get("description") or "").endswith(current_base_suffix)
+    ):
+        return True
+    return publish_pending(
+        api,
+        repository,
+        pr_number,
+        expected_identity,
+        context,
+        target_url,
+    )
 
 
 def publish_status_if_changed(
@@ -1249,6 +1333,19 @@ def main() -> int:
                     "issue_comments": [],
                 }
             else:
+                if args.publish and not publish_pending_before_evaluation(
+                    api,
+                    args.repository,
+                    pr_number,
+                    initial_identity,
+                    context,
+                    args.target_url,
+                    status_app_id,
+                    force=os.environ.get("HARNESS_FORCE_EARLY_PENDING") == "1",
+                ):
+                    raise GateError(
+                        "pull request identity changed while marking review pending"
+                    )
                 payload = live_payload(
                     api, args.repository, pr_number, initial_identity, contract
                 )

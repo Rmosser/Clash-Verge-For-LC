@@ -1,5 +1,5 @@
 name: codex-review-gate
-run-name: codex-review-gate pr-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr_number }}
+run-name: codex-review-gate pr-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr_number || github.event.workflow_run.pull_requests[0].number }}
 
 on:
   pull_request_target:
@@ -9,19 +9,22 @@ on:
     types: [created, edited, deleted]
   repository_dispatch:
     types: [codex-review-reconcile]
+  workflow_run:
+    workflows: [codex-review-signal]
+    types: [completed]
   push:
     branches: [main]
 
 permissions: {}
 
 concurrency:
-  group: codex-review-gate-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr_number || github.ref }}
+  group: codex-review-gate-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr_number || github.event.workflow_run.pull_requests[0].number || github.ref }}
   cancel-in-progress: false
 
 jobs:
   reconcile:
     name: refresh-codex-review-status
-    if: ${{ github.event_name == 'pull_request_target' || github.event_name == 'repository_dispatch' || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null) }}
+    if: ${{ github.event_name == 'pull_request_target' || github.event_name == 'repository_dispatch' || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null) || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && (github.event.workflow_run.event == 'pull_request_review' || github.event.workflow_run.event == 'pull_request_review_comment') && github.event.workflow_run.pull_requests[0].number != null) }}
     permissions:
       contents: read
       issues: read
@@ -40,8 +43,9 @@ jobs:
       - name: Reconcile Codex evidence against the live PR head
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr_number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr_number || github.event.workflow_run.pull_requests[0].number }}
           EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+          HARNESS_FORCE_EARLY_PENDING: ${{ github.event_name == 'workflow_run' && '1' || '0' }}
           GITHUB_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         shell: bash
         run: |

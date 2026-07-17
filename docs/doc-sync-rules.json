@@ -14,7 +14,8 @@
     "scripts/check_loop_checkpoints.py",
     ".github/workflows/codex-review-gate.yml",
     "scripts/check_codex_review.py",
-    ".github/workflows/codex-review-heartbeat.yml"
+    ".github/workflows/codex-review-heartbeat.yml",
+    ".github/workflows/codex-review-signal.yml"
   ],
   "entrypoint_links": [
     {
@@ -107,7 +108,7 @@
     "workflow": ".github/workflows/docs-ci.yml",
     "emitter": "trusted_commit_status",
     "required_on": "main",
-    "workflow_sha256": "a503526fae8f0161d6d8860ecb246139c311c481dfd1e63417f01a97ac38e086"
+    "workflow_sha256": "7f9ba1873f66222ff2531df615c9dea194ff29836a8b221388a4d455d20a1ea7"
   },
   "additional_required_checks": [],
   "diff_classes": {},

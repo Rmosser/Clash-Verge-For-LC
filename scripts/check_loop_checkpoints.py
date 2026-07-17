@@ -442,6 +442,41 @@ def changed_files(base: str, head: str, *, worktree_only: bool = False) -> list[
     return sorted(files)
 
 
+def completed_plan_comparison_ref(
+    base: str, head: str, *, worktree_only: bool
+) -> str:
+    if worktree_only:
+        return head
+    if ref_exists(base) and ref_exists(head):
+        base_sha = git_output("rev-parse", base).strip()
+        head_sha = git_output("rev-parse", head).strip()
+        if base_sha != head_sha:
+            return git_output("merge-base", base, head).strip()
+    return base
+
+
+def reject_deleted_completed_plans(changed_paths: list[str], comparison_ref: str) -> None:
+    completed_prefix = f"{DOCS_ROOT_NAME}/exec-plans/completed/"
+    deleted: list[str] = []
+    for relative in changed_paths:
+        if not relative.startswith(completed_prefix) or not relative.endswith(".md"):
+            continue
+        target = ROOT / relative
+        if target.exists() or target.is_symlink():
+            continue
+        if subprocess.run(
+            ["git", "-C", str(ROOT), "cat-file", "-e", f"{comparison_ref}:{relative}"],
+            capture_output=True,
+            text=True,
+        ).returncode == 0:
+            deleted.append(relative)
+    if deleted:
+        fail([
+            "completed plans are immutable archive evidence and cannot be deleted or renamed",
+            *[f"deleted completed plan: {relative}" for relative in sorted(deleted)],
+        ])
+
+
 def matches_pattern(path: str, pattern: str) -> bool:
     if pattern.endswith("/"):
         return path.startswith(pattern)
@@ -790,6 +825,12 @@ def main() -> None:
     base = args.base or ("HEAD" if args.worktree_only else default_base())
 
     changed = changed_files(base, args.head, worktree_only=args.worktree_only)
+    reject_deleted_completed_plans(
+        changed,
+        completed_plan_comparison_ref(
+            base, args.head, worktree_only=args.worktree_only
+        ),
+    )
     plan, bookkeeping_allowed = find_active_plan(set(changed))
     allows, denies = scope_patterns(plan) if plan else ([], [])
     required_plan_patterns, policy_denies, archive_indexes = scope_policy()
