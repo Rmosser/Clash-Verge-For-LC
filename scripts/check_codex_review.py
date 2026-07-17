@@ -97,7 +97,8 @@ REVIEWED_COMMIT_FIELD_RE = re.compile(
 VALID_REVIEWED_COMMIT_RE = re.compile(r"[0-9a-f]{10,40}", re.IGNORECASE)
 TRIGGER_RE = re.compile(r"^\s*@codex\s+review\s*$", re.IGNORECASE | re.MULTILINE)
 TRIGGER_HEAD_RE = re.compile(
-    r"^\s*(?:\*\*)?Head SHA(?:\*\*)?:\s*`?([0-9a-f]{40})`?\s*$",
+    r"^\s*(?:\*\*Head SHA(?::\*\*|\*\*:)|Head SHA:)\s*"
+    r"`?([0-9a-f]{40})`?\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
 FINDING_RE = re.compile(
@@ -428,7 +429,10 @@ def recognized_commented_review_body(body: str, head_sha: str) -> bool:
 
 
 def trivial_path(path: str, review_required_patterns: tuple[str, ...]) -> bool:
-    if any(fnmatch.fnmatchcase(path, pattern) for pattern in review_required_patterns):
+    if any(
+        path.startswith(pattern) if pattern.endswith("/") else fnmatch.fnmatchcase(path, pattern)
+        for pattern in review_required_patterns
+    ):
         return False
     if path in TRIVIAL_FILES:
         return True
@@ -644,11 +648,19 @@ def evaluate(
     current_reviews = [
         item for item in current_review_round if after_latest_trigger(item)
     ]
+    current_review_ids = {
+        str(item.get("id"))
+        for item in current_review_round
+        if item.get("id") is not None
+    }
     current_inline = [
         item
         for item in review_comments
         if trusted_codex_actor(item, authors)
-        and str(item.get("commit_id") or "").lower() == head_sha
+        and (
+            str(item.get("commit_id") or "").lower() == head_sha
+            or str(item.get("pull_request_review_id")) in current_review_ids
+        )
         and at_or_after_latest_trigger(item)
     ]
     current_issue_findings: list[dict[str, Any]] = []

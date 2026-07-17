@@ -736,6 +736,57 @@ def standalone_completed_plan_relatives(
     return relatives
 
 
+def standalone_active_plan_relatives(
+    base_sha: str, errors: list[str]
+) -> set[str] | None:
+    docs_relative = DOCS_ROOT.relative_to(ROOT).as_posix()
+    active_prefix = f"{docs_relative}/exec-plans/active/"
+    output = git_plumbing_output(
+        [
+            "ls-tree",
+            "-r",
+            "-z",
+            "--name-only",
+            "--full-tree",
+            base_sha,
+            "--",
+            f":(literal){active_prefix}",
+        ],
+        f"list standalone active plans at {base_sha}",
+        errors,
+        1024 * 1024,
+    )
+    if output is None:
+        return None
+    if output and not output.endswith(b"\0"):
+        errors.append("malformed standalone active-plan inventory")
+        return None
+    relatives: set[str] = set()
+    for raw_path in output.rstrip(b"\0").split(b"\0") if output else ():
+        try:
+            relative = raw_path.decode("utf-8")
+        except UnicodeDecodeError:
+            errors.append("standalone active-plan inventory contains non-UTF-8 path")
+            return None
+        path = Path(relative)
+        if path.parent.as_posix() != active_prefix.rstrip("/"):
+            errors.append(
+                "standalone active-plan bookkeeping must contain only direct plan files: "
+                f"{relative}"
+            )
+            continue
+        if path.name == ".gitkeep":
+            continue
+        if path.suffix != ".md":
+            errors.append(
+                "standalone active-plan bookkeeping may contain only lowercase .md "
+                f"files: {relative}"
+            )
+            continue
+        relatives.add(relative)
+    return relatives
+
+
 def check_trusted_control_files(errors: list[str]) -> None:
     target_workflows = workflow_control_relatives(
         ROOT, "target workflow control directory", errors
@@ -898,8 +949,9 @@ def markdown_files(
     return sorted(selected)
 
 
-def extract_links(markdown_path: Path) -> list[tuple[str, Path | None]]:
-    text = markdown_path.read_text(encoding="utf-8")
+def extract_links_from_text(
+    markdown_path: Path, text: str
+) -> list[tuple[str, Path | None]]:
     links: list[tuple[str, Path | None]] = []
     matches = (
         match
@@ -926,6 +978,12 @@ def extract_links(markdown_path: Path) -> list[tuple[str, Path | None]]:
         if target:
             links.append((raw, (markdown_path.parent / target).resolve()))
     return links
+
+
+def extract_links(markdown_path: Path) -> list[tuple[str, Path | None]]:
+    return extract_links_from_text(
+        markdown_path, markdown_path.read_text(encoding="utf-8")
+    )
 
 
 def field_values(text: str, field: str) -> list[str]:
@@ -1461,6 +1519,188 @@ def exact_archive_index_transition(
     return True
 
 
+def exact_standalone_archive_index_transition(
+    index_path: str,
+    active_relative: str,
+    completed_plan: Path,
+    base_sha: str,
+    errors: list[str],
+) -> bool:
+    valid_entry, base_mode, base_blob = standalone_tree_plan(
+        base_sha, index_path, errors
+    )
+    if not valid_entry:
+        return False
+    if base_mode is None or base_blob is None:
+        errors.append(
+            f"standalone base {index_path} must be a regular file for archive cleanup"
+        )
+        return False
+    trusted_text = base_blob.decode("utf-8")
+    target_text = read_regular_text_at(ROOT, index_path, errors)
+    if target_text is None:
+        return False
+
+    source_index = ROOT / index_path
+    target_index = ROOT / index_path
+    active_plan = (ROOT / active_relative).resolve()
+    active_links = [
+        raw
+        for raw, linked in extract_links_from_text(source_index, trusted_text)
+        if linked is not None and linked == active_plan
+    ]
+    if len(active_links) != 1:
+        errors.append(
+            f"standalone base {index_path} must contain exactly one link to the "
+            "Active Plan for an archive cleanup transition"
+        )
+        return False
+    raw = active_links[0]
+    raw_path, separator, fragment = raw.partition("#")
+    active_relative_from_index = os.path.relpath(
+        ROOT / active_relative, source_index.parent
+    ).replace(os.sep, "/")
+    completed_relative = os.path.relpath(
+        completed_plan, target_index.parent
+    ).replace(os.sep, "/")
+    prefix = "./" if raw_path.startswith("./") else ""
+    if (
+        raw_path.removeprefix("./") != active_relative_from_index
+        or trusted_text.count(raw) != 1
+    ):
+        errors.append(
+            f"standalone base {index_path} Active Plan link is not an unambiguous "
+            "repository-relative archive target"
+        )
+        return False
+    completed_raw = prefix + completed_relative
+    if separator:
+        completed_raw += separator + fragment
+    expected = trusted_text.replace(raw, completed_raw, 1)
+    completed_links = [
+        linked
+        for _, linked in extract_links(target_index)
+        if linked is not None and linked == completed_plan.resolve()
+    ]
+    if len(completed_links) != 1 or target_text != expected:
+        errors.append(
+            f"{index_path} archive cleanup may only change the unique Active Plan "
+            "link from active/ to completed/"
+        )
+        return False
+    return True
+
+
+def validate_archive_plan_transition(
+    source_text: str,
+    source_mode: str,
+    completed_plan: Path,
+    errors: list[str],
+) -> bool:
+    completed_relative = completed_plan.relative_to(ROOT).as_posix()
+    completed_metadata: list[os.stat_result] = []
+    completed_text = read_regular_text_at(
+        ROOT, completed_relative, errors, metadata_out=completed_metadata
+    )
+    if completed_text is None:
+        return False
+    target_mode = "100755" if completed_metadata[0].st_mode & 0o111 else "100644"
+    if source_mode != target_mode:
+        errors.append(
+            "archive cleanup may not change the Active Plan file mode while moving "
+            "it to completed/"
+        )
+        return False
+
+    source_status = lifecycle_field_values(source_text, "Status")
+    if len(source_status) != 1 or normalized(source_status[0]) != "active":
+        errors.append(
+            "archive cleanup source must contain exactly one 'Status: active' field"
+        )
+        return False
+    source_archived = lifecycle_field_values(source_text, "Active Plan archived")
+    source_transition = lifecycle_field_values(source_text, "Transition invariant")
+    if (
+        len(source_archived) != 1
+        or normalized(source_archived[0]) == "completed"
+        or len(source_transition) != 1
+        or normalized(source_transition[0]) in COMPLETED_TRANSITION_VALUES
+    ):
+        errors.append(
+            "archive cleanup source contains mixed or already-completed lifecycle state"
+        )
+        return False
+    if any(
+        len(values := lifecycle_field_values(completed_text, field)) != 1
+        or values[0] not in allowed
+        for field, allowed in COMPLETED_LIFECYCLE_CONTRACT.items()
+    ):
+        errors.append(
+            "archive cleanup destination must contain the completed lifecycle contract"
+        )
+        return False
+    source_skeleton = lifecycle_skeleton(source_text)
+    completed_skeleton = lifecycle_skeleton(completed_text)
+    if source_skeleton is None or completed_skeleton is None:
+        errors.append(
+            "archive cleanup plans must contain exactly one of each lifecycle field"
+        )
+        return False
+    if source_skeleton != completed_skeleton:
+        errors.append(
+            "archive cleanup may only change the canonical lifecycle fields in the "
+            "moved plan"
+        )
+        return False
+    return True
+
+
+def exact_standalone_archive_cleanup(
+    index_path: str, base_sha: str, errors: list[str]
+) -> bool:
+    active_relatives = standalone_active_plan_relatives(base_sha, errors)
+    if active_relatives is None:
+        return False
+    if not active_relatives:
+        return True
+    if len(active_relatives) != 1:
+        errors.append(
+            "archive cleanup requires exactly one standalone base Active Plan; found "
+            f"{len(active_relatives)}"
+        )
+        return False
+    active_relative = next(iter(active_relatives))
+    completed_plan = COMPLETED_PLAN_DIR / Path(active_relative).name
+    if completed_plan.is_symlink() or not completed_plan.is_file():
+        errors.append(
+            "archive cleanup must move the standalone base Active Plan to the same "
+            f"regular completed filename: {completed_plan.relative_to(ROOT).as_posix()}"
+        )
+        return False
+
+    valid_entry, source_mode, source_blob = standalone_tree_plan(
+        base_sha, active_relative, errors
+    )
+    if not valid_entry:
+        return False
+    if source_mode is None or source_blob is None:
+        errors.append("standalone base Active Plan must be a regular file")
+        return False
+    source_text = source_blob.decode("utf-8")
+    source_plan = ROOT / active_relative
+    if not validate_archive_plan_transition(
+        source_text, source_mode, completed_plan, errors
+    ):
+        return False
+    return exact_standalone_archive_index_transition(
+        index_path,
+        source_plan.relative_to(ROOT).as_posix(),
+        completed_plan,
+        base_sha,
+        errors,
+    )
+
+
 def exact_archive_cleanup(index_path: str, errors: list[str]) -> bool:
     trusted_plans = trusted_active_plans(errors)
     if len(trusted_plans) != 1:
@@ -1479,64 +1719,16 @@ def exact_archive_cleanup(index_path: str, errors: list[str]) -> bool:
         return False
 
     trusted_relative = trusted_plan.relative_to(TRUSTED_ROOT).as_posix()
-    completed_relative = completed_plan.relative_to(ROOT).as_posix()
     trusted_metadata: list[os.stat_result] = []
-    completed_metadata: list[os.stat_result] = []
     trusted_text = read_regular_text_at(
         TRUSTED_ROOT, trusted_relative, errors, metadata_out=trusted_metadata
     )
-    completed_text = read_regular_text_at(
-        ROOT, completed_relative, errors, metadata_out=completed_metadata
-    )
-    if trusted_text is None or completed_text is None:
+    if trusted_text is None:
         return False
-    if stat.S_IMODE(trusted_metadata[0].st_mode) != stat.S_IMODE(
-        completed_metadata[0].st_mode
+    trusted_mode = "100755" if trusted_metadata[0].st_mode & 0o111 else "100644"
+    if not validate_archive_plan_transition(
+        trusted_text, trusted_mode, completed_plan, errors
     ):
-        errors.append(
-            "archive cleanup may not change the Active Plan file mode while moving "
-            "it to completed/"
-        )
-        return False
-    trusted_status = lifecycle_field_values(trusted_text, "Status")
-    if len(trusted_status) != 1 or normalized(trusted_status[0]) != "active":
-        errors.append(
-            "archive cleanup source must contain exactly one 'Status: active' field"
-        )
-        return False
-    trusted_archived = lifecycle_field_values(trusted_text, "Active Plan archived")
-    trusted_transition = lifecycle_field_values(trusted_text, "Transition invariant")
-    if (
-        len(trusted_archived) != 1
-        or normalized(trusted_archived[0]) == "completed"
-        or len(trusted_transition) != 1
-        or normalized(trusted_transition[0]) in COMPLETED_TRANSITION_VALUES
-    ):
-        errors.append(
-            "archive cleanup source contains mixed or already-completed lifecycle state"
-        )
-        return False
-    if any(
-        len(values := lifecycle_field_values(completed_text, field)) != 1
-        or values[0] not in allowed
-        for field, allowed in COMPLETED_LIFECYCLE_CONTRACT.items()
-    ):
-        errors.append(
-            "archive cleanup destination must contain the completed lifecycle contract"
-        )
-        return False
-    trusted_skeleton = lifecycle_skeleton(trusted_text)
-    completed_skeleton = lifecycle_skeleton(completed_text)
-    if trusted_skeleton is None or completed_skeleton is None:
-        errors.append(
-            "archive cleanup plans must contain exactly one of each lifecycle field"
-        )
-        return False
-    if trusted_skeleton != completed_skeleton:
-        errors.append(
-            "archive cleanup may only change the canonical lifecycle fields in the "
-            "moved plan"
-        )
         return False
     return exact_archive_index_transition(
         index_path, trusted_plan, completed_plan, errors
@@ -1572,6 +1764,21 @@ def check_target_invariants(
             errors.append(f"{label}.index must be a regular file: {index_path}")
             continue
         if len(plans) == 0:
+            if TRUSTED_ROOT == ROOT:
+                advertised_sha = os.environ.get(STANDALONE_BASE_ENV)
+                if advertised_sha is not None:
+                    valid_base, standalone_base = resolve_standalone_base(
+                        advertised_sha, errors
+                    )
+                    if not valid_base:
+                        continue
+                else:
+                    standalone_base = optional_standalone_head()
+                if standalone_base is not None:
+                    exact_standalone_archive_cleanup(
+                        index_path, standalone_base, errors
+                    )
+                continue
             trusted_plans = trusted_active_plans(errors)
             if len(trusted_plans) == 0:
                 continue
