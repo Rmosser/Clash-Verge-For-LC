@@ -22,6 +22,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          set -euo pipefail
           PR_NUMBERS="$(
             gh api --paginate \
               "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \

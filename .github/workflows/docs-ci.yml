@@ -3,6 +3,7 @@ name: docs-ci
 
 on:
   pull_request_target:
+    branches: [main]
     types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited]
   repository_dispatch:
     types: [loop-checkpoints-reconcile]
@@ -239,8 +240,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          python3 -I -B trusted/scripts/check_docs.py \
-            --all --skip-project-check
+          python3 -I -B trusted/scripts/check_docs.py --all
           python3 -I -B trusted/scripts/check_loop_checkpoints.py \
             --base "${PR_BASE_SHA}" --head HEAD
 

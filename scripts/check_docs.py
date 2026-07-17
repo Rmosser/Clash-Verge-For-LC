@@ -27,6 +27,9 @@ TRUSTED_ROOT = Path(
 MAX_GOVERNANCE_TEXT_BYTES = 1024 * 1024
 STANDALONE_BASE_ENV = "HARNESS_STANDALONE_BASE_SHA"
 ZERO_COMMIT_SHA = "0" * 40
+YAML_MAPPING_KEY_RE = re.compile(
+    r"^(?P<indent> *)(?P<key>[A-Za-z0-9_.-]+):(?P<value>.*)$"
+)
 
 
 def exact_docs_root_at(root: Path, label: str) -> Path:
@@ -49,7 +52,7 @@ DOCS_ROOT = exact_docs_root_at(ROOT, "validation target")
 TRUSTED_DOCS_ROOT = exact_docs_root_at(TRUSTED_ROOT, "trusted verifier checkout")
 ACTIVE_PLAN_DIR = DOCS_ROOT / "exec-plans" / "active"
 COMPLETED_PLAN_DIR = DOCS_ROOT / "exec-plans" / "completed"
-PROJECT_CHECK = ROOT / "scripts" / "check_docs_project.py"
+PROJECT_CHECK = TRUSTED_ROOT / "scripts" / "check_docs_project.py"
 INLINE_LINK_RE = re.compile(
     r"!?\[[^\]]*\]\(\s*(?:<([^>\r\n]+)>|([^\s)]+))"
 )
@@ -175,6 +178,10 @@ TRUSTED_CONTROL_FILES = (
     "scripts/check_codex_review.py",
     "scripts/check_docs.py",
     "scripts/check_loop_checkpoints.py",
+) + (
+    ("scripts/check_docs_project.py",)
+    if PROJECT_CHECK.is_file() and not PROJECT_CHECK.is_symlink()
+    else ()
 )
 
 
@@ -1160,10 +1167,16 @@ def check_completed_plans(errors: list[str]) -> None:
             )
             if not valid_entry:
                 continue
-            target_mode = (
-                "100755" if target_metadata[0].st_mode & 0o111 else "100644"
-            )
-            if base_mode == target_mode and base_blob == text.encode("utf-8"):
+            if base_mode is not None:
+                target_mode = (
+                    "100755" if target_metadata[0].st_mode & 0o111 else "100644"
+                )
+                if base_mode == target_mode and base_blob == text.encode("utf-8"):
+                    continue
+                errors.append(
+                    "Completed plan content and mode are immutable after archival: "
+                    f"{relative}"
+                )
                 continue
         elif TRUSTED_ROOT != ROOT:
             trusted_plan = exact_case_real_path_at(TRUSTED_ROOT, relative)
@@ -1179,6 +1192,11 @@ def check_completed_plans(errors: list[str]) -> None:
                 )
                 if same_mode and text.encode("utf-8") == trusted_text.encode("utf-8"):
                     continue
+                errors.append(
+                    "Completed plan content and mode are immutable after archival: "
+                    f"{relative}"
+                )
+                continue
         for field, allowed in COMPLETED_LIFECYCLE_CONTRACT.items():
             require_canonical_lifecycle_value(text, plan, field, allowed, errors)
 
@@ -1448,6 +1466,64 @@ def check_current_head_governance(errors: list[str]) -> None:
         )
 
 
+def workflow_mapping_entries(text: str) -> dict[tuple[str, ...], list[str]]:
+    """Return YAML mapping paths while ignoring comments and block scalars."""
+    entries: dict[tuple[str, ...], list[str]] = {}
+    stack: list[tuple[int, str]] = []
+    block_scalar_indent: int | None = None
+    for raw_line in text.splitlines():
+        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        if block_scalar_indent is not None:
+            if indent > block_scalar_indent:
+                continue
+            block_scalar_indent = None
+        match = YAML_MAPPING_KEY_RE.match(raw_line)
+        if match is None:
+            continue
+        key = match.group("key")
+        value = match.group("value").strip()
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        path = tuple(item[1] for item in stack) + (key,)
+        entries.setdefault(path, []).append(value)
+        if value == "":
+            stack.append((indent, key))
+        elif value in {"|", "|-", "|+", ">", ">-", ">+"}:
+            block_scalar_indent = indent
+    return entries
+
+
+def workflow_structure_errors(text: str) -> list[str]:
+    entries = workflow_mapping_entries(text)
+    required_paths = (
+        ("on", "pull_request_target"),
+        ("on", "repository_dispatch"),
+        ("on", "push"),
+        ("jobs", "resolve-pull-request"),
+        ("jobs", "mark-checkpoints-pending"),
+        ("jobs", "pull-request-checkpoints"),
+        ("jobs", "publish-checkpoints-result"),
+        ("jobs", "dispatch-open-pull-requests"),
+        ("jobs", "default-branch-checkpoints"),
+    )
+    errors = [
+        f"missing or duplicate workflow mapping: {'.'.join(path)}"
+        for path in required_paths
+        if len(entries.get(path, [])) != 1
+    ]
+    if entries.get(("on", "repository_dispatch", "types"), []) != [
+        "[loop-checkpoints-reconcile]"
+    ]:
+        errors.append(
+            "on.repository_dispatch.types must be [loop-checkpoints-reconcile]"
+        )
+    if entries.get(("permissions",), []) != ["{}"]:
+        errors.append("top-level permissions must be an empty mapping")
+    return errors
+
+
 def check_document_status_workflow(
     manifest: dict[str, object],
     trusted_manifest: dict[str, object],
@@ -1505,6 +1581,12 @@ def check_document_status_workflow(
         errors.append(f"Trusted document status workflow must be a regular file: {relative}")
         return
     text = path.read_text(encoding="utf-8")
+    structure_errors = workflow_structure_errors(text)
+    if structure_errors:
+        errors.append(
+            f"Trusted document status workflow structure is incomplete: {relative}: "
+            + "; ".join(structure_errors)
+        )
     markers = (
         "  resolve-pull-request:\n",
         "  mark-checkpoints-pending:\n",
@@ -1531,10 +1613,7 @@ def check_document_status_workflow(
     default_branch_job = text.split(markers[5], 1)[1]
     pre_jobs = text.split("jobs:\n", 1)[0]
     required_fragments = (
-        "pull_request_target:",
-        "repository_dispatch:",
-        "types: [loop-checkpoints-reconcile]",
-        "permissions: {}",
+        "branches: [main]",
         'gh api "repos/${GITHUB_REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}"',
         "head_sha: ${{ steps.resolve.outputs.head_sha }}",
         "base_sha: ${{ steps.resolve.outputs.base_sha }}",
@@ -1549,8 +1628,7 @@ def check_document_status_workflow(
         'git -C target merge-tree --write-tree',
         'git -c core.hooksPath=/dev/null -C target commit-tree',
         'git -C target reset --hard "${merge_commit}"',
-        "python3 -I -B trusted/scripts/check_docs.py",
-        "--all --skip-project-check",
+        "python3 -I -B trusted/scripts/check_docs.py --all",
         "trusted/scripts/check_loop_checkpoints.py",
         '"${live_head_sha}" != "${EXPECTED_HEAD_SHA}"',
         '"${live_head_repository}" != "${EXPECTED_HEAD_REPOSITORY}"',

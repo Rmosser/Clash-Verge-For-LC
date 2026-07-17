@@ -17,9 +17,10 @@ Convention:
 - A plan with more than one ## Scope heading fails (ambiguous scope truth).
 - Free-text scope bullets without backticks are human context; the machine
   ignores them, so machine-relevant paths must be backtick-quoted.
-- Validated lowercase .md plans under docs/exec-plans/active/ and completed/
-  are allowed (unless denied): plan rotation and archival are harness
-  bookkeeping, not product scope. Other entries never inherit this exception.
+- Validated lowercase .md plans under docs/exec-plans/active/ are allowed
+  (unless denied) as harness bookkeeping. Completed plans require either the
+  Active Plan Scope or a verified archive-only transition; they cannot create
+  their own provenance.
 - With zero active plans, only conservative trivial documentation paths and
   plan bookkeeping may change. Governance, code, CI, configuration, release,
   and security surfaces still require an Active Plan.
@@ -265,9 +266,7 @@ def find_active_plan(changed_paths: set[str]) -> tuple[Path | None, set[str]]:
         require_lifecycle_value(
             plan, "Transition invariant", COMPLETED_TRANSITION_VALUES
         )
-    bookkeeping_paths = {
-        path.relative_to(ROOT).as_posix() for path in (*plans, *completed)
-    }
+    bookkeeping_paths = {path.relative_to(ROOT).as_posix() for path in plans}
     return (plans[0] if plans else None), bookkeeping_paths
 
 
@@ -323,9 +322,20 @@ def line_tokens(line: str) -> list[str]:
     return tokens
 
 
+def section_bodies(text: str, heading_re: str) -> list[str]:
+    return [
+        match.group(1)
+        for match in re.finditer(
+            rf"{heading_re}(.*?)(?=^## |\Z)",
+            text,
+            re.MULTILINE | re.DOTALL,
+        )
+    ]
+
+
 def section_body(text: str, heading_re: str) -> str | None:
-    match = re.search(rf"{heading_re}(.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
-    return match.group(1) if match else None
+    bodies = section_bodies(text, heading_re)
+    return bodies[0] if bodies else None
 
 
 def scope_patterns(plan: Path) -> tuple[list[str], list[str]]:
@@ -345,8 +355,7 @@ def scope_patterns(plan: Path) -> tuple[list[str], list[str]]:
     # Non-goals are part of the Scope Claim; every backticked token there is
     # forbidden regardless of wording, so deny does not depend on marker
     # vocabulary recognition.
-    non_goals = section_body(text, r"^## (?:Non-Goals|非目标)\s*$")
-    if non_goals is not None:
+    for non_goals in section_bodies(text, r"^## (?:Non-Goals|非目标)\s*$"):
         for line in non_goals.splitlines():
             denies.extend(line_tokens(line))
     return allows, denies
@@ -753,7 +762,7 @@ def classify(
     """Return the failure reason for path, or None when it is acceptable."""
     if any(matches_pattern(path, pattern) for pattern in denies):
         return "forbidden by Scope"
-    if path in (bookkeeping_allowed or set()):
+    if has_active_plan and path in (bookkeeping_allowed or set()):
         return None
     if not has_active_plan:
         if path in (no_plan_allowed or set()):

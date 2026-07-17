@@ -26,6 +26,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_AUTHORS = ("chatgpt-codex-connector[bot]",)
 DEFAULT_CONTEXT = "codex-review"
 DEFAULT_BASE_REF = "main"
+GITHUB_ACTIONS_APP_ID = 15368
+GITHUB_ACTIONS_STATUS_CREATOR = "github-actions[bot]"
 TRIVIAL_FILES = {
     "README.md",
     "CHANGELOG.md",
@@ -38,12 +40,14 @@ TRIVIAL_DOC_SUFFIXES = (".adoc", ".md", ".mdx", ".rst", ".txt")
 TRUSTED_TRIGGER_ASSOCIATIONS = {"COLLABORATOR", "MEMBER", "OWNER"}
 REACTIONS_FIELD = "_codex_trigger_reactions"
 TRUSTED_CONTROL_PATHS = {
+    ".github/doc-sync-rules.json",
     ".harness/repo-contract.json",
     "Docs",
     "Docs/doc-sync-rules.json",
     "docs",
     "docs/doc-sync-rules.json",
     "scripts/check_codex_review.py",
+    "scripts/check_doc_sync.py",
     "scripts/check_docs.py",
     "scripts/check_docs_project.py",
     "scripts/check_loop_checkpoints.py",
@@ -80,8 +84,9 @@ NON_TRIVIAL_DOC_TOKENS = {
     "threats",
     "threatmodel",
 }
+REVIEWED_COMMIT_LABEL_PATTERN = r"(?:\*\*Reviewed commit:\*\*|Reviewed commit:)"
 REVIEWED_COMMIT_FIELD_RE = re.compile(
-    r"\*\*Reviewed commit:\*\*\s*`([^`]+)`",
+    REVIEWED_COMMIT_LABEL_PATTERN + r"\s*`([^`]+)`",
     re.IGNORECASE,
 )
 VALID_REVIEWED_COMMIT_RE = re.compile(r"[0-9a-f]{10,40}", re.IGNORECASE)
@@ -102,7 +107,9 @@ CLEAN_BODY_RE = re.compile(
     r"^\s*(?:(?:#{1,6}\s*)?Codex Review:\s*)?"
     r"(?:Didn't find any major issues|Did not find any major issues|"
     r"No major issues|No findings)\.?\s*"
-    r"(?:\*\*Reviewed commit:\*\*\s*`[0-9a-f]{10,40}`\s*)?"
+    r"(?:"
+    + REVIEWED_COMMIT_LABEL_PATTERN
+    + r"\s*`[0-9a-f]{10,40}`\s*)?"
     r"(?:Comment\s+[`\"']?@codex\s+review[`\"']?\s+to\s+run\s+again\.?\s*)?$",
     re.IGNORECASE | re.DOTALL,
 )
@@ -111,7 +118,7 @@ STANDARD_CODEX_DETAILS_PATTERN = (
     r"About Codex in GitHub\s*</summary>\s*"
     r"<br\s*/?>\s*"
     r"\[Your team has set up Codex to review pull requests in this repo\]"
-    r"\(https://chatgpt\.com/codex/(?:cloud/)?settings/general\)\.\s*"
+    r"\(https?://chatgpt\.com/codex/(?:cloud/)?settings/general\)\.\s*"
     r"Reviews are triggered when you\s*"
     r"-\s*Open a pull request for review\s*"
     r"-\s*Mark a draft as ready\s*"
@@ -144,6 +151,20 @@ ALLOWED_CLEAN_CELEBRATIONS = (
 CLEAN_CELEBRATION_PATTERN = "(?:" + "|".join(
     re.escape(value) for value in ALLOWED_CLEAN_CELEBRATIONS
 ) + ")"
+STANDARD_FOOTER_CLEAN_BODY_RE = re.compile(
+    r"^\s*(?:(?:#{1,6}\s*)?Codex Review:\s*)?"
+    r"(?:Didn't find any major issues|Did not find any major issues|"
+    r"No major issues|No findings)\.?\s*"
+    r"(?:"
+    + CLEAN_CELEBRATION_PATTERN
+    + r"\s*)?"
+    r"(?:"
+    + REVIEWED_COMMIT_LABEL_PATTERN
+    + r"\s*`[0-9a-f]{10,40}`\s*)?"
+    + STANDARD_CODEX_DETAILS_PATTERN
+    + r"\s*$",
+    re.IGNORECASE,
+)
 LEGACY_COMMENTED_DETAILS_PATTERN = (
     r"<details>\s*<summary>[^\r\n]*About Codex in GitHub</summary>\s*"
     r"If Codex has suggestions, it will comment;\s*"
@@ -155,7 +176,8 @@ FULL_CLEAN_ISSUE_COMMENT_RE = re.compile(
     r"(?:"
     + CLEAN_CELEBRATION_PATTERN
     + r"\s*)?"
-    r"\*\*Reviewed commit:\*\*\s*`[0-9a-f]{10,40}`\s*"
+    + REVIEWED_COMMIT_LABEL_PATTERN
+    + r"\s*`[0-9a-f]{10,40}`\s*"
     + STANDARD_CODEX_DETAILS_PATTERN
     + r"\s*$",
     re.IGNORECASE,
@@ -163,7 +185,8 @@ FULL_CLEAN_ISSUE_COMMENT_RE = re.compile(
 COMMENTED_CLEAN_BODY_RE = re.compile(
     r"^\s*#{1,6}\s*[^\r\n]*Codex Review\s*"
     r"Here are some automated review suggestions for this pull request\.\s*"
-    r"\*\*Reviewed commit:\*\*\s*`[0-9a-f]{10,40}`\s*"
+    + REVIEWED_COMMIT_LABEL_PATTERN
+    + r"\s*`[0-9a-f]{10,40}`\s*"
     r"(?:"
     + STANDARD_CODEX_DETAILS_PATTERN
     + r"|"
@@ -395,6 +418,7 @@ def explicitly_stale_review_marker(body: str, head_sha: str) -> bool:
 def clean_body(body: str) -> bool:
     return bool(
         CLEAN_BODY_RE.fullmatch(body)
+        or STANDARD_FOOTER_CLEAN_BODY_RE.fullmatch(body)
         or FULL_CLEAN_ISSUE_COMMENT_RE.fullmatch(body)
     )
 
@@ -417,9 +441,19 @@ def trivial_path(path: str, review_required_patterns: tuple[str, ...]) -> bool:
         return False
     if path in TRIVIAL_FILES:
         return True
-    normalized = path.casefold()
-    if not normalized.startswith(TRIVIAL_DOC_PREFIXES):
+    docs_prefix = next(
+        (
+            f"{child.name}/"
+            for child in ROOT.iterdir()
+            if child.name in {"docs", "Docs"}
+            and not child.is_symlink()
+            and child.is_dir()
+        ),
+        "",
+    )
+    if not docs_prefix or not path.startswith(docs_prefix):
         return False
+    normalized = path.casefold()
     if not normalized.endswith(TRIVIAL_DOC_SUFFIXES):
         return False
     semantic_tokens = [
@@ -686,7 +720,16 @@ def evaluate(
         body = str(comment.get("body") or "")
         if (
             actor_login(comment) in authors
-            and reviewed_head(body, head_sha)
+            and not stale_or_invalid_review_marker(body, head_sha)
+            and (
+                reviewed_head(body, head_sha)
+                or (
+                    not REVIEWED_COMMIT_FIELD_RE.findall(body)
+                    and
+                    latest_trigger is not None
+                    and trigger_bound_to_full_head(latest_trigger, head_sha)
+                )
+            )
             and clean_body(body)
             and not finding_body(body)
             and after_latest_trigger(comment)
@@ -938,12 +981,61 @@ def status_matches_result(
     status: dict[str, Any] | None,
     result: GateResult,
     context: str,
+    status_app_id: int,
+    expected_identity: PullIdentity,
 ) -> bool:
     return bool(
-        status is not None
+        trusted_status_writer(status, status_app_id)
         and status.get("context") == context
         and status.get("state") == result.state
-        and status.get("description") == result.description[:140]
+        and status.get("description")
+        == bound_status_description(result.description, expected_identity.base_sha)
+    )
+
+
+def trusted_status_writer(
+    status: dict[str, Any] | None,
+    status_app_id: int,
+) -> bool:
+    if status_app_id != GITHUB_ACTIONS_APP_ID:
+        raise GateError(
+            f"unsupported trusted status App id: {status_app_id}; "
+            f"expected GitHub Actions App {GITHUB_ACTIONS_APP_ID}"
+        )
+    creator = status.get("creator") if status is not None else None
+    return bool(
+        status is not None
+        and isinstance(creator, dict)
+        and creator.get("type") == "Bot"
+        and normalize_login(creator.get("login"))
+        == normalize_login(GITHUB_ACTIONS_STATUS_CREATOR)
+    )
+
+
+def bound_status_description(description: str, base_sha: str) -> str:
+    suffix = f"; base={base_sha}."
+    prefix = description.strip().removesuffix(".")
+    return f"{prefix[: 140 - len(suffix)].rstrip()}{suffix}"
+
+
+def pending_status_description(expected_identity: PullIdentity) -> str:
+    return bound_status_description(
+        f"Reconciling Codex review for current head {expected_identity.head_sha[:10]}.",
+        expected_identity.base_sha,
+    )
+
+
+def status_matches_pending(
+    status: dict[str, Any] | None,
+    context: str,
+    expected_identity: PullIdentity,
+    status_app_id: int,
+) -> bool:
+    return bool(
+        trusted_status_writer(status, status_app_id)
+        and status.get("context") == context
+        and status.get("state") == "pending"
+        and status.get("description") == pending_status_description(expected_identity)
     )
 
 
@@ -964,7 +1056,7 @@ def publish_pending(
         expected_identity.head_sha,
         "pending",
         context,
-        f"Reconciling Codex review for current head {expected_identity.head_sha[:10]}.",
+        pending_status_description(expected_identity),
         target_url,
     )
     return True
@@ -992,7 +1084,7 @@ def publish_status(
         result.head_sha,
         result.state,
         context,
-        result.description,
+        bound_status_description(result.description, expected_identity.base_sha),
         target_url,
     )
     return True
@@ -1006,6 +1098,7 @@ def publish_status_if_changed(
     result: GateResult,
     context: str,
     target_url: str,
+    status_app_id: int,
 ) -> bool:
     if not result.publish or result.head_sha != expected_identity.head_sha:
         return False
@@ -1016,9 +1109,14 @@ def publish_status_if_changed(
         expected_identity,
         context,
     )
-    if status_matches_result(latest_status, result, context):
+    if status_matches_result(
+        latest_status, result, context, status_app_id, expected_identity
+    ):
         return True
-    if not publish_pending(
+    pending_matches = status_matches_pending(
+        latest_status, context, expected_identity, status_app_id
+    )
+    if not pending_matches and not publish_pending(
         api,
         repository,
         pr_number,
@@ -1045,6 +1143,7 @@ def invalidate_status_after_exception(
     expected_identity: PullIdentity,
     context: str,
     target_url: str,
+    status_app_id: int,
 ) -> bool:
     result = GateResult(
         state="failure",
@@ -1063,7 +1162,9 @@ def invalidate_status_after_exception(
         expected_identity,
         context,
     )
-    if status_matches_result(latest_status, result, context):
+    if status_matches_result(
+        latest_status, result, context, status_app_id, expected_identity
+    ):
         return True
     return publish_status(
         api,
@@ -1103,6 +1204,7 @@ def main() -> int:
     api: GitHubAPI | None = None
     pr_number: int | None = None
     initial_identity: PullIdentity | None = None
+    status_app_id: int | None = None
     context = args.context or DEFAULT_CONTEXT
     try:
         contract = load_contract()
@@ -1113,6 +1215,12 @@ def main() -> int:
                 "--bootstrap-control-plane-review requires --fixture and forbids --publish"
             )
         config = review_contract(contract)
+        raw_status_app_id = config.get("status_app_id")
+        if not isinstance(raw_status_app_id, int) or isinstance(
+            raw_status_app_id, bool
+        ):
+            raise GateError("codex_review.status_app_id must be an integer")
+        status_app_id = raw_status_app_id
         context = args.context or str(config.get("required_check") or DEFAULT_CONTEXT)
         if args.fixture:
             payload = json.loads(args.fixture.read_text(encoding="utf-8"))
@@ -1176,6 +1284,7 @@ def main() -> int:
                 result,
                 context,
                 args.target_url,
+                status_app_id,
             ):
                 result = GateResult(
                     state="failure",
@@ -1192,6 +1301,7 @@ def main() -> int:
             and api is not None
             and pr_number is not None
             and initial_identity is not None
+            and status_app_id is not None
         ):
             try:
                 invalidated = invalidate_status_after_exception(
@@ -1201,6 +1311,7 @@ def main() -> int:
                     initial_identity,
                     context,
                     args.target_url,
+                    status_app_id,
                 )
                 if not invalidated:
                     print(
