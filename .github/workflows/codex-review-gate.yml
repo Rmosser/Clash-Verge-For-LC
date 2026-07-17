@@ -18,18 +18,17 @@ on:
 permissions: {}
 
 concurrency:
-  group: codex-review-gate-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr_number || github.event.workflow_run.head_sha || github.ref }}
+  group: codex-review-gate-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr_number || (github.event.workflow_run.id && format('signal-{0}', github.event.workflow_run.id)) || github.ref }}
   cancel-in-progress: false
 
 jobs:
-  reconcile:
-    name: refresh-codex-review-status
-    if: ${{ github.event_name == 'pull_request_target' || github.event_name == 'repository_dispatch' || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null) || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && (github.event.workflow_run.event == 'pull_request_review' || github.event.workflow_run.event == 'pull_request_review_comment')) }}
+  route-review-signal:
+    name: route-review-signal-to-pr-writer
+    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && (github.event.workflow_run.event == 'pull_request_review' || github.event.workflow_run.event == 'pull_request_review_comment') }}
     permissions:
-      contents: read
-      issues: read
+      actions: read
+      contents: write
       pull-requests: read
-      statuses: write
     runs-on: ubuntu-latest
     steps:
       - name: Resolve the live PR for a review signal run
@@ -38,9 +37,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          RUN_WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
+          RUN_WORKFLOW_PATH: ${{ github.event.workflow_run.path }}
           RUN_EVENT: ${{ github.event.workflow_run.event }}
           RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           RUN_REPOSITORY: ${{ github.event.workflow_run.repository.full_name }}
+          RUN_DISPLAY_TITLE: ${{ github.event.workflow_run.display_title }}
           RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         shell: bash
         run: |
@@ -51,55 +53,158 @@ jobs:
                 ( "${RUN_EVENT}" != "pull_request_review" &&
                   "${RUN_EVENT}" != "pull_request_review_comment" ) ||
                 "${RUN_REPOSITORY}" != "${GITHUB_REPOSITORY}" ||
+                ! "${RUN_WORKFLOW_ID}" =~ ^[1-9][0-9]*$ ||
                 ! "${RUN_HEAD_SHA}" =~ ^[0-9a-fA-F]{40}$ ]]; then
             echo "The workflow run is not an eligible review signal." >&2
             exit 2
           fi
-
-          match_numbers=()
-          match_head_shas=()
-          while IFS=$'\t' read -r number state head_sha base_repository base_ref; do
-            if [[ "${state}" == "open" &&
-                  "${base_repository}" == "${GITHUB_REPOSITORY}" &&
-                  "${base_ref}" == "main" &&
-                  "${head_sha}" =~ ^[0-9a-fA-F]{40}$ ]]; then
-              match_numbers+=("${number}")
-              match_head_shas+=("${head_sha}")
-            fi
-          done < <(
-            gh api --paginate \
-              "repos/${GITHUB_REPOSITORY}/commits/${RUN_HEAD_SHA}/pulls?per_page=100" \
-              --jq '.[] | [.number, .state, .head.sha, .base.repo.full_name, .base.ref] | @tsv'
-          )
-
-          if (( ${#match_numbers[@]} != 1 )); then
-            echo "Expected exactly one live main PR associated with ${RUN_HEAD_SHA}; found ${#match_numbers[@]}." >&2
-            exit 3
+          source_workflow_path="${RUN_WORKFLOW_PATH%%@*}"
+          if [[ "${source_workflow_path}" != ".github/workflows/codex-review-signal.yml" ]]; then
+            echo "The workflow run did not originate from the canonical signal path." >&2
+            exit 2
+          fi
+          trusted_workflow_id="$({
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/codex-review-signal.yml" \
+              --jq '.id'
+          })"
+          if [[ ! "${trusted_workflow_id}" =~ ^[1-9][0-9]*$ ||
+                "${RUN_WORKFLOW_ID}" != "${trusted_workflow_id}" ]]; then
+            echo "The workflow run id does not match the canonical signal workflow." >&2
+            exit 2
           fi
 
-          printf 'pr_number=%s\n' "${match_numbers[0]}" >> "${GITHUB_OUTPUT}"
-          printf 'head_sha=%s\n' "${match_head_shas[0]}" >> "${GITHUB_OUTPUT}"
-      - name: Check out the trusted default branch
+          if [[ ! "${RUN_DISPLAY_TITLE}" =~ ^codex-review-signal\ pr-([1-9][0-9]*)\ head-([0-9a-fA-F]{40})$ ]]; then
+            echo "The review signal run name does not bind one PR and head SHA." >&2
+            exit 3
+          fi
+          signal_pr_number="${BASH_REMATCH[1]}"
+          signal_head_sha="${BASH_REMATCH[2],,}"
+
+          IFS=$'\t' read -r number state head_sha base_repository base_ref base_sha < <(
+            gh api "repos/${GITHUB_REPOSITORY}/pulls/${signal_pr_number}" \
+              --jq '[.number, .state, .head.sha, .base.repo.full_name, .base.ref, .base.sha] | @tsv'
+          )
+          head_sha="${head_sha,,}"
+          if [[ "${number}" != "${signal_pr_number}" ||
+                "${state}" != "open" ||
+                "${base_repository}" != "${GITHUB_REPOSITORY}" ||
+                "${base_ref}" != "main" ||
+                ! "${head_sha}" =~ ^[0-9a-f]{40}$ ||
+                ! "${base_sha}" =~ ^[0-9a-fA-F]{40}$ ||
+                "${head_sha}" != "${signal_head_sha}" ]]; then
+            echo "The review signal no longer matches one live main PR head." >&2
+            exit 4
+          fi
+
+          source_signal_blob="$({
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/contents/.github/workflows/codex-review-signal.yml?ref=${RUN_HEAD_SHA}" \
+              --jq '.sha'
+          })"
+          trusted_signal_blob="$({
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/contents/.github/workflows/codex-review-signal.yml?ref=${base_sha}" \
+              --jq '.sha'
+          })"
+          if [[ ! "${source_signal_blob}" =~ ^[0-9a-f]{40}$ ||
+                "${source_signal_blob}" != "${trusted_signal_blob}" ]]; then
+            echo "The source signal workflow is not byte-identical to the trusted PR base." >&2
+            exit 5
+          fi
+
+          printf 'pr_number=%s\n' "${number}" >> "${GITHUB_OUTPUT}"
+          printf 'head_sha=%s\n' "${head_sha}" >> "${GITHUB_OUTPUT}"
+      - name: Dispatch the PR-serialized status writer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.resolve-workflow-run.outputs.pr_number }}
+          EXPECTED_HEAD_SHA: ${{ steps.resolve-workflow-run.outputs.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/dispatches" \
+            -f event_type=codex-review-reconcile \
+            -F "client_payload[pr_number]=${PR_NUMBER}" \
+            -f "client_payload[expected_head_sha]=${EXPECTED_HEAD_SHA}"
+
+  reconcile:
+    name: refresh-codex-review-status
+    if: ${{ github.event_name == 'pull_request_target' || github.event_name == 'repository_dispatch' || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null) }}
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      statuses: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve the live PR and trusted base
+        id: resolve-live-pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER_INPUT: ${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr_number }}
+          EXPECTED_HEAD_SHA_INPUT: ${{ github.event.pull_request.head.sha || github.event.client_payload.expected_head_sha || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${PR_NUMBER_INPUT}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "A concrete pull request number is required." >&2
+            exit 2
+          fi
+
+          IFS=$'\t' read -r state head_sha base_repository base_ref base_sha < <(
+            gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER_INPUT}" \
+              --jq '[.state, .head.sha, .base.repo.full_name, .base.ref, .base.sha] | @tsv'
+          )
+          head_sha="${head_sha,,}"
+          base_sha="${base_sha,,}"
+          expected_head_sha="${EXPECTED_HEAD_SHA_INPUT,,}"
+          if [[ "${state}" != "open" ||
+                "${base_repository}" != "${GITHUB_REPOSITORY}" ||
+                "${base_ref}" != "main" ||
+                ! "${head_sha}" =~ ^[0-9a-f]{40}$ ||
+                ! "${base_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "The pull request is not an eligible live main PR." >&2
+            exit 3
+          fi
+          if [[ -n "${expected_head_sha}" && "${expected_head_sha}" != "${head_sha}" ]]; then
+            echo "The triggering event is stale for the live PR head." >&2
+            exit 4
+          fi
+
+          printf 'pr_number=%s\n' "${PR_NUMBER_INPUT}" >> "${GITHUB_OUTPUT}"
+          printf 'head_sha=%s\n' "${head_sha}" >> "${GITHUB_OUTPUT}"
+          printf 'base_sha=%s\n' "${base_sha}" >> "${GITHUB_OUTPUT}"
+      - name: Check out the trusted live PR base
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ steps.resolve-live-pr.outputs.base_sha }}
           persist-credentials: false
+      - name: Verify the trusted checkout identity
+        env:
+          EXPECTED_BASE_SHA: ${{ steps.resolve-live-pr.outputs.base_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_base_sha="$(git rev-parse HEAD)"
+          if [[ "${actual_base_sha}" != "${EXPECTED_BASE_SHA}" ]]; then
+            echo "The trusted checkout does not match the resolved live PR base." >&2
+            exit 5
+          fi
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - name: Reconcile Codex evidence against the live PR head
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr_number || steps.resolve-workflow-run.outputs.pr_number }}
-          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || steps.resolve-workflow-run.outputs.head_sha || '' }}
-          HARNESS_FORCE_EARLY_PENDING: ${{ github.event_name == 'workflow_run' && '1' || '0' }}
+          PR_NUMBER: ${{ steps.resolve-live-pr.outputs.pr_number }}
+          EXPECTED_HEAD_SHA: ${{ steps.resolve-live-pr.outputs.head_sha }}
+          EXPECTED_BASE_SHA: ${{ steps.resolve-live-pr.outputs.base_sha }}
+          HARNESS_FORCE_EARLY_PENDING: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.expected_head_sha != '' && '1' || '0' }}
           GITHUB_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         shell: bash
         run: |
-          if [[ -z "${PR_NUMBER}" ]]; then
-            echo "A concrete pull request number is required." >&2
-            exit 2
-          fi
           python3 -I -B scripts/check_codex_review.py --publish
 
   dispatch-open-pull-requests:

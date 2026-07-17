@@ -596,7 +596,9 @@ def evaluate(
         return bool(timestamp and timestamp >= trigger_time)
 
     def issue_clean_has_provenance(item: dict[str, Any], body: str) -> bool:
-        if FULL_CLEAN_ISSUE_COMMENT_RE.fullmatch(body):
+        if not reviewed_head(body, head_sha):
+            return False
+        if STANDARD_FOOTER_CLEAN_BODY_RE.fullmatch(body):
             return True
         timestamp = artifact_time(item)
         return bool(
@@ -624,11 +626,11 @@ def evaluate(
     current_issue_findings: list[dict[str, Any]] = []
     for item in issue_comments:
         body = str(item.get("body") or "")
-        if (
-            actor_login(item) not in authors
-            or not at_or_after_latest_trigger(item)
-            or not finding_body(body)
-        ):
+        if actor_login(item) not in authors or not finding_body(body):
+            continue
+        if latest_trigger is not None and not at_or_after_latest_trigger(item):
+            continue
+        if latest_trigger is None and not reviewed_head(body, head_sha):
             continue
         if explicitly_stale_review_marker(body, head_sha):
             # A delayed result explicitly bound to an older head cannot poison
@@ -700,15 +702,7 @@ def evaluate(
         if (
             actor_login(comment) in authors
             and not stale_or_invalid_review_marker(body, head_sha)
-            and (
-                reviewed_head(body, head_sha)
-                or (
-                    not REVIEWED_COMMIT_FIELD_RE.findall(body)
-                    and
-                    latest_trigger is not None
-                    and trigger_bound_to_full_head(latest_trigger, head_sha)
-                )
-            )
+            and reviewed_head(body, head_sha)
             and clean_body(body)
             and not finding_body(body)
             and after_latest_trigger(comment)
@@ -1253,12 +1247,20 @@ def parse_pr_number(value: str) -> int:
     return number
 
 
+def require_expected_base(identity: PullIdentity, expected_base: str) -> None:
+    if expected_base and expected_base.lower() != identity.base_sha:
+        raise GateError("live PR base changed after the trusted policy checkout")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", ""))
     parser.add_argument("--pr-number", default=os.environ.get("PR_NUMBER", ""))
     parser.add_argument(
         "--expected-head", default=os.environ.get("EXPECTED_HEAD_SHA", "")
+    )
+    parser.add_argument(
+        "--expected-base", default=os.environ.get("EXPECTED_BASE_SHA", "")
     )
     parser.add_argument("--fixture", type=Path)
     parser.add_argument("--publish", action="store_true")
@@ -1303,6 +1305,7 @@ def main() -> int:
             initial_pull = live_pull(api, args.repository, pr_number)
             initial_identity = pull_identity(initial_pull, args.repository)
             initial_head = initial_identity.head_sha
+            require_expected_base(initial_identity, args.expected_base)
             if args.expected_head and args.expected_head.lower() != initial_head:
                 payload = {
                     "pull": initial_pull,

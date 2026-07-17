@@ -1,4 +1,5 @@
 name: codex-review-signal
+run-name: codex-review-signal pr-${{ github.event.pull_request.number }} head-${{ github.event.pull_request.head.sha }}
 
 on:
   pull_request_review:
