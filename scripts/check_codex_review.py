@@ -1143,7 +1143,6 @@ def invalidate_status_after_exception(
     expected_identity: PullIdentity,
     context: str,
     target_url: str,
-    status_app_id: int,
 ) -> bool:
     result = GateResult(
         state="failure",
@@ -1163,7 +1162,11 @@ def invalidate_status_after_exception(
         context,
     )
     if status_matches_result(
-        latest_status, result, context, status_app_id, expected_identity
+        latest_status,
+        result,
+        context,
+        GITHUB_ACTIONS_APP_ID,
+        expected_identity,
     ):
         return True
     return publish_status(
@@ -1311,7 +1314,6 @@ def main() -> int:
                     initial_identity,
                     context,
                     args.target_url,
-                    status_app_id,
                 )
                 if not invalidated:
                     print(

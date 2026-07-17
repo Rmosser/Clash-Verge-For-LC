@@ -42,7 +42,7 @@
 
 <!-- checkpoint verifier 默认从 GITHUB_BASE_REF、HARNESS_DIFF_BASE_REF 或 origin 的默认分支解析真实 base。已提交 PR 不得用 --base HEAD 做 Scope 证据。 -->
 
-## Checkpoint Evidence / Checkpoint 证据
+## Checkpoint 证据 / Checkpoint Evidence
 
 - Context Claim：
 - Scope Claim：
