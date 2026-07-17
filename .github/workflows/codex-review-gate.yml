@@ -219,6 +219,7 @@ jobs:
           HARNESS_COMMENT_AUTHOR_TYPE: ${{ github.event.comment.user.type || '' }}
           HARNESS_COMMENT_ASSOCIATION: ${{ github.event.comment.author_association || '' }}
           HARNESS_COMMENT_BODY: ${{ github.event.comment.body || '' }}
+          HARNESS_EXPECTED_HEAD_SHA: ${{ steps.resolve-live-pr.outputs.head_sha }}
           GITHUB_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         shell: bash
         run: |

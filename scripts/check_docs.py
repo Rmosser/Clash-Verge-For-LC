@@ -169,7 +169,7 @@ OUT_OF_REPO_SCOPE_RE = re.compile(
 )
 CURRENT_HEAD_REVIEW_HEADING = "## Current-Head Codex Review\n\n"
 CURRENT_HEAD_REVIEW_SHA256 = (
-    "164f2afe62fd133df75723bea018f8e12dc1b6a62db781da6a49c285d4aca8ba"
+    "f42cc810da5768f679932068f7efc722d9796fe949f555df62bb8cc386fea00f"
 )
 TRUSTED_CONTROL_FILES = (
     f"{DOCS_ROOT.name}/doc-sync-rules.json",
@@ -750,6 +750,19 @@ def check_trusted_control_files(errors: list[str]) -> None:
         )
 
     control_files = set(TRUSTED_CONTROL_FILES) | target_workflows | trusted_workflows
+    project_control = "scripts/check_docs_project.py"
+    target_project = ROOT / project_control
+    trusted_project = TRUSTED_ROOT / project_control
+    target_has_project = target_project.exists() or target_project.is_symlink()
+    trusted_has_project = trusted_project.exists() or trusted_project.is_symlink()
+    if target_has_project != trusted_has_project:
+        errors.append(
+            "Target project docs checker inventory must exactly match the trusted base; "
+            "adding or removing scripts/check_docs_project.py requires the trusted "
+            "bootstrap path"
+        )
+    if target_has_project or trusted_has_project:
+        control_files.add(project_control)
     for relative_path in sorted(control_files):
         target_text = read_regular_text_at(ROOT, relative_path, errors)
         trusted_text = read_regular_text_at(TRUSTED_ROOT, relative_path, errors)

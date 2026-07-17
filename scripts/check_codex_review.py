@@ -69,11 +69,16 @@ NON_TRIVIAL_DOC_TOKENS = {
     "configurations",
     "design",
     "designs",
+    "deploy",
+    "deployment",
     "golden",
     "prd",
     "prds",
     "release",
     "releases",
+    "rollback",
+    "runbook",
+    "runbooks",
     "secure",
     "security",
     "spec",
@@ -343,7 +348,8 @@ def accepted_authors(contract: dict[str, Any]) -> set[str]:
 
 
 def normalize_login(value: Any) -> str:
-    return str(value or "").strip().casefold()
+    login = str(value or "").strip().casefold()
+    return login[:-5] if login.endswith("[bot]") else login
 
 
 def actor_login(item: dict[str, Any]) -> str:
@@ -378,11 +384,6 @@ def trusted_trigger(
 def trigger_bound_to_full_head(item: dict[str, Any], head_sha: str) -> bool:
     markers = TRIGGER_HEAD_RE.findall(str(item.get("body") or ""))
     return len(markers) == 1 and markers[0].casefold() == head_sha.casefold()
-
-
-def trigger_bound_to_other_full_head(item: dict[str, Any], head_sha: str) -> bool:
-    markers = TRIGGER_HEAD_RE.findall(str(item.get("body") or ""))
-    return len(markers) == 1 and markers[0].casefold() != head_sha.casefold()
 
 
 def reviewed_head(body: str, head_sha: str) -> bool:
@@ -475,6 +476,20 @@ def changed_paths(files: list[dict[str, Any]]) -> list[str]:
     return sorted(paths)
 
 
+def conflicting_docs_root_path(path: str) -> bool:
+    candidates = [
+        child.name
+        for child in ROOT.iterdir()
+        if child.name in {"docs", "Docs"}
+        and not child.is_symlink()
+        and child.is_dir()
+    ]
+    if len(candidates) != 1:
+        raise GateError("expected exactly one real docs/ or Docs/ governance root")
+    top_level = path.split("/", 1)[0]
+    return top_level in {"docs", "Docs"} and top_level != candidates[0]
+
+
 def artifact_url(item: dict[str, Any]) -> str | None:
     for key in ("html_url", "url"):
         value = item.get(key)
@@ -548,6 +563,7 @@ def evaluate(
         path
         for path in paths
         if path in TRUSTED_CONTROL_PATHS
+        or conflicting_docs_root_path(path)
         or any(path.startswith(prefix) for prefix in TRUSTED_CONTROL_PREFIXES)
     )
     if changed_control_paths and not bootstrap_control_plane_review:
@@ -580,7 +596,7 @@ def evaluate(
         item
         for item in issue_comments
         if trusted_trigger(item, authors)
-        and not trigger_bound_to_other_full_head(item, head_sha)
+        and trigger_bound_to_full_head(item, head_sha)
     ]
     latest_trigger = max(triggers, key=artifact_time) if triggers else None
     trigger_time = artifact_time(latest_trigger) if latest_trigger else ""
@@ -1192,6 +1208,10 @@ def evidence_event_requires_pending(contract: dict[str, Any]) -> bool:
         and os.environ.get("HARNESS_COMMENT_ASSOCIATION", "").upper()
         in TRUSTED_TRIGGER_ASSOCIATIONS
         and TRIGGER_RE.search(os.environ.get("HARNESS_COMMENT_BODY", ""))
+        and trigger_bound_to_full_head(
+            {"body": os.environ.get("HARNESS_COMMENT_BODY", "")},
+            os.environ.get("HARNESS_EXPECTED_HEAD_SHA", ""),
+        )
     )
 
 
