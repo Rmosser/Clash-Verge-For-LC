@@ -343,10 +343,7 @@ def accepted_authors(contract: dict[str, Any]) -> set[str]:
 
 
 def normalize_login(value: Any) -> str:
-    login = str(value or "").strip().casefold()
-    if login.endswith("[bot]"):
-        login = login[:-5]
-    return login
+    return str(value or "").strip().casefold()
 
 
 def actor_login(item: dict[str, Any]) -> str:
@@ -354,6 +351,15 @@ def actor_login(item: dict[str, Any]) -> str:
     if isinstance(user, dict):
         return normalize_login(user.get("login"))
     return ""
+
+
+def trusted_codex_actor(item: dict[str, Any], authors: set[str]) -> bool:
+    user = item.get("user")
+    return bool(
+        isinstance(user, dict)
+        and user.get("type") == "Bot"
+        and actor_login(item) in authors
+    )
 
 
 def trusted_trigger(
@@ -372,6 +378,11 @@ def trusted_trigger(
 def trigger_bound_to_full_head(item: dict[str, Any], head_sha: str) -> bool:
     markers = TRIGGER_HEAD_RE.findall(str(item.get("body") or ""))
     return len(markers) == 1 and markers[0].casefold() == head_sha.casefold()
+
+
+def trigger_bound_to_other_full_head(item: dict[str, Any], head_sha: str) -> bool:
+    markers = TRIGGER_HEAD_RE.findall(str(item.get("body") or ""))
+    return len(markers) == 1 and markers[0].casefold() != head_sha.casefold()
 
 
 def reviewed_head(body: str, head_sha: str) -> bool:
@@ -569,6 +580,7 @@ def evaluate(
         item
         for item in issue_comments
         if trusted_trigger(item, authors)
+        and not trigger_bound_to_other_full_head(item, head_sha)
     ]
     latest_trigger = max(triggers, key=artifact_time) if triggers else None
     trigger_time = artifact_time(latest_trigger) if latest_trigger else ""
@@ -609,7 +621,7 @@ def evaluate(
     current_review_round = [
         item
         for item in reviews
-        if actor_login(item) in authors
+        if trusted_codex_actor(item, authors)
         and str(item.get("commit_id") or "").lower() == head_sha
         and at_or_after_latest_trigger(item)
     ]
@@ -619,14 +631,14 @@ def evaluate(
     current_inline = [
         item
         for item in review_comments
-        if actor_login(item) in authors
+        if trusted_codex_actor(item, authors)
         and str(item.get("commit_id") or "").lower() == head_sha
         and at_or_after_latest_trigger(item)
     ]
     current_issue_findings: list[dict[str, Any]] = []
     for item in issue_comments:
         body = str(item.get("body") or "")
-        if actor_login(item) not in authors or not finding_body(body):
+        if not trusted_codex_actor(item, authors) or not finding_body(body):
             continue
         if latest_trigger is not None and not at_or_after_latest_trigger(item):
             continue
@@ -700,7 +712,7 @@ def evaluate(
     for comment in issue_comments:
         body = str(comment.get("body") or "")
         if (
-            actor_login(comment) in authors
+            trusted_codex_actor(comment, authors)
             and not stale_or_invalid_review_marker(body, head_sha)
             and reviewed_head(body, head_sha)
             and clean_body(body)
@@ -720,7 +732,7 @@ def evaluate(
             created_at = reaction.get("created_at")
             if (
                 reaction.get("content") == "+1"
-                and actor_login(reaction) in authors
+                and trusted_codex_actor(reaction, authors)
                 and isinstance(created_at, str)
                 and created_at > trigger_time
             ):
@@ -734,7 +746,7 @@ def evaluate(
         for comment in issue_comments:
             body = str(comment.get("body") or "")
             if (
-                actor_login(comment) not in authors
+                not trusted_codex_actor(comment, authors)
                 or not at_or_after_latest_trigger(comment)
                 or comment in clean_artifacts
                 or comment in current_issue_findings
@@ -806,7 +818,21 @@ def live_pull(api: GitHubAPI, repository: str, pr_number: int) -> dict[str, Any]
     pull = api.request("GET", f"{base}/pulls/{pr_number}")
     if not isinstance(pull, dict):
         raise GateError("GitHub pull request response must be an object")
-    return pull
+    live_ref = api.request("GET", f"{base}/git/ref/heads/{DEFAULT_BASE_REF}")
+    live_object = live_ref.get("object") if isinstance(live_ref, dict) else None
+    live_base_sha = (
+        live_object.get("sha") if isinstance(live_object, dict) else None
+    )
+    if not isinstance(live_base_sha, str) or not re.fullmatch(
+        r"[0-9a-fA-F]{40}", live_base_sha
+    ):
+        raise GateError("GitHub live base ref SHA is malformed")
+    pull_base = pull.get("base")
+    if not isinstance(pull_base, dict):
+        raise GateError("GitHub pull request base identity is missing")
+    resolved = dict(pull)
+    resolved["base"] = {**pull_base, "sha": live_base_sha.lower()}
+    return resolved
 
 
 def pull_head(pull: dict[str, Any]) -> str:
@@ -1155,7 +1181,10 @@ def evidence_event_requires_pending(contract: dict[str, Any]) -> bool:
 
     authors = accepted_authors(contract)
     author = os.environ.get("HARNESS_COMMENT_AUTHOR", "")
-    if normalize_login(author) in authors:
+    if (
+        normalize_login(author) in authors
+        and os.environ.get("HARNESS_COMMENT_AUTHOR_TYPE") == "Bot"
+    ):
         return True
     return bool(
         normalize_login(author)

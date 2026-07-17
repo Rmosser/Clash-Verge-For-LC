@@ -2327,6 +2327,8 @@ def validate_repo() -> tuple[list[str], dict[str, object]]:
                     "pull_request_target",
                     "issue_comment",
                     "repository_dispatch",
+                ],
+                "review_signal_route_events": [
                     "workflow_run",
                 ],
                 "heartbeat_event": "schedule",

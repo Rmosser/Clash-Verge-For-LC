@@ -79,9 +79,9 @@ jobs:
           signal_pr_number="${BASH_REMATCH[1]}"
           signal_head_sha="${BASH_REMATCH[2],,}"
 
-          IFS=$'\t' read -r number state head_sha base_repository base_ref base_sha < <(
+          IFS=$'\t' read -r number state head_sha base_repository base_ref < <(
             gh api "repos/${GITHUB_REPOSITORY}/pulls/${signal_pr_number}" \
-              --jq '[.number, .state, .head.sha, .base.repo.full_name, .base.ref, .base.sha] | @tsv'
+              --jq '[.number, .state, .head.sha, .base.repo.full_name, .base.ref] | @tsv'
           )
           head_sha="${head_sha,,}"
           if [[ "${number}" != "${signal_pr_number}" ||
@@ -89,9 +89,16 @@ jobs:
                 "${base_repository}" != "${GITHUB_REPOSITORY}" ||
                 "${base_ref}" != "main" ||
                 ! "${head_sha}" =~ ^[0-9a-f]{40}$ ||
-                ! "${base_sha}" =~ ^[0-9a-fA-F]{40}$ ||
                 "${head_sha}" != "${signal_head_sha}" ]]; then
             echo "The review signal no longer matches one live main PR head." >&2
+            exit 4
+          fi
+          base_sha="$(
+            gh api "repos/${base_repository}/git/ref/heads/${base_ref}" --jq '.object.sha'
+          )"
+          base_sha="${base_sha,,}"
+          if [[ ! "${base_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "The live PR base ref is malformed." >&2
             exit 4
           fi
 
@@ -152,24 +159,30 @@ jobs:
             exit 2
           fi
 
-          IFS=$'\t' read -r state head_sha base_repository base_ref base_sha < <(
+          IFS=$'\t' read -r state head_sha base_repository base_ref < <(
             gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER_INPUT}" \
-              --jq '[.state, .head.sha, .base.repo.full_name, .base.ref, .base.sha] | @tsv'
+              --jq '[.state, .head.sha, .base.repo.full_name, .base.ref] | @tsv'
           )
           head_sha="${head_sha,,}"
-          base_sha="${base_sha,,}"
           expected_head_sha="${EXPECTED_HEAD_SHA_INPUT,,}"
           if [[ "${state}" != "open" ||
                 "${base_repository}" != "${GITHUB_REPOSITORY}" ||
                 "${base_ref}" != "main" ||
-                ! "${head_sha}" =~ ^[0-9a-f]{40}$ ||
-                ! "${base_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+                ! "${head_sha}" =~ ^[0-9a-f]{40}$ ]]; then
             echo "The pull request is not an eligible live main PR." >&2
             exit 3
           fi
           if [[ -n "${expected_head_sha}" && "${expected_head_sha}" != "${head_sha}" ]]; then
             echo "The triggering event is stale for the live PR head." >&2
             exit 4
+          fi
+          base_sha="$(
+            gh api "repos/${base_repository}/git/ref/heads/${base_ref}" --jq '.object.sha'
+          )"
+          base_sha="${base_sha,,}"
+          if [[ ! "${base_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "The live PR base ref is malformed." >&2
+            exit 3
           fi
 
           printf 'pr_number=%s\n' "${PR_NUMBER_INPUT}" >> "${GITHUB_OUTPUT}"
@@ -203,6 +216,7 @@ jobs:
           HARNESS_EVENT_NAME: ${{ github.event_name }}
           HARNESS_EVIDENCE_EVENT: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.evidence_event == '1' && '1' || '0' }}
           HARNESS_COMMENT_AUTHOR: ${{ github.event.comment.user.login || '' }}
+          HARNESS_COMMENT_AUTHOR_TYPE: ${{ github.event.comment.user.type || '' }}
           HARNESS_COMMENT_ASSOCIATION: ${{ github.event.comment.author_association || '' }}
           HARNESS_COMMENT_BODY: ${{ github.event.comment.body || '' }}
           GITHUB_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}

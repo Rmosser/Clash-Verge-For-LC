@@ -149,7 +149,7 @@ jobs:
                 '[.[][] | select(.context == $context)][0] // {}' \
                 <<<"${statuses_json}"
             )"
-            if [[ "$(jq -r '.state // empty' <<<"${latest_status}")" != failure || "$(jq -r '.description // empty' <<<"${latest_status}")" != "${drift_description}" ]]; then
+            if [[ "$(jq -r '.state // empty' <<<"${latest_status}")" != failure || "$(jq -r '.description // empty' <<<"${latest_status}")" != "${drift_description}" || "$(jq -r '.creator.login // empty' <<<"${latest_status}")" != "github-actions[bot]" || "$(jq -r '.creator.type // empty' <<<"${latest_status}")" != Bot ]]; then
               echo "Failed to leave the bound head with the latest fail-closed status." >&2
               return 1
             fi
@@ -173,16 +173,20 @@ jobs:
           )"
           latest_state="$(jq -r '.state // empty' <<<"${latest_status}")"
           latest_description="$(jq -r '.description // empty' <<<"${latest_status}")"
+          latest_creator_login="$(jq -r '.creator.login // empty' <<<"${latest_status}")"
+          latest_creator_type="$(jq -r '.creator.type // empty' <<<"${latest_status}")"
           verify_live_identity || exit 1
-          case "${latest_state}:${latest_description}" in
-            "pending:${pending_description}"|\
-            "success:${success_description}"|\
-            "failure:${failure_description}"|\
-            "failure:${pending_failure_description}")
-              echo "Current PR identity already has a reconciled ${STATUS_CONTEXT} status; skipping duplicate pending write."
-              exit 0
-              ;;
-          esac
+          if [[ "${latest_creator_login}" == "github-actions[bot]" && "${latest_creator_type}" == Bot ]]; then
+            case "${latest_state}:${latest_description}" in
+              "pending:${pending_description}"|\
+              "success:${success_description}"|\
+              "failure:${failure_description}"|\
+              "failure:${pending_failure_description}")
+                echo "Current PR identity already has a reconciled ${STATUS_CONTEXT} status; skipping duplicate pending write."
+                exit 0
+                ;;
+            esac
+          fi
           gh api --method POST \
             "repos/${GITHUB_REPOSITORY}/statuses/${EXPECTED_HEAD_SHA}" \
             -f state=pending \
@@ -339,7 +343,7 @@ jobs:
                 '[.[][] | select(.context == $context)][0] // {}' \
                 <<<"${statuses_json}"
             )"
-            if [[ "$(jq -r '.state // empty' <<<"${latest_status}")" != failure || "$(jq -r '.description // empty' <<<"${latest_status}")" != "${drift_description}" ]]; then
+            if [[ "$(jq -r '.state // empty' <<<"${latest_status}")" != failure || "$(jq -r '.description // empty' <<<"${latest_status}")" != "${drift_description}" || "$(jq -r '.creator.login // empty' <<<"${latest_status}")" != "github-actions[bot]" || "$(jq -r '.creator.type // empty' <<<"${latest_status}")" != Bot ]]; then
               echo "Failed to leave the bound head with the latest fail-closed status." >&2
               return 1
             fi
@@ -369,8 +373,10 @@ jobs:
           )"
           latest_state="$(jq -r '.state // empty' <<<"${latest_status}")"
           latest_description="$(jq -r '.description // empty' <<<"${latest_status}")"
+          latest_creator_login="$(jq -r '.creator.login // empty' <<<"${latest_status}")"
+          latest_creator_type="$(jq -r '.creator.type // empty' <<<"${latest_status}")"
           verify_live_identity || exit 1
-          if [[ "${latest_state}" == "${state}" && "${latest_description}" == "${description}" ]]; then
+          if [[ "${latest_creator_login}" == "github-actions[bot]" && "${latest_creator_type}" == Bot && "${latest_state}" == "${state}" && "${latest_description}" == "${description}" ]]; then
             echo "Current PR identity already has the requested ${STATUS_CONTEXT} result; skipping duplicate final write."
             exit 0
           fi
