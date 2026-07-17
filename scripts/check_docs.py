@@ -635,8 +635,9 @@ def require_standalone_tree_directory(
     if output is None:
         return False
     if not output:
-        errors.append(f"standalone base directory is missing: {relative}")
-        return False
+        # A first Harness push can legitimately compare against a base commit
+        # that predates the archive directories entirely.
+        return True
     if output.count(b"\0") != 1 or not output.endswith(b"\0") or b"\t" not in output:
         errors.append(f"malformed standalone base directory entry for {relative}")
         return False
