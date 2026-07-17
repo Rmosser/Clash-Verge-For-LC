@@ -623,6 +623,50 @@ def optional_standalone_head() -> str | None:
     return resolved
 
 
+def require_standalone_tree_directory(
+    base_sha: str, relative: str, errors: list[str]
+) -> bool:
+    output = git_plumbing_output(
+        ["ls-tree", "-z", "--full-tree", base_sha, "--", f":(literal){relative}"],
+        f"read standalone base directory entry for {relative}",
+        errors,
+        len(relative.encode("utf-8")) + 256,
+    )
+    if output is None:
+        return False
+    if not output:
+        errors.append(f"standalone base directory is missing: {relative}")
+        return False
+    if output.count(b"\0") != 1 or not output.endswith(b"\0") or b"\t" not in output:
+        errors.append(f"malformed standalone base directory entry for {relative}")
+        return False
+    header, entry_path = output[:-1].split(b"\t", 1)
+    fields = header.split(b" ")
+    if len(fields) != 3 or entry_path != relative.encode("utf-8"):
+        errors.append(f"malformed standalone base directory entry for {relative}")
+        return False
+    try:
+        mode, object_type, object_id = (
+            fields[0].decode("ascii"),
+            fields[1].decode("ascii"),
+            fields[2].decode("ascii"),
+        )
+    except UnicodeDecodeError:
+        errors.append(f"non-ASCII standalone base directory metadata for {relative}")
+        return False
+    if (
+        mode != "040000"
+        or object_type != "tree"
+        or re.fullmatch(r"[0-9a-f]{40,64}", object_id) is None
+    ):
+        errors.append(
+            f"standalone base directory must be a real Git tree, not a symlink or "
+            f"special entry: {relative}"
+        )
+        return False
+    return True
+
+
 def standalone_tree_plan(
     base_sha: str, relative: str, errors: list[str]
 ) -> tuple[bool, str | None, bytes | None]:
@@ -700,6 +744,10 @@ def standalone_completed_plan_relatives(
 ) -> set[str] | None:
     docs_relative = DOCS_ROOT.relative_to(ROOT).as_posix()
     completed_prefix = f"{docs_relative}/exec-plans/completed/"
+    if not require_standalone_tree_directory(
+        base_sha, completed_prefix.rstrip("/"), errors
+    ):
+        return None
     output = git_plumbing_output(
         [
             "ls-tree",
@@ -741,6 +789,10 @@ def standalone_active_plan_relatives(
 ) -> set[str] | None:
     docs_relative = DOCS_ROOT.relative_to(ROOT).as_posix()
     active_prefix = f"{docs_relative}/exec-plans/active/"
+    if not require_standalone_tree_directory(
+        base_sha, active_prefix.rstrip("/"), errors
+    ):
+        return None
     output = git_plumbing_output(
         [
             "ls-tree",
@@ -1468,11 +1520,22 @@ def exact_archive_index_transition(
 ) -> bool:
     trusted_index = TRUSTED_ROOT / index_path
     target_index = ROOT / index_path
+    trusted_metadata: list[os.stat_result] = []
+    target_metadata: list[os.stat_result] = []
     trusted_text = read_regular_text_at(
-        TRUSTED_ROOT, index_path, errors
+        TRUSTED_ROOT, index_path, errors, metadata_out=trusted_metadata
     )
-    target_text = read_regular_text_at(ROOT, index_path, errors)
+    target_text = read_regular_text_at(
+        ROOT, index_path, errors, metadata_out=target_metadata
+    )
     if trusted_text is None or target_text is None:
+        return False
+    if stat.S_IMODE(trusted_metadata[0].st_mode) != stat.S_IMODE(
+        target_metadata[0].st_mode
+    ):
+        errors.append(
+            f"{index_path} archive cleanup may not change the index file mode"
+        )
         return False
 
     active_links = [
@@ -1537,8 +1600,17 @@ def exact_standalone_archive_index_transition(
         )
         return False
     trusted_text = base_blob.decode("utf-8")
-    target_text = read_regular_text_at(ROOT, index_path, errors)
+    target_metadata: list[os.stat_result] = []
+    target_text = read_regular_text_at(
+        ROOT, index_path, errors, metadata_out=target_metadata
+    )
     if target_text is None:
+        return False
+    target_mode = "100755" if target_metadata[0].st_mode & 0o111 else "100644"
+    if base_mode != target_mode:
+        errors.append(
+            f"{index_path} archive cleanup may not change the index file mode"
+        )
         return False
 
     source_index = ROOT / index_path
@@ -1772,6 +1844,12 @@ def check_target_invariants(
                     )
                     if not valid_base:
                         continue
+                elif os.environ.get("CI", "").casefold() == "true":
+                    errors.append(
+                        f"{STANDALONE_BASE_ENV} is required in CI when no Active Plan "
+                        "exists so archive transitions cannot be mistaken for idle state"
+                    )
+                    continue
                 else:
                     standalone_base = optional_standalone_head()
                 if standalone_base is not None:
