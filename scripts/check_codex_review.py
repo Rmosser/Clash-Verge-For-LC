@@ -452,7 +452,7 @@ def trivial_path(path: str, review_required_patterns: tuple[str, ...]) -> bool:
     if not normalized.endswith(TRIVIAL_DOC_SUFFIXES):
         return False
     semantic_tokens = [
-        tuple(filter(None, re.split(r"[-_.]+", component)))
+        tuple(filter(None, re.split(r"[^a-z0-9]+", component)))
         for component in normalized.split("/")[1:]
     ]
     if any(
@@ -949,11 +949,21 @@ def live_payload(
                 f"{base}/issues/comments/{comment_id}/reactions"
             )
         enriched_issue_comments.append(enriched)
+    files = api.get_pages(f"{base}/pulls/{pr_number}/files")
+    reviews = api.get_pages(f"{base}/pulls/{pr_number}/reviews")
+    review_comments = api.get_pages(f"{base}/pulls/{pr_number}/comments")
+    final_pull = live_pull(api, repository, pr_number)
+    if not same_pull_identity(
+        pull_identity(final_pull, repository), expected_identity
+    ):
+        raise GateError(
+            "pull request identity changed while collecting review artifacts"
+        )
     return {
-        "pull": pull,
-        "files": api.get_pages(f"{base}/pulls/{pr_number}/files"),
-        "reviews": api.get_pages(f"{base}/pulls/{pr_number}/reviews"),
-        "review_comments": api.get_pages(f"{base}/pulls/{pr_number}/comments"),
+        "pull": final_pull,
+        "files": files,
+        "reviews": reviews,
+        "review_comments": review_comments,
         "issue_comments": enriched_issue_comments,
     }
 

@@ -187,6 +187,26 @@ def git_lines(*args: str) -> list[str]:
     return [line for line in git_output(*args).splitlines() if line.strip()]
 
 
+def git_nul_paths(*args: str) -> list[str]:
+    result = subprocess.run(
+        ["git", "-C", str(ROOT), *args],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        fail([
+            f"git {' '.join(args)} failed: {detail}",
+            "if the base ref is missing, fetch it first (CI checkout needs fetch-depth: 0)",
+        ])
+    if result.stdout and not result.stdout.endswith(b"\0"):
+        fail([f"git {' '.join(args)} returned malformed non-NUL path output"])
+    return [
+        os.fsdecode(token)
+        for token in result.stdout.rstrip(b"\0").split(b"\0")
+        if token
+    ]
+
+
 def default_base() -> str:
     explicit = os.environ.get("HARNESS_DIFF_BASE_REF", "").strip()
     if not explicit:
@@ -434,10 +454,14 @@ def changed_files(base: str, head: str, *, worktree_only: bool = False) -> list[
         return sorted(worktree)
     if head_exists and base_exists and not same_commit:
         files.update(
-            git_lines("diff", "--name-only", "--no-renames", f"{base}...{head}")
+            git_nul_paths(
+                "diff", "-z", "--name-only", "--no-renames", f"{base}...{head}"
+            )
         )
     elif head_exists and base_exists:
-        files.update(git_lines("diff", "--name-only", "--no-renames", base, head))
+        files.update(
+            git_nul_paths("diff", "-z", "--name-only", "--no-renames", base, head)
+        )
     elif base not in {"HEAD", head}:
         fail([
             f"base ref is unavailable: {base}",
