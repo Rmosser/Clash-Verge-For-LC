@@ -1147,6 +1147,25 @@ def publish_pending_before_evaluation(
     )
 
 
+def evidence_event_requires_pending(contract: dict[str, Any]) -> bool:
+    if os.environ.get("HARNESS_EVIDENCE_EVENT") == "1":
+        return True
+    if os.environ.get("HARNESS_EVENT_NAME") != "issue_comment":
+        return False
+
+    authors = accepted_authors(contract)
+    author = os.environ.get("HARNESS_COMMENT_AUTHOR", "")
+    if normalize_login(author) in authors:
+        return True
+    return bool(
+        normalize_login(author)
+        and normalize_login(author) not in authors
+        and os.environ.get("HARNESS_COMMENT_ASSOCIATION", "").upper()
+        in TRUSTED_TRIGGER_ASSOCIATIONS
+        and TRIGGER_RE.search(os.environ.get("HARNESS_COMMENT_BODY", ""))
+    )
+
+
 def publish_status_if_changed(
     api: GitHubAPI,
     repository: str,
@@ -1323,7 +1342,7 @@ def main() -> int:
                     context,
                     args.target_url,
                     status_app_id,
-                    force=os.environ.get("HARNESS_FORCE_EARLY_PENDING") == "1",
+                    force=evidence_event_requires_pending(contract),
                 ):
                     raise GateError(
                         "pull request identity changed while marking review pending"

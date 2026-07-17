@@ -36,7 +36,6 @@ jobs:
         if: github.event_name == 'workflow_run'
         env:
           GH_TOKEN: ${{ github.token }}
-          RUN_WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
           RUN_WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
           RUN_WORKFLOW_PATH: ${{ github.event.workflow_run.path }}
           RUN_EVENT: ${{ github.event.workflow_run.event }}
@@ -48,8 +47,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "${RUN_WORKFLOW_NAME}" != "codex-review-signal" ||
-                "${RUN_CONCLUSION}" != "success" ||
+          if [[ "${RUN_CONCLUSION}" != "success" ||
                 ( "${RUN_EVENT}" != "pull_request_review" &&
                   "${RUN_EVENT}" != "pull_request_review_comment" ) ||
                 "${RUN_REPOSITORY}" != "${GITHUB_REPOSITORY}" ||
@@ -127,7 +125,8 @@ jobs:
             "repos/${GITHUB_REPOSITORY}/dispatches" \
             -f event_type=codex-review-reconcile \
             -F "client_payload[pr_number]=${PR_NUMBER}" \
-            -f "client_payload[expected_head_sha]=${EXPECTED_HEAD_SHA}"
+            -f "client_payload[expected_head_sha]=${EXPECTED_HEAD_SHA}" \
+            -f "client_payload[evidence_event]=1"
 
   reconcile:
     name: refresh-codex-review-status
@@ -201,7 +200,11 @@ jobs:
           PR_NUMBER: ${{ steps.resolve-live-pr.outputs.pr_number }}
           EXPECTED_HEAD_SHA: ${{ steps.resolve-live-pr.outputs.head_sha }}
           EXPECTED_BASE_SHA: ${{ steps.resolve-live-pr.outputs.base_sha }}
-          HARNESS_FORCE_EARLY_PENDING: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.expected_head_sha != '' && '1' || '0' }}
+          HARNESS_EVENT_NAME: ${{ github.event_name }}
+          HARNESS_EVIDENCE_EVENT: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.evidence_event == '1' && '1' || '0' }}
+          HARNESS_COMMENT_AUTHOR: ${{ github.event.comment.user.login || '' }}
+          HARNESS_COMMENT_ASSOCIATION: ${{ github.event.comment.author_association || '' }}
+          HARNESS_COMMENT_BODY: ${{ github.event.comment.body || '' }}
           GITHUB_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         shell: bash
         run: |

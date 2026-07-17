@@ -50,15 +50,22 @@ jobs:
           state="$(jq -r '.state' <<<"${pull_json}")"
           base_repository="$(jq -r '.base.repo.full_name' <<<"${pull_json}")"
           base_ref="$(jq -r '.base.ref' <<<"${pull_json}")"
-          base_sha="$(jq -r '.base.sha' <<<"${pull_json}")"
           head_repository="$(jq -r '.head.repo.full_name // empty' <<<"${pull_json}")"
           head_sha="$(jq -r '.head.sha' <<<"${pull_json}")"
           if [[ "${state}" != open || "${base_repository}" != "${GITHUB_REPOSITORY}" || "${base_ref}" != main ]]; then
             echo "Pull request is not an open PR against ${GITHUB_REPOSITORY}:main" >&2
             exit 1
           fi
-          if [[ -z "${head_repository}" || ! "${head_sha}" =~ ^[0-9a-f]{40}$ || ! "${base_sha}" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "Pull request head/base identity is incomplete" >&2
+          if [[ -z "${head_repository}" || ! "${head_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Pull request head identity is incomplete" >&2
+            exit 1
+          fi
+          base_sha="$(
+            gh api "repos/${base_repository}/git/ref/heads/${base_ref}" --jq '.object.sha'
+          )"
+          base_sha="${base_sha,,}"
+          if [[ ! "${base_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Live base ref identity is incomplete" >&2
             exit 1
           fi
           if [[ "${GITHUB_EVENT_NAME}" == repository_dispatch ]]; then
@@ -105,11 +112,18 @@ jobs:
             live_state="$(jq -r '.state' <<<"${pull_json}")"
             live_base_repository="$(jq -r '.base.repo.full_name' <<<"${pull_json}")"
             live_base_ref="$(jq -r '.base.ref' <<<"${pull_json}")"
-            live_base_sha="$(jq -r '.base.sha' <<<"${pull_json}")"
             live_head_repository="$(jq -r '.head.repo.full_name // empty' <<<"${pull_json}")"
             live_head_sha="$(jq -r '.head.sha' <<<"${pull_json}")"
-            if [[ "${live_state}" != open || "${live_base_repository}" != "${GITHUB_REPOSITORY}" || "${live_base_ref}" != main || "${live_head_repository}" != "${EXPECTED_HEAD_REPOSITORY}" || "${live_head_sha}" != "${EXPECTED_HEAD_SHA}" || "${live_base_sha}" != "${EXPECTED_BASE_SHA}" ]]; then
+            if [[ "${live_state}" != open || "${live_base_repository}" != "${GITHUB_REPOSITORY}" || "${live_base_ref}" != main || "${live_head_repository}" != "${EXPECTED_HEAD_REPOSITORY}" || "${live_head_sha}" != "${EXPECTED_HEAD_SHA}" ]]; then
               echo "Pull request identity no longer matches the pending status binding." >&2
+              return 1
+            fi
+            live_base_sha="$(
+              gh api "repos/${live_base_repository}/git/ref/heads/${live_base_ref}" --jq '.object.sha'
+            )"
+            live_base_sha="${live_base_sha,,}"
+            if [[ "${live_base_sha}" != "${EXPECTED_BASE_SHA}" ]]; then
+              echo "Live base ref no longer matches the pending status binding." >&2
               return 1
             fi
           }
@@ -212,6 +226,11 @@ jobs:
         run: |
           set -euo pipefail
 
+          actual_base_sha="$(git -C trusted rev-parse HEAD)"
+          if [[ "${actual_base_sha}" != "${PR_BASE_SHA}" ]]; then
+            echo "The trusted checkout does not match the bound live base ref." >&2
+            exit 1
+          fi
           git -c protocol.file.allow=always -C target fetch \
             --no-tags --no-recurse-submodules \
             "${GITHUB_WORKSPACE}/trusted" "${PR_BASE_SHA}"
@@ -283,11 +302,18 @@ jobs:
             live_state="$(jq -r '.state' <<<"${pull_json}")"
             live_base_repository="$(jq -r '.base.repo.full_name' <<<"${pull_json}")"
             live_base_ref="$(jq -r '.base.ref' <<<"${pull_json}")"
-            live_base_sha="$(jq -r '.base.sha' <<<"${pull_json}")"
             live_head_repository="$(jq -r '.head.repo.full_name // empty' <<<"${pull_json}")"
             live_head_sha="$(jq -r '.head.sha' <<<"${pull_json}")"
-            if [[ "${live_state}" != open || "${live_base_repository}" != "${GITHUB_REPOSITORY}" || "${live_base_ref}" != main || "${live_head_repository}" != "${EXPECTED_HEAD_REPOSITORY}" || "${live_head_sha}" != "${EXPECTED_HEAD_SHA}" || "${live_base_sha}" != "${EXPECTED_BASE_SHA}" ]]; then
+            if [[ "${live_state}" != open || "${live_base_repository}" != "${GITHUB_REPOSITORY}" || "${live_base_ref}" != main || "${live_head_repository}" != "${EXPECTED_HEAD_REPOSITORY}" || "${live_head_sha}" != "${EXPECTED_HEAD_SHA}" ]]; then
               echo "Pull request identity changed during validation; refusing a stale status write." >&2
+              return 1
+            fi
+            live_base_sha="$(
+              gh api "repos/${live_base_repository}/git/ref/heads/${live_base_ref}" --jq '.object.sha'
+            )"
+            live_base_sha="${live_base_sha,,}"
+            if [[ "${live_base_sha}" != "${EXPECTED_BASE_SHA}" ]]; then
+              echo "Live base ref changed during validation; refusing a stale status write." >&2
               return 1
             fi
           }

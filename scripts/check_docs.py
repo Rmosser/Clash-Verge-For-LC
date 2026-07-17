@@ -172,6 +172,7 @@ CURRENT_HEAD_REVIEW_SHA256 = (
     "164f2afe62fd133df75723bea018f8e12dc1b6a62db781da6a49c285d4aca8ba"
 )
 TRUSTED_CONTROL_FILES = (
+    f"{DOCS_ROOT.name}/doc-sync-rules.json",
     ".harness/repo-contract.json",
     ".github/workflows/codex-review-gate.yml",
     ".github/workflows/codex-review-heartbeat.yml",
@@ -736,7 +737,20 @@ def standalone_completed_plan_relatives(
 
 
 def check_trusted_control_files(errors: list[str]) -> None:
-    for relative_path in TRUSTED_CONTROL_FILES:
+    target_workflows = workflow_control_relatives(
+        ROOT, "target workflow control directory", errors
+    )
+    trusted_workflows = workflow_control_relatives(
+        TRUSTED_ROOT, "trusted workflow control directory", errors
+    )
+    if target_workflows != trusted_workflows:
+        errors.append(
+            "Target .github/workflows inventory must exactly match the trusted base; "
+            "workflow additions, removals, and renames require the trusted bootstrap path"
+        )
+
+    control_files = set(TRUSTED_CONTROL_FILES) | target_workflows | trusted_workflows
+    for relative_path in sorted(control_files):
         target_text = read_regular_text_at(ROOT, relative_path, errors)
         trusted_text = read_regular_text_at(TRUSTED_ROOT, relative_path, errors)
         if target_text is None or trusted_text is None:
@@ -747,6 +761,39 @@ def check_trusted_control_files(errors: list[str]) -> None:
                 f"base: {relative_path}; control-plane updates require the trusted "
                 "bootstrap path"
             )
+
+
+def workflow_control_relatives(
+    root: Path, label: str, errors: list[str]
+) -> set[str]:
+    workflows = root / ".github" / "workflows"
+    if workflows.is_symlink() or not workflows.is_dir():
+        errors.append(f"{label} must be a real directory, not a symlink: {workflows}")
+        return set()
+
+    relatives: set[str] = set()
+    for current, dirnames, filenames in os.walk(
+        workflows, topdown=True, followlinks=False
+    ):
+        current_path = Path(current)
+        for dirname in list(dirnames):
+            candidate = current_path / dirname
+            if candidate.is_symlink():
+                errors.append(
+                    f"{label} cannot contain a symlinked directory: "
+                    f"{candidate.relative_to(root).as_posix()}"
+                )
+                dirnames.remove(dirname)
+        for filename in filenames:
+            candidate = current_path / filename
+            relative = candidate.relative_to(root).as_posix()
+            if candidate.is_symlink() or not candidate.is_file():
+                errors.append(
+                    f"{label} must contain only regular files: {relative}"
+                )
+                continue
+            relatives.add(relative)
+    return relatives
 
 
 def string_list_field(
@@ -1726,6 +1773,8 @@ def check_document_status_workflow(
     required_fragments = (
         "branches: [main]",
         'gh api "repos/${GITHUB_REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}"',
+        'gh api "repos/${base_repository}/git/ref/heads/${base_ref}"',
+        'gh api "repos/${live_base_repository}/git/ref/heads/${live_base_ref}"',
         "head_sha: ${{ steps.resolve.outputs.head_sha }}",
         "base_sha: ${{ steps.resolve.outputs.base_sha }}",
         "repository: ${{ needs.resolve-pull-request.outputs.head_repository }}",
@@ -1736,6 +1785,8 @@ def check_document_status_workflow(
         "HARNESS_TRUSTED_REPO_ROOT: ${{ github.workspace }}/trusted",
         'git -c protocol.file.allow=always -C target fetch',
         '"${GITHUB_WORKSPACE}/trusted" "${PR_BASE_SHA}"',
+        'git -C trusted rev-parse HEAD',
+        '"${actual_base_sha}" != "${PR_BASE_SHA}"',
         'git -C target merge-tree --write-tree',
         'git -c core.hooksPath=/dev/null -C target commit-tree',
         'git -C target reset --hard "${merge_commit}"',
@@ -1752,6 +1803,18 @@ def check_document_status_workflow(
     )
     if any(fragment not in text for fragment in required_fragments):
         errors.append(f"Trusted document status workflow is incomplete: {relative}")
+    if (
+        "jq -r '.base.sha'" in text
+        or text.count("/git/ref/heads/${") != 3
+        or text.count(
+            'if [[ "${live_base_sha}" != "${EXPECTED_BASE_SHA}" ]]; then'
+        )
+        != 2
+    ):
+        errors.append(
+            "Trusted document status workflow must bind and revalidate the live base ref directly: "
+            f"{relative}"
+        )
     evaluate_marker = "      - name: Evaluate with trusted code\n"
     if evaluate_marker not in validation_job:
         errors.append(
