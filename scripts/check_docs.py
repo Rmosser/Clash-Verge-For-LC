@@ -195,7 +195,7 @@ OUT_OF_REPO_SCOPE_RE = re.compile(
 )
 CURRENT_HEAD_REVIEW_HEADING = "## Current-Head Codex Review\n\n"
 CURRENT_HEAD_REVIEW_SHA256 = (
-    "f934dd550088299d80a7729d3cbe00e5e8183f3be56ebb68cacdb746bab38de5"
+    "e81aea00895e88fa6125e7e743f1e3c6f582709d51adec29949341f7c5578b0d"
 )
 TRUSTED_CONTROL_FILES = (
     f"{DOCS_ROOT.name}/doc-sync-rules.json",

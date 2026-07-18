@@ -1170,6 +1170,15 @@ def pending_status_description(expected_identity: PullIdentity) -> str:
     )
 
 
+def review_epoch_pending_status_description(
+    expected_identity: PullIdentity,
+) -> str:
+    return bound_status_description(
+        f"Establishing Codex review epoch for current head {expected_identity.head_sha[:10]}.",
+        expected_identity.base_sha,
+    )
+
+
 def reconciliation_pending_status_description(
     expected_identity: PullIdentity,
 ) -> str:
@@ -1192,6 +1201,7 @@ def status_matches_pending(
         and status.get("description")
         in {
             pending_status_description(expected_identity),
+            review_epoch_pending_status_description(expected_identity),
             reconciliation_pending_status_description(expected_identity),
         }
     )
@@ -1221,24 +1231,28 @@ def live_base_evidence_cutoff(
     if not trusted:
         return False, ""
 
-    latest_base_sha = status_base_sha(trusted[0])
-    if latest_base_sha != expected_identity.base_sha:
+    if status_base_sha(trusted[0]) != expected_identity.base_sha:
         return True, ""
 
-    current_epoch: list[dict[str, Any]] = []
+    base_drifted = False
+    current_base_pending_times: list[str] = []
     for status in trusted:
         if status_base_sha(status) != expected_identity.base_sha:
-            break
-        current_epoch.append(status)
-    current_base_pending_times = [
-        created_at
-        for status in current_epoch
-        if status.get("state") == "pending"
-        and status.get("description") == pending_status_description(expected_identity)
-        and isinstance((created_at := status.get("created_at")), str)
-        and created_at
-    ]
-    return False, min(current_base_pending_times, default="")
+            base_drifted = True
+            if current_base_pending_times:
+                break
+            continue
+        if (
+            status.get("state") == "pending"
+            and status.get("description")
+            == review_epoch_pending_status_description(expected_identity)
+            and isinstance((created_at := status.get("created_at")), str)
+            and created_at
+        ):
+            current_base_pending_times.append(created_at)
+            if base_drifted:
+                break
+    return base_drifted, min(current_base_pending_times, default="")
 
 
 def prepare_live_base_evidence_epoch(
@@ -1250,7 +1264,7 @@ def prepare_live_base_evidence_epoch(
     target_url: str,
     status_app_id: int,
     *,
-    establish_missing_epoch: bool,
+    establish_missing_epoch: bool = True,
 ) -> str:
     statuses = statuses_for_identity(
         api, repository, pr_number, expected_identity
@@ -1269,6 +1283,7 @@ def prepare_live_base_evidence_epoch(
         expected_identity,
         context,
         target_url,
+        review_epoch_pending_status_description(expected_identity),
     ):
         raise GateError("could not establish the live base review epoch")
     statuses = statuses_for_identity(
@@ -1277,7 +1292,7 @@ def prepare_live_base_evidence_epoch(
     base_drifted, cutoff = live_base_evidence_cutoff(
         statuses, context, expected_identity, status_app_id
     )
-    if base_drifted or not cutoff:
+    if not cutoff:
         raise GateError("live base pending status did not expose a review epoch timestamp")
     return cutoff
 
@@ -1485,7 +1500,8 @@ def evidence_event_requires_pending(
     if resolved_event_name != "issue_comment":
         return False
     payload = github_event_payload() if event_payload is None else event_payload
-    if str(payload.get("action") or "").casefold() not in {
+    action = str(payload.get("action") or "").casefold()
+    if action not in {
         "created",
         "edited",
         "deleted",
@@ -1497,9 +1513,40 @@ def evidence_event_requires_pending(
     authors = accepted_authors(contract)
     if trusted_codex_actor(comment, authors):
         return True
-    return bool(
+    if (
         trusted_trigger(comment, authors)
         and trigger_bound_to_full_head(comment, expected_head)
+    ):
+        return True
+    if action == "edited":
+        changes = payload.get("changes")
+        body_change = changes.get("body") if isinstance(changes, dict) else None
+        previous_body = body_change.get("from") if isinstance(body_change, dict) else None
+        if isinstance(previous_body, str):
+            previous_comment = dict(comment)
+            previous_comment["body"] = previous_body
+            if trusted_trigger(previous_comment, authors) and trigger_bound_to_full_head(
+                previous_comment, expected_head
+            ):
+                return True
+    return bool(
+        action == "deleted"
+        and actor_login(comment)
+        and actor_login(comment) not in authors
+        and str(comment.get("author_association") or "").upper()
+        in TRUSTED_TRIGGER_ASSOCIATIONS
+    )
+
+
+def deleted_codex_comment_event(
+    contract: dict[str, Any], event_payload: dict[str, Any]
+) -> bool:
+    if str(event_payload.get("action") or "").casefold() != "deleted":
+        return False
+    comment = event_payload.get("comment")
+    return bool(
+        isinstance(comment, dict)
+        and trusted_codex_actor(comment, accepted_authors(contract))
     )
 
 
@@ -1511,7 +1558,7 @@ def publish_evidence_pending_before_artifacts(
     context: str,
     target_url: str,
     status_app_id: int,
-) -> bool:
+) -> str:
     latest_status = latest_status_for_identity(
         api,
         repository,
@@ -1519,11 +1566,17 @@ def publish_evidence_pending_before_artifacts(
         expected_identity,
         context,
     )
-    if status_matches_pending(
-        latest_status, context, expected_identity, status_app_id
+    if (
+        status_matches_pending(
+            latest_status, context, expected_identity, status_app_id
+        )
+        and latest_status is not None
+        and latest_status.get("description")
+        == reconciliation_pending_status_description(expected_identity)
     ):
-        return True
-    return publish_pending(
+        created_at = latest_status.get("created_at")
+        return created_at if isinstance(created_at, str) else ""
+    if not publish_pending(
         api,
         repository,
         pr_number,
@@ -1531,7 +1584,26 @@ def publish_evidence_pending_before_artifacts(
         context,
         target_url,
         reconciliation_pending_status_description(expected_identity),
+    ):
+        return ""
+    latest_status = latest_status_for_identity(
+        api,
+        repository,
+        pr_number,
+        expected_identity,
+        context,
     )
+    if (
+        not status_matches_pending(
+            latest_status, context, expected_identity, status_app_id
+        )
+        or latest_status is None
+        or latest_status.get("description")
+        != reconciliation_pending_status_description(expected_identity)
+    ):
+        return ""
+    created_at = latest_status.get("created_at")
+    return created_at if isinstance(created_at, str) else ""
 
 
 
@@ -1716,10 +1788,14 @@ def main() -> int:
                 or args.expected_head.lower() == initial_identity.head_sha
             )
         ):
+            event_payload = (
+                github_event_payload() if reconcile_reason == "issue_comment" else {}
+            )
             is_evidence_event = evidence_event_requires_pending(
                 contract,
                 initial_identity.head_sha,
                 event_name=reconcile_reason,
+                event_payload=event_payload,
             )
             if reconcile_reason == "issue_comment" and not is_evidence_event:
                 print("Ignoring unrelated issue_comment reconciliation event.")
@@ -1732,22 +1808,29 @@ def main() -> int:
                 context,
                 args.target_url,
                 status_app_id,
-                establish_missing_epoch=(
-                    reconcile_reason == "default-branch-push"
-                ),
+                establish_missing_epoch=True,
             )
-            if is_evidence_event and not publish_evidence_pending_before_artifacts(
-                api,
-                args.repository,
-                pr_number,
-                initial_identity,
-                context,
-                args.target_url,
-                status_app_id,
-            ):
-                raise GateError(
-                    "could not invalidate prior status before reading changed evidence"
+            if is_evidence_event:
+                evidence_event_cutoff = publish_evidence_pending_before_artifacts(
+                    api,
+                    args.repository,
+                    pr_number,
+                    initial_identity,
+                    context,
+                    args.target_url,
+                    status_app_id,
                 )
+                if not evidence_event_cutoff:
+                    raise GateError(
+                        "could not invalidate prior status before reading changed evidence"
+                    )
+                if str(event_payload.get("action") or "").casefold() in {
+                    "edited",
+                    "deleted",
+                }:
+                    evidence_not_before = max(
+                        evidence_not_before, evidence_event_cutoff
+                    )
         if args.fixture:
             payload = json.loads(args.fixture.read_text(encoding="utf-8"))
             if not isinstance(payload, dict):
