@@ -22,7 +22,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_AUTHORS = ("chatgpt-codex-connector[bot]",)
 DEFAULT_CONTEXT = "codex-review"
@@ -30,6 +29,12 @@ DEFAULT_BASE_REF = "main"
 GITHUB_ACTIONS_APP_ID = 15368
 GITHUB_ACTIONS_STATUS_CREATOR = "github-actions[bot]"
 STATUS_BASE_RE = re.compile(r"; base=([0-9a-f]{40})\.$", re.IGNORECASE)
+ROUTED_DESTRUCTIVE_PENDING_RE = re.compile(
+    r"^Codex invalidation h=([0-9a-f]{10}); "
+    r"t=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z); "
+    r"r=([1-9][0-9]*); base=([0-9a-f]{40})\.$",
+    re.IGNORECASE,
+)
 TRIVIAL_FILES = {
     "README.md",
     "CHANGELOG.md",
@@ -561,6 +566,13 @@ def review_activity_time(item: dict[str, Any]) -> str:
     return max(values, default="")
 
 
+def review_has_explicit_edit_time(item: dict[str, Any]) -> bool:
+    return any(
+        isinstance(item.get(key), str) and bool(item[key])
+        for key in ("updated_at", "edited_at", "last_edited_at")
+    )
+
+
 def evidence_time(item: dict[str, Any]) -> str:
     if "submitted_at" in item:
         return review_activity_time(item)
@@ -750,7 +762,14 @@ def evaluate(
             or finding_body(str(item.get("body") or ""))
         )
         and str(item.get("commit_id") or "").lower() == head_sha
-        and review_at_or_after_latest_trigger(item)
+        and (
+            review_at_or_after_latest_trigger(item)
+            or (
+                latest_trigger is not None
+                and finding_body(str(item.get("body") or ""))
+                and not review_has_explicit_edit_time(item)
+            )
+        )
     ]
     current_reviews = [
         item for item in current_review_round if review_after_latest_trigger(item)
@@ -1188,6 +1207,52 @@ def reconciliation_pending_status_description(
     )
 
 
+def destructive_evidence_pending_status_description(
+    expected_identity: PullIdentity,
+) -> str:
+    return bound_status_description(
+        f"Invalidating changed Codex evidence for current head {expected_identity.head_sha[:10]}.",
+        expected_identity.base_sha,
+    )
+
+
+def routed_destructive_pending_status_description(
+    expected_identity: PullIdentity, event_time: str, source_run_id: str
+) -> str:
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", event_time):
+        raise GateError("routed destructive event time is malformed")
+    if not re.fullmatch(r"[1-9][0-9]*", source_run_id):
+        raise GateError("routed destructive source run id is malformed")
+    return (
+        f"Codex invalidation h={expected_identity.head_sha[:10]}; "
+        f"t={event_time}; r={source_run_id}; base={expected_identity.base_sha}."
+    )
+
+
+def routed_destructive_pending_metadata(
+    status: dict[str, Any], expected_identity: PullIdentity
+) -> tuple[str, str]:
+    description = status.get("description")
+    if not isinstance(description, str):
+        return "", ""
+    match = ROUTED_DESTRUCTIVE_PENDING_RE.fullmatch(description)
+    if not match:
+        return "", ""
+    head_prefix, event_time, source_run_id, base_sha = match.groups()
+    if (
+        head_prefix.casefold() != expected_identity.head_sha[:10].casefold()
+        or base_sha.casefold() != expected_identity.base_sha.casefold()
+    ):
+        return "", ""
+    return event_time, source_run_id
+
+
+def routed_destructive_pending_time(
+    status: dict[str, Any], expected_identity: PullIdentity
+) -> str:
+    return routed_destructive_pending_metadata(status, expected_identity)[0]
+
+
 def status_matches_pending(
     status: dict[str, Any] | None,
     context: str,
@@ -1198,12 +1263,16 @@ def status_matches_pending(
         trusted_status_writer(status, status_app_id)
         and status.get("context") == context
         and status.get("state") == "pending"
-        and status.get("description")
-        in {
-            pending_status_description(expected_identity),
-            review_epoch_pending_status_description(expected_identity),
-            reconciliation_pending_status_description(expected_identity),
-        }
+        and (
+            status.get("description")
+            in {
+                pending_status_description(expected_identity),
+                review_epoch_pending_status_description(expected_identity),
+                reconciliation_pending_status_description(expected_identity),
+                destructive_evidence_pending_status_description(expected_identity),
+            }
+            or bool(routed_destructive_pending_time(status, expected_identity))
+        )
     )
 
 
@@ -1231,28 +1300,45 @@ def live_base_evidence_cutoff(
     if not trusted:
         return False, ""
 
-    if status_base_sha(trusted[0]) != expected_identity.base_sha:
-        return True, ""
-
-    base_drifted = False
-    current_base_pending_times: list[str] = []
+    base_drifted = any(
+        status_base_sha(status) != expected_identity.base_sha for status in trusted
+    )
+    review_epoch_time = ""
+    destructive_epoch_times: list[str] = []
     for status in trusted:
-        if status_base_sha(status) != expected_identity.base_sha:
-            base_drifted = True
-            if current_base_pending_times:
-                break
+        base_sha = status_base_sha(status)
+        if status.get("state") != "pending" or not isinstance(
+            (created_at := status.get("created_at")), str
+        ) or not created_at:
             continue
+        description = status.get("description")
+        status_identity = PullIdentity(
+            **{**asdict(expected_identity), "base_sha": base_sha}
+        )
+        if description == review_epoch_pending_status_description(status_identity):
+            if base_sha != expected_identity.base_sha:
+                return True, ""
+            review_epoch_time = created_at
+            break
         if (
-            status.get("state") == "pending"
-            and status.get("description")
-            == review_epoch_pending_status_description(expected_identity)
-            and isinstance((created_at := status.get("created_at")), str)
-            and created_at
+            base_sha == expected_identity.base_sha
+            and description
+            == destructive_evidence_pending_status_description(expected_identity)
         ):
-            current_base_pending_times.append(created_at)
-            if base_drifted:
-                break
-    return base_drifted, min(current_base_pending_times, default="")
+            destructive_epoch_times.append(created_at)
+            continue
+        if base_sha == expected_identity.base_sha:
+            routed_event_time = routed_destructive_pending_time(
+                status, expected_identity
+            )
+            if routed_event_time:
+                destructive_epoch_times.append(routed_event_time)
+                continue
+    if not review_epoch_time:
+        return base_drifted, ""
+    return base_drifted, max(
+        review_epoch_time, max(destructive_epoch_times, default="")
+    )
 
 
 def prepare_live_base_evidence_epoch(
@@ -1529,13 +1615,7 @@ def evidence_event_requires_pending(
                 previous_comment, expected_head
             ):
                 return True
-    return bool(
-        action == "deleted"
-        and actor_login(comment)
-        and actor_login(comment) not in authors
-        and str(comment.get("author_association") or "").upper()
-        in TRUSTED_TRIGGER_ASSOCIATIONS
-    )
+    return False
 
 
 def deleted_codex_comment_event(
@@ -1550,6 +1630,64 @@ def deleted_codex_comment_event(
     )
 
 
+def review_event_is_destructive(event_name: str, event_action: str) -> bool:
+    allowed_actions = {
+        "pull_request_review": {"submitted", "edited", "dismissed"},
+        "pull_request_review_comment": {"created", "edited", "deleted"},
+        "issue_comment": {"created", "edited", "deleted"},
+    }
+    normalized_name = event_name.strip().casefold()
+    normalized_action = event_action.strip().casefold()
+    if normalized_action not in allowed_actions.get(normalized_name, set()):
+        raise GateError("trusted review event metadata is invalid")
+    return normalized_action in {"edited", "deleted"}
+
+
+def routed_review_event_cutoff(
+    api: GitHubAPI,
+    repository: str,
+    pr_number: int,
+    expected_identity: PullIdentity,
+    context: str,
+    target_url: str,
+    status_app_id: int,
+    event_name: str,
+    event_action: str,
+    event_time: str,
+    source_run_id: str,
+) -> str:
+    destructive = review_event_is_destructive(event_name, event_action)
+    if not destructive:
+        return publish_evidence_pending_before_artifacts(
+            api,
+            repository,
+            pr_number,
+            expected_identity,
+            context,
+            target_url,
+            status_app_id,
+        )
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", event_time):
+        raise GateError("routed destructive event time is missing or malformed")
+    if not re.fullmatch(r"[1-9][0-9]*", source_run_id):
+        raise GateError("routed destructive source run id is missing or malformed")
+    statuses = statuses_for_identity(
+        api, repository, pr_number, expected_identity
+    )
+    if not any(
+        status_matches_pending(
+            status, context, expected_identity, status_app_id
+        )
+        and routed_destructive_pending_metadata(status, expected_identity)
+        == (event_time, source_run_id)
+        for status in statuses
+    ):
+        raise GateError(
+            "routed destructive event pending is missing for the bound event time"
+        )
+    return event_time
+
+
 def publish_evidence_pending_before_artifacts(
     api: GitHubAPI,
     repository: str,
@@ -1558,6 +1696,8 @@ def publish_evidence_pending_before_artifacts(
     context: str,
     target_url: str,
     status_app_id: int,
+    *,
+    destructive: bool = False,
 ) -> str:
     latest_status = latest_status_for_identity(
         api,
@@ -1566,13 +1706,19 @@ def publish_evidence_pending_before_artifacts(
         expected_identity,
         context,
     )
+    description = (
+        destructive_evidence_pending_status_description(expected_identity)
+        if destructive
+        else reconciliation_pending_status_description(expected_identity)
+    )
     if (
-        status_matches_pending(
+        not destructive
+        and status_matches_pending(
             latest_status, context, expected_identity, status_app_id
         )
         and latest_status is not None
         and latest_status.get("description")
-        == reconciliation_pending_status_description(expected_identity)
+        == description
     ):
         created_at = latest_status.get("created_at")
         return created_at if isinstance(created_at, str) else ""
@@ -1583,7 +1729,7 @@ def publish_evidence_pending_before_artifacts(
         expected_identity,
         context,
         target_url,
-        reconciliation_pending_status_description(expected_identity),
+        description,
     ):
         return ""
     latest_status = latest_status_for_identity(
@@ -1598,8 +1744,7 @@ def publish_evidence_pending_before_artifacts(
             latest_status, context, expected_identity, status_app_id
         )
         or latest_status is None
-        or latest_status.get("description")
-        != reconciliation_pending_status_description(expected_identity)
+        or latest_status.get("description") != description
     ):
         return ""
     created_at = latest_status.get("created_at")
@@ -1810,7 +1955,41 @@ def main() -> int:
                 status_app_id,
                 establish_missing_epoch=True,
             )
+            if reconcile_reason == "review-event":
+                review_event_name = os.environ.get(
+                    "HARNESS_REVIEW_EVENT_NAME", ""
+                )
+                review_event_action = os.environ.get(
+                    "HARNESS_REVIEW_EVENT_ACTION", ""
+                )
+                destructive_review_event = review_event_is_destructive(
+                    review_event_name, review_event_action
+                )
+                review_event_cutoff = routed_review_event_cutoff(
+                    api,
+                    args.repository,
+                    pr_number,
+                    initial_identity,
+                    context,
+                    args.target_url,
+                    status_app_id,
+                    review_event_name,
+                    review_event_action,
+                    os.environ.get("HARNESS_REVIEW_EVENT_TIME", ""),
+                    os.environ.get("HARNESS_REVIEW_EVENT_SOURCE_RUN_ID", ""),
+                )
+                if not review_event_cutoff:
+                    raise GateError(
+                        "could not invalidate prior status before reading review evidence"
+                    )
+                if destructive_review_event:
+                    evidence_not_before = max(
+                        evidence_not_before, review_event_cutoff
+                    )
             if is_evidence_event:
+                destructive_evidence_event = str(
+                    event_payload.get("action") or ""
+                ).casefold() in {"edited", "deleted"}
                 evidence_event_cutoff = publish_evidence_pending_before_artifacts(
                     api,
                     args.repository,
@@ -1819,15 +1998,13 @@ def main() -> int:
                     context,
                     args.target_url,
                     status_app_id,
+                    destructive=destructive_evidence_event,
                 )
                 if not evidence_event_cutoff:
                     raise GateError(
                         "could not invalidate prior status before reading changed evidence"
                     )
-                if str(event_payload.get("action") or "").casefold() in {
-                    "edited",
-                    "deleted",
-                }:
+                if destructive_evidence_event:
                     evidence_not_before = max(
                         evidence_not_before, evidence_event_cutoff
                     )

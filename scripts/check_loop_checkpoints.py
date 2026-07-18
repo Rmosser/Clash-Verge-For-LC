@@ -1009,6 +1009,18 @@ def classify(
     return "not in Scope allowlist"
 
 
+def require_active_plan_ownership(plan: Path | None, changed: list[str]) -> None:
+    if plan is None or not changed:
+        return
+    plan_path = plan.relative_to(ROOT).as_posix()
+    if plan_path not in changed:
+        fail([
+            f"stale Active Plan cannot authorize this diff: {plan_path}",
+            "the current PR must update and own its Active Plan, or archive the "
+            "existing plan before unrelated work proceeds",
+        ])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", help="base ref for the merge-base diff")
@@ -1047,6 +1059,7 @@ def main() -> None:
         ),
     )
     plan, bookkeeping_allowed = find_active_plan(set(changed))
+    require_active_plan_ownership(plan, changed)
     allows, denies = scope_patterns(plan) if plan else ([], [])
     required_plan_patterns, policy_denies, archive_indexes = scope_policy()
     denies.extend(policy_denies)

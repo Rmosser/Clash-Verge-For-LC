@@ -14,7 +14,8 @@
     "scripts/check_loop_checkpoints.py",
     ".github/workflows/codex-review-gate.yml",
     "scripts/check_codex_review.py",
-    ".github/workflows/codex-review-heartbeat.yml"
+    ".github/workflows/codex-review-heartbeat.yml",
+    ".github/workflows/codex-review-signal.yml"
   ],
   "entrypoint_links": [
     {

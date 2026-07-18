@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 # HARNESS_WRAPPER_CHECK_DOCS_V2
-
 import argparse
 import fnmatch
 import hashlib
@@ -120,16 +119,25 @@ EXPECTED_CODEX_REVIEW_POLICY = {
     "required_check_activation": "required_after_live_emitter_smoke",
     "required_check_activation_scope": "per_repository",
     "trusted_status_workflow": ".github/workflows/codex-review-gate.yml",
+    "review_signal_workflow": ".github/workflows/codex-review-signal.yml",
+    "review_signal_events": [
+        "pull_request_review",
+        "pull_request_review_comment",
+    ],
     "trusted_events": [
         "pull_request_target",
         "issue_comment",
         "repository_dispatch",
+        "workflow_run",
+        "push",
     ],
     "status_writer_events": [
         "pull_request_target",
         "issue_comment",
         "repository_dispatch",
+        "workflow_run",
     ],
+    "review_signal_route_events": ["workflow_run"],
     "heartbeat_event": "schedule",
     "artifact_binding": "live_pr_head_sha",
 }
@@ -195,13 +203,14 @@ OUT_OF_REPO_SCOPE_RE = re.compile(
 )
 CURRENT_HEAD_REVIEW_HEADING = "## Current-Head Codex Review\n\n"
 CURRENT_HEAD_REVIEW_SHA256 = (
-    "e81aea00895e88fa6125e7e743f1e3c6f582709d51adec29949341f7c5578b0d"
+    "a872ce5376c1bf2a0f879bdc0c24c670593458160c529287eb1ec82e49d944f9"
 )
 TRUSTED_CONTROL_FILES = (
     f"{DOCS_ROOT.name}/doc-sync-rules.json",
     ".harness/repo-contract.json",
     ".github/workflows/codex-review-gate.yml",
     ".github/workflows/codex-review-heartbeat.yml",
+    ".github/workflows/codex-review-signal.yml",
     "scripts/check_codex_review.py",
     "scripts/check_docs.py",
     "scripts/check_loop_checkpoints.py",
@@ -2440,16 +2449,65 @@ def check_codex_review_workflows(
     gate_relative = ".github/workflows/codex-review-gate.yml"
     heartbeat_relative = ".github/workflows/codex-review-heartbeat.yml"
     signal_relative = ".github/workflows/codex-review-signal.yml"
-    for relative in (gate_relative, heartbeat_relative):
+    for relative in (gate_relative, heartbeat_relative, signal_relative):
         if relative not in required_paths:
             errors.append(f"doc-sync-rules must require trusted workflow: {relative}")
 
     signal_path = ROOT / signal_relative
-    if signal_relative in required_paths or signal_path.exists() or signal_path.is_symlink():
+    if signal_path.is_symlink() or not signal_path.is_file():
         errors.append(
-            "PR-sourced Codex review signal workflow must be absent; review evidence "
-            "is reconciled by the trusted heartbeat"
+            f"Codex review signal must be a regular file: {signal_relative}"
         )
+    else:
+        signal_text = signal_path.read_text(encoding="utf-8")
+        signal_entries = workflow_mapping_entries(signal_text)
+        required_signal_entries = {
+            ("on", "pull_request_review"): "",
+            ("on", "pull_request_review", "types"):
+                "[submitted, edited, dismissed]",
+            ("on", "pull_request_review_comment"): "",
+            ("on", "pull_request_review_comment", "types"):
+                "[created, edited, deleted]",
+            ("permissions",): "{}",
+            ("jobs", "signal", "permissions"): "{}",
+        }
+        if any(
+            signal_entries.get(path, []) != [value]
+            for path, value in required_signal_entries.items()
+        ):
+            errors.append(
+                "Codex review signal must use only the canonical review events "
+                "with empty workflow and job permissions"
+            )
+        required_signal_fragments = (
+            "event-${{ github.event_name }}",
+            "action-${{ github.event.action }}",
+            "actor-${{ github.event.review.user.login || github.event.comment.user.login }}",
+            "type-${{ github.event.review.user.type || github.event.comment.user.type }}",
+            "name: codex-review-artifact-changed",
+            'run: "true"',
+        )
+        forbidden_signal_fragments = (
+            "statuses: write",
+            "contents: write",
+            "actions/checkout",
+            "upload-artifact",
+            "download-artifact",
+            "actions/cache",
+            "repository_dispatch",
+            "workflow_run:",
+            "pull_request_target:",
+            "issue_comment:",
+        )
+        if any(fragment not in signal_text for fragment in required_signal_fragments):
+            errors.append(
+                "Codex review signal must expose only trusted run-name metadata"
+            )
+        if any(fragment in signal_text for fragment in forbidden_signal_fragments):
+            errors.append(
+                "Codex review signal cannot checkout, consume artifacts or caches, "
+                "write, or dispatch"
+            )
 
     gate_path = ROOT / gate_relative
     if gate_path.is_symlink() or not gate_path.is_file():
@@ -2461,21 +2519,146 @@ def check_codex_review_workflows(
             ("on", "pull_request_target"),
             ("on", "issue_comment"),
             ("on", "repository_dispatch"),
+            ("on", "workflow_run"),
             ("on", "push"),
         )
         forbidden_triggers = (
             ("on", "pull_request_review"),
             ("on", "pull_request_review_comment"),
-            ("on", "workflow_run"),
         )
         if any(len(gate_entries.get(path, [])) != 1 for path in required_triggers):
             errors.append("Codex review gate is missing a trusted reconciliation trigger")
         if any(gate_entries.get(path) for path in forbidden_triggers):
             errors.append(
-                "Codex review gate cannot use PR-sourced review or workflow_run triggers"
+                "Codex review gate cannot subscribe directly to PR-sourced review events"
             )
-        if signal_relative in gate_text or "route-review-signal" in gate_text:
-            errors.append("Codex review gate still references the deleted signal route")
+        required_route_fragments = (
+            "workflows: [codex-review-signal]",
+            "resolve-review-signal:",
+            "route-review-signal:",
+            "resolve-issue-comment:",
+            "route-issue-comment:",
+            "COMMENT_LOGIN",
+            "COMMENT_TYPE",
+            "COMMENT_ASSOCIATION",
+            "needs.resolve-issue-comment.outputs.relevant == 'true'",
+            "actions: read",
+            "contents: write",
+            "pull-requests: read",
+            "statuses: write",
+            "github.event.workflow_run.workflow_id",
+            "github.event.workflow_run.path",
+            "github.event.workflow_run.display_title",
+            "actor-(chatgpt-codex-connector",
+            "RUN_HEAD_SHA",
+            "trusted_workflow_id",
+            "source_signal_blob",
+            "trusted_signal_blob",
+            '"${source_signal_blob}" != "${trusted_signal_blob}"',
+            "GATE_WORKFLOW_REF",
+            "GATE_WORKFLOW_SHA",
+            "source_gate_blob",
+            "trusted_gate_blob",
+            "Invalidate the old review result before queued reconciliation",
+            "statuses/${head_sha}",
+            "Codex invalidation h=",
+            "client_payload[expected_head_sha]",
+            "client_payload[reconcile_reason]=review-event",
+            "client_payload[evidence_event_name]",
+            "client_payload[evidence_event_action]",
+            "client_payload[evidence_event_time]",
+            "HARNESS_REVIEW_EVENT_TIME",
+            "evidence_source_run_id",
+            "HARNESS_REVIEW_EVENT_SOURCE_RUN_ID",
+            "needs: resolve-review-signal",
+            "needs: resolve-issue-comment",
+            "group: codex-review-gate-${{ needs.resolve-review-signal.outputs.pr_number }}",
+            "group: codex-review-gate-${{ needs.resolve-issue-comment.outputs.pr_number }}",
+            "group: codex-review-gate-${{ github.event.pull_request.number || github.event.client_payload.pr_number }}",
+        )
+        if any(fragment not in gate_text for fragment in required_route_fragments):
+            errors.append(
+                "Codex review workflow_run route must validate the canonical signal "
+                "workflow, live PR identity, and trusted-base blob before dispatch"
+            )
+        required_action_pins = (
+            "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5",
+            "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+        )
+        if any(pin not in gate_text for pin in required_action_pins):
+            errors.append(
+                "Codex review privileged actions must use canonical full commit pins"
+            )
+        if gate_text.count("source_gate_blob") < 6 or gate_text.count(
+            "trusted_gate_blob"
+        ) < 6:
+            errors.append(
+                "Codex review resolvers, issue route, and final writer must verify live gate provenance"
+            )
+        resolver_block = gate_text.split("  resolve-review-signal:\n", 1)
+        if len(resolver_block) == 2:
+            resolver_job = resolver_block[1].split(
+                "\n  route-review-signal:\n", 1
+            )[0]
+            if "statuses: write" in resolver_job or "contents: write" in resolver_job:
+                errors.append(
+                    "Codex review signal resolver must remain read-only before PR serialization"
+                )
+        route_block = gate_text.split("  route-review-signal:\n", 1)
+        if len(route_block) == 2:
+            route_job = route_block[1].split("\n  resolve-issue-comment:\n", 1)[0]
+            if any(
+                fragment in route_job
+                for fragment in (
+                    "actions/checkout",
+                    "upload-artifact",
+                    "download-artifact",
+                    "actions/cache",
+                )
+            ):
+                errors.append(
+                    "Codex review workflow_run route cannot checkout or consume "
+                    "artifacts or caches"
+                )
+        issue_resolver_block = gate_text.split("  resolve-issue-comment:\n", 1)
+        if len(issue_resolver_block) == 2:
+            issue_resolver_job = issue_resolver_block[1].split(
+                "\n  route-issue-comment:\n", 1
+            )[0]
+            if any(
+                fragment in issue_resolver_job
+                for fragment in (
+                    "concurrency:",
+                    "statuses: write",
+                    "contents: write",
+                )
+            ):
+                errors.append(
+                    "Codex review issue-comment resolver must remain read-only and outside the writer queue"
+                )
+        issue_route_block = gate_text.split("  route-issue-comment:\n", 1)
+        if len(issue_route_block) == 2:
+            issue_route_job = issue_route_block[1].split("\n  reconcile:\n", 1)[0]
+            if "python3 -I -B scripts/check_codex_review.py --publish" in issue_route_job:
+                errors.append(
+                    "Codex review issue-comment route cannot execute the final writer"
+                )
+        reconcile_block = gate_text.split("  reconcile:\n", 1)
+        if len(reconcile_block) == 2:
+            reconcile_job = reconcile_block[1].split(
+                "\n  dispatch-open-pull-requests:\n", 1
+            )[0]
+            if "github.event_name == 'issue_comment'" in reconcile_job:
+                errors.append(
+                    "Codex review issue comments must route through PR serialization before final writing"
+                )
+        if (
+            gate_text.count("cancel-in-progress: false") != 3
+            or gate_text.count("queue: max") != 3
+        ):
+            errors.append(
+                "Codex review signal route, issue route, and final writer must share queued non-cancelling PR serialization"
+            )
 
     heartbeat_path = ROOT / heartbeat_relative
     if heartbeat_path.is_symlink() or not heartbeat_path.is_file():

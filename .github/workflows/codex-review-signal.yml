@@ -1,0 +1,20 @@
+name: codex-review-signal
+run-name: codex-review-signal pr-${{ github.event.pull_request.number }} head-${{ github.event.pull_request.head.sha }} event-${{ github.event_name }} action-${{ github.event.action }} actor-${{ github.event.review.user.login || github.event.comment.user.login }} type-${{ github.event.review.user.type || github.event.comment.user.type }}
+
+on:
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+
+permissions: {}
+
+jobs:
+  signal:
+    name: codex-review-artifact-changed
+    permissions: {}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Signal trusted reconciliation
+        shell: bash
+        run: "true"
