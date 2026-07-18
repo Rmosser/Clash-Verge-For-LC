@@ -520,30 +520,14 @@ def artifact_time(item: dict[str, Any]) -> str:
     return ""
 
 
-def review_edit_time(item: dict[str, Any]) -> str:
-    values = [
-        value
-        for key in ("last_edited_at", "updated_at")
-        if isinstance((value := item.get(key)), str) and value
-    ]
-    return max(values, default="")
-
-
-def review_activity_time(item: dict[str, Any]) -> str:
-    values = [
-        value
-        for key in ("submitted_at", "created_at")
-        if isinstance((value := item.get(key)), str) and value
-    ]
-    edit_time = review_edit_time(item)
-    if edit_time:
-        values.append(edit_time)
-    return max(values, default="")
+def review_submission_time(item: dict[str, Any]) -> str:
+    value = item.get("submitted_at")
+    return value if isinstance(value, str) else ""
 
 
 def evidence_time(item: dict[str, Any]) -> str:
     if "submitted_at" in item:
-        return review_activity_time(item)
+        return review_submission_time(item)
     return artifact_time(item)
 
 
@@ -694,13 +678,13 @@ def evaluate(
         return bool(timestamp and timestamp >= trigger_time)
 
     def review_after_latest_trigger(item: dict[str, Any]) -> bool:
-        timestamp = review_activity_time(item)
+        timestamp = review_submission_time(item)
         if latest_trigger is None:
             return bool(timestamp)
         return bool(timestamp and timestamp > trigger_time)
 
     def review_at_or_after_latest_trigger(item: dict[str, Any]) -> bool:
-        timestamp = review_activity_time(item)
+        timestamp = review_submission_time(item)
         if latest_trigger is None:
             return bool(timestamp)
         return bool(timestamp and timestamp >= trigger_time)
@@ -720,19 +704,9 @@ def evaluate(
         item
         for item in reviews
         if trusted_codex_actor(item, authors)
+        and str(item.get("state") or "").upper() != "DISMISSED"
         and str(item.get("commit_id") or "").lower() == head_sha
-        and (
-            review_at_or_after_latest_trigger(item)
-            or (
-                # REST review rows do not expose an unforgeable edit time. If
-                # the current row is blocking, exclusion would permit a later
-                # reaction to hide a post-trigger edit, so ambiguity fails
-                # closed. Ordinary stale clean rows remain outside the round.
-                latest_trigger is not None
-                and not review_edit_time(item)
-                and bool(review_blocking_reasons(item, head_sha))
-            )
-        )
+        and review_at_or_after_latest_trigger(item)
     ]
     current_reviews = [
         item for item in current_review_round if review_after_latest_trigger(item)
@@ -1236,72 +1210,6 @@ def publish_status(
     )
 
 
-def publish_pending_before_evaluation(
-    api: GitHubAPI,
-    repository: str,
-    pr_number: int,
-    expected_identity: PullIdentity,
-    context: str,
-    target_url: str,
-    status_app_id: int,
-    *,
-    force: bool,
-) -> bool:
-    latest_status = latest_status_for_identity(
-        api,
-        repository,
-        pr_number,
-        expected_identity,
-        context,
-    )
-    if status_matches_pending(
-        latest_status, context, expected_identity, status_app_id
-    ):
-        return True
-    current_base_suffix = f"; base={expected_identity.base_sha}."
-    if (
-        not force
-        and trusted_status_writer(latest_status, status_app_id)
-        and latest_status.get("context") == context
-        and latest_status.get("state") in {"success", "failure"}
-        and str(latest_status.get("description") or "").endswith(current_base_suffix)
-    ):
-        return True
-    return publish_pending(
-        api,
-        repository,
-        pr_number,
-        expected_identity,
-        context,
-        target_url,
-    )
-
-
-def evidence_event_requires_pending(contract: dict[str, Any]) -> bool:
-    if os.environ.get("HARNESS_EVIDENCE_EVENT") == "1":
-        return True
-    if os.environ.get("HARNESS_EVENT_NAME") != "issue_comment":
-        return False
-
-    authors = accepted_authors(contract)
-    author = os.environ.get("HARNESS_COMMENT_AUTHOR", "")
-    if (
-        normalize_login(author) in authors
-        and os.environ.get("HARNESS_COMMENT_AUTHOR_TYPE") == "Bot"
-    ):
-        return True
-    return bool(
-        normalize_login(author)
-        and normalize_login(author) not in authors
-        and os.environ.get("HARNESS_COMMENT_ASSOCIATION", "").upper()
-        in TRUSTED_TRIGGER_ASSOCIATIONS
-        and TRIGGER_RE.search(os.environ.get("HARNESS_COMMENT_BODY", ""))
-        and trigger_bound_to_full_head(
-            {"body": os.environ.get("HARNESS_COMMENT_BODY", "")},
-            os.environ.get("HARNESS_EXPECTED_HEAD_SHA", ""),
-        )
-    )
-
 
 def publish_status_if_changed(
     api: GitHubAPI,
@@ -1431,13 +1339,28 @@ def main() -> int:
     status_app_id: int | None = None
     context = args.context or DEFAULT_CONTEXT
     try:
-        contract = load_contract()
         if args.bootstrap_control_plane_review and (
             not args.fixture or args.publish
         ):
             raise GateError(
                 "--bootstrap-control-plane-review requires --fixture and forbids --publish"
             )
+        initial_pull: dict[str, Any] | None = None
+        if not args.fixture:
+            if not args.repository:
+                raise GateError("--repository or GITHUB_REPOSITORY is required")
+            pr_number = parse_pr_number(args.pr_number)
+            api = GitHubAPI(
+                os.environ.get("GITHUB_TOKEN", ""),
+                os.environ.get("GITHUB_API_URL", "https://api.github.com"),
+            )
+            initial_pull = live_pull(api, args.repository, pr_number)
+            initial_identity = pull_identity(initial_pull, args.repository)
+            require_expected_base(initial_identity, args.expected_base)
+
+        # Resolve the live status identity before parsing repository policy so a
+        # malformed contract cannot leave an earlier green result authoritative.
+        contract = load_contract()
         config = review_contract(contract)
         raw_status_app_id = config.get("status_app_id")
         if not isinstance(raw_status_app_id, int) or isinstance(
@@ -1451,17 +1374,11 @@ def main() -> int:
             if not isinstance(payload, dict):
                 raise GateError("fixture must contain a JSON object")
         else:
-            if not args.repository:
-                raise GateError("--repository or GITHUB_REPOSITORY is required")
-            pr_number = parse_pr_number(args.pr_number)
-            api = GitHubAPI(
-                os.environ.get("GITHUB_TOKEN", ""),
-                os.environ.get("GITHUB_API_URL", "https://api.github.com"),
-            )
-            initial_pull = live_pull(api, args.repository, pr_number)
-            initial_identity = pull_identity(initial_pull, args.repository)
+            assert api is not None
+            assert pr_number is not None
+            assert initial_pull is not None
+            assert initial_identity is not None
             initial_head = initial_identity.head_sha
-            require_expected_base(initial_identity, args.expected_base)
             if args.expected_head and args.expected_head.lower() != initial_head:
                 payload = {
                     "pull": initial_pull,
@@ -1471,19 +1388,6 @@ def main() -> int:
                     "issue_comments": [],
                 }
             else:
-                if args.publish and not publish_pending_before_evaluation(
-                    api,
-                    args.repository,
-                    pr_number,
-                    initial_identity,
-                    context,
-                    args.target_url,
-                    status_app_id,
-                    force=evidence_event_requires_pending(contract),
-                ):
-                    raise GateError(
-                        "pull request identity changed while marking review pending"
-                    )
                 payload = live_payload(
                     api, args.repository, pr_number, initial_identity, contract
                 )
@@ -1539,7 +1443,6 @@ def main() -> int:
             and api is not None
             and pr_number is not None
             and initial_identity is not None
-            and status_app_id is not None
         ):
             try:
                 invalidated = invalidate_status_after_exception(

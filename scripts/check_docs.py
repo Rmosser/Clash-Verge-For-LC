@@ -170,14 +170,13 @@ OUT_OF_REPO_SCOPE_RE = re.compile(
 )
 CURRENT_HEAD_REVIEW_HEADING = "## Current-Head Codex Review\n\n"
 CURRENT_HEAD_REVIEW_SHA256 = (
-    "f42cc810da5768f679932068f7efc722d9796fe949f555df62bb8cc386fea00f"
+    "0636f81e81911e1c289f624a953352d3d789ab5cdd9344bc94f6a7896d130f00"
 )
 TRUSTED_CONTROL_FILES = (
     f"{DOCS_ROOT.name}/doc-sync-rules.json",
     ".harness/repo-contract.json",
     ".github/workflows/codex-review-gate.yml",
     ".github/workflows/codex-review-heartbeat.yml",
-    ".github/workflows/codex-review-signal.yml",
     "scripts/check_codex_review.py",
     "scripts/check_docs.py",
     "scripts/check_loop_checkpoints.py",
@@ -2000,6 +1999,83 @@ def workflow_structure_errors(text: str) -> list[str]:
     return errors
 
 
+def check_codex_review_workflows(
+    required_paths: list[str], errors: list[str]
+) -> None:
+    gate_relative = ".github/workflows/codex-review-gate.yml"
+    heartbeat_relative = ".github/workflows/codex-review-heartbeat.yml"
+    signal_relative = ".github/workflows/codex-review-signal.yml"
+    for relative in (gate_relative, heartbeat_relative):
+        if relative not in required_paths:
+            errors.append(f"doc-sync-rules must require trusted workflow: {relative}")
+
+    signal_path = ROOT / signal_relative
+    if signal_relative in required_paths or signal_path.exists() or signal_path.is_symlink():
+        errors.append(
+            "PR-sourced Codex review signal workflow must be absent; review evidence "
+            "is reconciled by the trusted heartbeat"
+        )
+
+    gate_path = ROOT / gate_relative
+    if gate_path.is_symlink() or not gate_path.is_file():
+        errors.append(f"Codex review gate must be a regular file: {gate_relative}")
+    else:
+        gate_text = gate_path.read_text(encoding="utf-8")
+        gate_entries = workflow_mapping_entries(gate_text)
+        required_triggers = (
+            ("on", "pull_request_target"),
+            ("on", "issue_comment"),
+            ("on", "repository_dispatch"),
+            ("on", "push"),
+        )
+        forbidden_triggers = (
+            ("on", "pull_request_review"),
+            ("on", "pull_request_review_comment"),
+            ("on", "workflow_run"),
+        )
+        if any(len(gate_entries.get(path, [])) != 1 for path in required_triggers):
+            errors.append("Codex review gate is missing a trusted reconciliation trigger")
+        if any(gate_entries.get(path) for path in forbidden_triggers):
+            errors.append(
+                "Codex review gate cannot use PR-sourced review or workflow_run triggers"
+            )
+        if signal_relative in gate_text or "route-review-signal" in gate_text:
+            errors.append("Codex review gate still references the deleted signal route")
+
+    heartbeat_path = ROOT / heartbeat_relative
+    if heartbeat_path.is_symlink() or not heartbeat_path.is_file():
+        errors.append(
+            f"Codex review heartbeat must be a regular file: {heartbeat_relative}"
+        )
+    else:
+        heartbeat_text = heartbeat_path.read_text(encoding="utf-8")
+        heartbeat_entries = workflow_mapping_entries(heartbeat_text)
+        if len(heartbeat_entries.get(("on", "schedule"), [])) != 1:
+            errors.append("Codex review heartbeat must use a default-branch schedule")
+        required_fragments = (
+            'cron: "*/5 * * * *"',
+            'pulls?state=open&base=main&per_page=100',
+            "event_type=codex-review-reconcile",
+            'client_payload[pr_number]=${number}',
+        )
+        if any(fragment not in heartbeat_text for fragment in required_fragments):
+            errors.append(
+                "Codex review heartbeat must reconcile every open main PR every five minutes"
+            )
+        forbidden_fragments = (
+            "statuses: write",
+            "actions/checkout",
+            "created_at",
+            "updated_at",
+            "age cutoff",
+            "42 hours",
+        )
+        if any(fragment in heartbeat_text for fragment in forbidden_fragments):
+            errors.append(
+                "Codex review heartbeat cannot write statuses, checkout code, or age-gate PRs"
+            )
+
+
 def check_document_status_workflow(
     manifest: dict[str, object],
     trusted_manifest: dict[str, object],
@@ -2097,7 +2173,6 @@ def check_document_status_workflow(
         "base_sha: ${{ steps.resolve.outputs.base_sha }}",
         "repository: ${{ needs.resolve-pull-request.outputs.head_repository }}",
         "ref: ${{ needs.resolve-pull-request.outputs.head_sha }}",
-        "allow-unsafe-pr-checkout: true",
         "repository: ${{ github.repository }}",
         "ref: ${{ needs.resolve-pull-request.outputs.base_sha }}",
         "HARNESS_TRUSTED_REPO_ROOT: ${{ github.workspace }}/trusted",
@@ -2118,6 +2193,9 @@ def check_document_status_workflow(
         "event_type=loop-checkpoints-reconcile",
         "client_payload[pull_request_number]",
         "if: ${{ always() && github.event_name == 'push' }}",
+        '--base "${BEFORE_SHA}" --head HEAD --diff-mode direct',
+        '--head HEAD --diff-mode root',
+        "A zero-before created-ref push must point at a root commit.",
     )
     if any(fragment not in text for fragment in required_fragments):
         errors.append(f"Trusted document status workflow is incomplete: {relative}")
@@ -2204,7 +2282,7 @@ def check_document_status_workflow(
         errors.append(
             f"Trusted document status workflow must isolate exactly two status writers: {relative}"
         )
-    if text.count("actions/checkout@v7") != 3:
+    if text.count("actions/checkout@v4") != 3:
         errors.append(
             f"Trusted document status workflow must use two isolated PR checkouts and one default checkout: {relative}"
         )
@@ -2225,14 +2303,28 @@ def check_document_status_workflow(
         default_branch_job.count("fetch-depth: 0") != 1
         or text.count("HARNESS_STANDALONE_BASE_SHA: ${{ github.event.before }}") != 1
         or any(fragment not in default_branch_job for fragment in default_branch_contract)
+        or "check_loop_checkpoints.py --worktree-only" in default_branch_job
     ):
         errors.append(
             "Trusted default-branch document check must fetch complete history and "
             f"bind github.event.before only to check_docs.py: {relative}"
         )
-    if text.count("allow-unsafe-pr-checkout: true") != 1:
+    target_checkout_contract = (
+        "          repository: ${{ needs.resolve-pull-request.outputs.head_repository }}\n"
+        "          ref: ${{ needs.resolve-pull-request.outputs.head_sha }}\n"
+        "          # This checkout is parsed as data only; target code is never executed here.\n"
+        "          allow-unsafe-pr-checkout: true\n"
+        "          fetch-depth: 0\n"
+        "          path: target\n"
+        "          persist-credentials: false\n"
+    )
+    if (
+        text.count("allow-unsafe-pr-checkout: true") != 1
+        or target_checkout_contract not in validation_job
+    ):
         errors.append(
-            f"Trusted document target checkout must use exactly one explicit data-only fork opt-out: {relative}"
+            "Trusted document workflow must opt in exactly once for the data-only "
+            f"fork target checkout: {relative}"
         )
     if (
         len(
@@ -2545,6 +2637,7 @@ def validate_repo() -> tuple[list[str], dict[str, object]]:
     check_document_status_workflow(
         manifest, trusted_manifest, required_paths, errors
     )
+    check_codex_review_workflows(required_paths, errors)
     check_additional_required_checks(
         manifest, trusted_manifest, required_paths, errors
     )
@@ -2630,24 +2723,15 @@ def validate_repo() -> tuple[list[str], dict[str, object]]:
                 "required_check_activation": "required_after_live_emitter_smoke",
                 "required_check_activation_scope": "per_repository",
                 "trusted_status_workflow": ".github/workflows/codex-review-gate.yml",
-                "review_signal_workflow": ".github/workflows/codex-review-signal.yml",
-                "review_signal_events": [
-                    "pull_request_review",
-                    "pull_request_review_comment",
-                ],
                 "trusted_events": [
                     "pull_request_target",
                     "issue_comment",
                     "repository_dispatch",
-                    "workflow_run",
                 ],
                 "status_writer_events": [
                     "pull_request_target",
                     "issue_comment",
                     "repository_dispatch",
-                ],
-                "review_signal_route_events": [
-                    "workflow_run",
                 ],
                 "heartbeat_event": "schedule",
                 "artifact_binding": "live_pr_head_sha",

@@ -25,10 +25,11 @@ Convention:
   plan bookkeeping may change. Governance, code, CI, configuration, release,
   and security surfaces still require an Active Plan.
 
-The diff is the merge-base diff against a real PR/default-branch base plus any
-uncommitted working-tree changes. A same-commit check is allowed only when a
-real uncommitted diff exists or `--worktree-only` explicitly requests
-worktree-only validation.
+PR validation uses a merge-base diff; push validation uses the exact predecessor
+diff, and a first root push uses the root tree. Each mode also includes
+uncommitted working-tree changes. A same-commit check is allowed only when a real
+uncommitted diff exists or `--worktree-only` explicitly requests worktree-only
+validation.
 """
 from __future__ import annotations
 
@@ -438,13 +439,39 @@ def ref_exists(ref: str) -> bool:
     ).returncode == 0
 
 
-def changed_files(base: str, head: str, *, worktree_only: bool = False) -> list[str]:
+def changed_files(
+    base: str,
+    head: str,
+    *,
+    worktree_only: bool = False,
+    diff_mode: str = "merge-base",
+) -> list[str]:
     # --no-renames keeps committed renames as delete+add so the diff lists
     # both the old and the new path.
     files: set[str] = set()
     head_exists = ref_exists(head)
     base_exists = ref_exists(base)
     worktree = worktree_paths()
+    if diff_mode == "root":
+        if not head_exists:
+            fail([f"head ref is unavailable: {head}"])
+        parents = git_output("rev-list", "--parents", "-n", "1", head).split()
+        if len(parents) != 1:
+            fail(["root diff mode requires head to resolve to a root commit"])
+        files.update(
+            git_nul_paths(
+                "diff-tree",
+                "--root",
+                "--no-commit-id",
+                "-r",
+                "-z",
+                "--name-only",
+                "--no-renames",
+                head,
+            )
+        )
+        files.update(worktree)
+        return sorted(files)
     same_commit = (
         head_exists
         and base_exists
@@ -470,9 +497,12 @@ def changed_files(base: str, head: str, *, worktree_only: bool = False) -> list[
     if worktree_only:
         return sorted(worktree)
     if head_exists and base_exists and not same_commit:
+        diff_range = (
+            f"{base}...{head}" if diff_mode == "merge-base" else f"{base}..{head}"
+        )
         files.update(
             git_nul_paths(
-                "diff", "-z", "--name-only", "--no-renames", f"{base}...{head}"
+                "diff", "-z", "--name-only", "--no-renames", diff_range
             )
         )
     elif head_exists and base_exists:
@@ -489,14 +519,14 @@ def changed_files(base: str, head: str, *, worktree_only: bool = False) -> list[
 
 
 def completed_plan_comparison_ref(
-    base: str, head: str, *, worktree_only: bool
+    base: str, head: str, *, worktree_only: bool, diff_mode: str
 ) -> str:
-    if worktree_only:
+    if worktree_only or diff_mode == "root":
         return head
     if ref_exists(base) and ref_exists(head):
         base_sha = git_output("rev-parse", base).strip()
         head_sha = git_output("rev-parse", head).strip()
-        if base_sha != head_sha:
+        if base_sha != head_sha and diff_mode == "merge-base":
             return git_output("merge-base", base, head).strip()
     return base
 
@@ -646,7 +676,7 @@ def git_file_at(ref: str, path: str) -> tuple[str, str] | None:
 
 
 def archive_source_snapshot(
-    base: str, head: str
+    base: str, head: str, *, diff_mode: str
 ) -> tuple[str, str, Callable[[str], str | None]] | None:
     active_prefix = f"{DOCS_ROOT_NAME}/exec-plans/active/"
     if TRUSTED_ROOT != ROOT:
@@ -675,8 +705,10 @@ def archive_source_snapshot(
         relative = f"{DOCS_ROOT_NAME}/exec-plans/active/{plan.name}"
         return relative, plan.read_text(encoding="utf-8"), trusted_read
 
+    if diff_mode == "root":
+        return None
     source_ref = base
-    if ref_exists(base) and ref_exists(head):
+    if diff_mode == "merge-base" and ref_exists(base) and ref_exists(head):
         source_ref = git_output("merge-base", base, head).strip()
     names = [
         path
@@ -701,11 +733,16 @@ def archive_source_snapshot(
 
 
 def archive_cleanup_index_allowlist(
-    changed: list[str], base: str, head: str, index_paths: list[str]
+    changed: list[str],
+    base: str,
+    head: str,
+    index_paths: list[str],
+    *,
+    diff_mode: str,
 ) -> set[str]:
     if not index_paths:
         return set()
-    snapshot = archive_source_snapshot(base, head)
+    snapshot = archive_source_snapshot(base, head, diff_mode=diff_mode)
     if snapshot is None:
         return set()
     source_path, source_text, source_read = snapshot
@@ -867,14 +904,32 @@ def main() -> None:
         action="store_true",
         help="intentionally validate only staged, unstaged, and untracked changes",
     )
+    parser.add_argument(
+        "--diff-mode",
+        choices=("merge-base", "direct", "root"),
+        default="merge-base",
+        help="use PR merge-base, push-predecessor, or root-tree diff semantics",
+    )
     args = parser.parse_args()
+    if args.worktree_only and args.diff_mode != "merge-base":
+        parser.error("--worktree-only cannot be combined with --diff-mode")
+    if args.diff_mode == "root" and args.base:
+        parser.error("--diff-mode root does not accept --base")
     base = args.base or ("HEAD" if args.worktree_only else default_base())
 
-    changed = changed_files(base, args.head, worktree_only=args.worktree_only)
+    changed = changed_files(
+        base,
+        args.head,
+        worktree_only=args.worktree_only,
+        diff_mode=args.diff_mode,
+    )
     reject_deleted_completed_plans(
         changed,
         completed_plan_comparison_ref(
-            base, args.head, worktree_only=args.worktree_only
+            base,
+            args.head,
+            worktree_only=args.worktree_only,
+            diff_mode=args.diff_mode,
         ),
     )
     plan, bookkeeping_allowed = find_active_plan(set(changed))
@@ -882,7 +937,13 @@ def main() -> None:
     required_plan_patterns, policy_denies, archive_indexes = scope_policy()
     denies.extend(policy_denies)
     archive_allowed = (
-        archive_cleanup_index_allowlist(changed, base, args.head, archive_indexes)
+        archive_cleanup_index_allowlist(
+            changed,
+            base,
+            args.head,
+            archive_indexes,
+            diff_mode=args.diff_mode,
+        )
         if plan is None
         else set()
     )
@@ -913,7 +974,10 @@ def main() -> None:
             "lines marked forbidden/禁止 contribute denylist entries that override allows,",
             "or move the change into its own plan / PR",
         ])
-    print(f"check_loop_checkpoints: passed against base {base} and head {args.head}")
+    print(
+        "check_loop_checkpoints: passed against "
+        f"base {base} and head {args.head} ({args.diff_mode})"
+    )
 
 
 if __name__ == "__main__":

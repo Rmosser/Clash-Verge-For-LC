@@ -100,8 +100,7 @@
     "trusted_events": [
       "pull_request_target",
       "issue_comment",
-      "repository_dispatch",
-      "workflow_run"
+      "repository_dispatch"
     ],
     "status_source_isolation": "shared_actions_app_not_isolated",
     "required_check_activation": "required_after_live_emitter_smoke",
@@ -113,15 +112,7 @@
       "issue_comment",
       "repository_dispatch"
     ],
-    "heartbeat_event": "schedule",
-    "review_signal_workflow": ".github/workflows/codex-review-signal.yml",
-    "review_signal_events": [
-      "pull_request_review",
-      "pull_request_review_comment"
-    ],
-    "review_signal_route_events": [
-      "workflow_run"
-    ]
+    "heartbeat_event": "schedule"
   },
   "platform_gate": {
     "status": "not_verified",

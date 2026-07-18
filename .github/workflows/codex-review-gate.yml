@@ -1,5 +1,5 @@
 name: codex-review-gate
-run-name: codex-review-gate pr-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr_number || github.event.workflow_run.id || 'unresolved' }}
+run-name: codex-review-gate pr-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr_number || 'unresolved' }}
 
 on:
   pull_request_target:
@@ -9,132 +9,16 @@ on:
     types: [created, edited, deleted]
   repository_dispatch:
     types: [codex-review-reconcile]
-  workflow_run:
-    workflows: [codex-review-signal]
-    types: [completed]
   push:
     branches: [main]
 
 permissions: {}
 
 concurrency:
-  group: codex-review-gate-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr_number || (github.event.workflow_run.id && format('signal-{0}', github.event.workflow_run.id)) || github.ref }}
+  group: codex-review-gate-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr_number || github.ref }}
   cancel-in-progress: false
 
 jobs:
-  route-review-signal:
-    name: route-review-signal-to-pr-writer
-    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && (github.event.workflow_run.event == 'pull_request_review' || github.event.workflow_run.event == 'pull_request_review_comment') }}
-    permissions:
-      actions: read
-      contents: write
-      pull-requests: read
-    runs-on: ubuntu-latest
-    steps:
-      - name: Resolve the live PR for a review signal run
-        id: resolve-workflow-run
-        if: github.event_name == 'workflow_run'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
-          RUN_WORKFLOW_PATH: ${{ github.event.workflow_run.path }}
-          RUN_EVENT: ${{ github.event.workflow_run.event }}
-          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-          RUN_REPOSITORY: ${{ github.event.workflow_run.repository.full_name }}
-          RUN_DISPLAY_TITLE: ${{ github.event.workflow_run.display_title }}
-          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [[ "${RUN_CONCLUSION}" != "success" ||
-                ( "${RUN_EVENT}" != "pull_request_review" &&
-                  "${RUN_EVENT}" != "pull_request_review_comment" ) ||
-                "${RUN_REPOSITORY}" != "${GITHUB_REPOSITORY}" ||
-                ! "${RUN_WORKFLOW_ID}" =~ ^[1-9][0-9]*$ ||
-                ! "${RUN_HEAD_SHA}" =~ ^[0-9a-fA-F]{40}$ ]]; then
-            echo "The workflow run is not an eligible review signal." >&2
-            exit 2
-          fi
-          source_workflow_path="${RUN_WORKFLOW_PATH%%@*}"
-          if [[ "${source_workflow_path}" != ".github/workflows/codex-review-signal.yml" ]]; then
-            echo "The workflow run did not originate from the canonical signal path." >&2
-            exit 2
-          fi
-          trusted_workflow_id="$({
-            gh api \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/codex-review-signal.yml" \
-              --jq '.id'
-          })"
-          if [[ ! "${trusted_workflow_id}" =~ ^[1-9][0-9]*$ ||
-                "${RUN_WORKFLOW_ID}" != "${trusted_workflow_id}" ]]; then
-            echo "The workflow run id does not match the canonical signal workflow." >&2
-            exit 2
-          fi
-
-          if [[ ! "${RUN_DISPLAY_TITLE}" =~ ^codex-review-signal\ pr-([1-9][0-9]*)\ head-([0-9a-fA-F]{40})$ ]]; then
-            echo "The review signal run name does not bind one PR and head SHA." >&2
-            exit 3
-          fi
-          signal_pr_number="${BASH_REMATCH[1]}"
-          signal_head_sha="${BASH_REMATCH[2],,}"
-
-          IFS=$'\t' read -r number state head_sha base_repository base_ref < <(
-            gh api "repos/${GITHUB_REPOSITORY}/pulls/${signal_pr_number}" \
-              --jq '[.number, .state, .head.sha, .base.repo.full_name, .base.ref] | @tsv'
-          )
-          head_sha="${head_sha,,}"
-          if [[ "${number}" != "${signal_pr_number}" ||
-                "${state}" != "open" ||
-                "${base_repository}" != "${GITHUB_REPOSITORY}" ||
-                "${base_ref}" != "main" ||
-                ! "${head_sha}" =~ ^[0-9a-f]{40}$ ||
-                "${head_sha}" != "${signal_head_sha}" ]]; then
-            echo "The review signal no longer matches one live main PR head." >&2
-            exit 4
-          fi
-          base_sha="$(
-            gh api "repos/${base_repository}/git/ref/heads/${base_ref}" --jq '.object.sha'
-          )"
-          base_sha="${base_sha,,}"
-          if [[ ! "${base_sha}" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "The live PR base ref is malformed." >&2
-            exit 4
-          fi
-
-          source_signal_blob="$({
-            gh api \
-              "repos/${GITHUB_REPOSITORY}/contents/.github/workflows/codex-review-signal.yml?ref=${RUN_HEAD_SHA}" \
-              --jq '.sha'
-          })"
-          trusted_signal_blob="$({
-            gh api \
-              "repos/${GITHUB_REPOSITORY}/contents/.github/workflows/codex-review-signal.yml?ref=${base_sha}" \
-              --jq '.sha'
-          })"
-          if [[ ! "${source_signal_blob}" =~ ^[0-9a-f]{40}$ ||
-                "${source_signal_blob}" != "${trusted_signal_blob}" ]]; then
-            echo "The source signal workflow is not byte-identical to the trusted PR base." >&2
-            exit 5
-          fi
-
-          printf 'pr_number=%s\n' "${number}" >> "${GITHUB_OUTPUT}"
-          printf 'head_sha=%s\n' "${head_sha}" >> "${GITHUB_OUTPUT}"
-      - name: Dispatch the PR-serialized status writer
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ steps.resolve-workflow-run.outputs.pr_number }}
-          EXPECTED_HEAD_SHA: ${{ steps.resolve-workflow-run.outputs.head_sha }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh api --method POST \
-            "repos/${GITHUB_REPOSITORY}/dispatches" \
-            -f event_type=codex-review-reconcile \
-            -F "client_payload[pr_number]=${PR_NUMBER}" \
-            -f "client_payload[expected_head_sha]=${EXPECTED_HEAD_SHA}" \
-            -f "client_payload[evidence_event]=1"
-
   reconcile:
     name: refresh-codex-review-status
     if: ${{ github.event_name == 'pull_request_target' || github.event_name == 'repository_dispatch' || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null) }}
@@ -213,13 +97,6 @@ jobs:
           PR_NUMBER: ${{ steps.resolve-live-pr.outputs.pr_number }}
           EXPECTED_HEAD_SHA: ${{ steps.resolve-live-pr.outputs.head_sha }}
           EXPECTED_BASE_SHA: ${{ steps.resolve-live-pr.outputs.base_sha }}
-          HARNESS_EVENT_NAME: ${{ github.event_name }}
-          HARNESS_EVIDENCE_EVENT: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.evidence_event == '1' && '1' || '0' }}
-          HARNESS_COMMENT_AUTHOR: ${{ github.event.comment.user.login || '' }}
-          HARNESS_COMMENT_AUTHOR_TYPE: ${{ github.event.comment.user.type || '' }}
-          HARNESS_COMMENT_ASSOCIATION: ${{ github.event.comment.author_association || '' }}
-          HARNESS_COMMENT_BODY: ${{ github.event.comment.body || '' }}
-          HARNESS_EXPECTED_HEAD_SHA: ${{ steps.resolve-live-pr.outputs.head_sha }}
           GITHUB_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         shell: bash
         run: |

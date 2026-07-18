@@ -205,7 +205,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out the untrusted validation target as data
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           repository: ${{ needs.resolve-pull-request.outputs.head_repository }}
           ref: ${{ needs.resolve-pull-request.outputs.head_sha }}
@@ -215,7 +215,7 @@ jobs:
           path: target
           persist-credentials: false
       - name: Check out verifiers from the trusted PR base
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           repository: ${{ github.repository }}
           ref: ${{ needs.resolve-pull-request.outputs.base_sha }}
@@ -424,7 +424,7 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -449,19 +449,13 @@ jobs:
           if [[ "${BEFORE_SHA}" != "${zero_sha}" ]]; then
             git rev-parse --verify "${BEFORE_SHA}^{commit}" >/dev/null
             python3 -I -B scripts/check_loop_checkpoints.py \
-              --base "${BEFORE_SHA}" --head HEAD
-            exit 0
-          fi
-
-          if git rev-parse --verify HEAD^ >/dev/null 2>&1; then
-            base_sha="$(git rev-parse HEAD^)"
-            python3 -I -B scripts/check_loop_checkpoints.py \
-              --base "${base_sha}" --head HEAD
+              --base "${BEFORE_SHA}" --head HEAD --diff-mode direct
             exit 0
           fi
 
           if [[ "$(git rev-list --parents -n 1 HEAD)" == *" "* ]]; then
-            echo "Zero-SHA bootstrap fallback requires a root commit." >&2
+            echo "A zero-before created-ref push must point at a root commit." >&2
             exit 1
           fi
-          python3 -I -B scripts/check_loop_checkpoints.py --worktree-only
+          python3 -I -B scripts/check_loop_checkpoints.py \
+            --head HEAD --diff-mode root
