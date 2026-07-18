@@ -135,28 +135,10 @@ STANDARD_CODEX_DETAILS_PATTERN = (
     r"Try commenting\s+[\"\u201c]@codex address that feedback[\"\u201d]\.\s*"
     r"</details>"
 )
-ALLOWED_CLEAN_CELEBRATIONS = (
-    "Delightful!",
-    "Hooray!",
-    "Nice work!",
-    "Bravo.",
-    "Swish!",
-    "Breezy!",
-    "Keep it up!",
-    "You're on a roll.",
-    "Chef's kiss.",
-    "Can't wait for the next one!",
-    "Another round soon, please!",
-    "Already looking forward to the next diff.",
-    "More of your lovely PRs please.",
-    "What shall we delve into next?",
-    ":+1:",
-    ":rocket:",
-    ":tada:",
+CLEAN_CELEBRATION_PATTERN = (
+    r"(?!(?:\*\*Reviewed commit:\*\*|Reviewed commit:))"
+    r"(?P<celebration>[^\r\n]{1,80})"
 )
-CLEAN_CELEBRATION_PATTERN = "(?:" + "|".join(
-    re.escape(value) for value in ALLOWED_CLEAN_CELEBRATIONS
-) + ")"
 STANDARD_FOOTER_CLEAN_BODY_RE = re.compile(
     r"^\s*(?:(?:#{1,6}\s*)?Codex Review:\s*)?"
     r"(?:Didn't find any major issues|Did not find any major issues|"
@@ -188,6 +170,13 @@ INCOMPLETE_REVIEW_RE = re.compile(
     r"\bpartial(?:ly)?\s+(?:analysis|review)\b|"
     r"\b(?:could not|unable to|failed to)\s+(?:complete|finish)\b|"
     r"\bencountered an error\b)",
+    re.IGNORECASE,
+)
+UNSAFE_CLEAN_CELEBRATION_RE = re.compile(
+    r"\b(?:but|however|except|although|unless|finding|findings|issue|issues|"
+    r"bug|bugs|risk|risks|change|changes|fix|fixes|repair|pending|incomplete|"
+    r"unsupported|security|threat|vulnerability|bypass|error|failed|failure|"
+    r"warning|concern|concerns|blocker|blocking)\b",
     re.IGNORECASE,
 )
 
@@ -410,16 +399,37 @@ def explicitly_stale_review_marker(body: str, head_sha: str) -> bool:
     )
 
 
-def clean_body(body: str) -> bool:
+def finding_body(body: str) -> bool:
+    return bool(FINDING_RE.search(body))
+
+
+def safe_clean_celebration(value: str) -> bool:
+    celebration = value.strip()
     return bool(
-        CLEAN_BODY_RE.fullmatch(body)
-        or STANDARD_FOOTER_CLEAN_BODY_RE.fullmatch(body)
-        or FULL_CLEAN_ISSUE_COMMENT_RE.fullmatch(body)
+        celebration
+        and "\n" not in celebration
+        and "\r" not in celebration
+        and len(celebration) <= 80
+        and not finding_body(celebration)
+        and not INCOMPLETE_REVIEW_RE.search(celebration)
+        and not UNSAFE_CLEAN_CELEBRATION_RE.search(celebration)
     )
 
 
-def finding_body(body: str) -> bool:
-    return bool(FINDING_RE.search(body))
+def structured_footer_clean_body(body: str) -> bool:
+    for pattern in (STANDARD_FOOTER_CLEAN_BODY_RE, FULL_CLEAN_ISSUE_COMMENT_RE):
+        match = pattern.fullmatch(body)
+        if match is None:
+            continue
+        celebration = str(match.groupdict().get("celebration") or "")
+        return not celebration or safe_clean_celebration(celebration)
+    return False
+
+
+def clean_body(body: str) -> bool:
+    return bool(
+        CLEAN_BODY_RE.fullmatch(body) or structured_footer_clean_body(body)
+    )
 
 
 def recognized_commented_review_body(body: str, head_sha: str) -> bool:
@@ -508,6 +518,62 @@ def artifact_time(item: dict[str, Any]) -> str:
         if isinstance(value, str):
             return value
     return ""
+
+
+def review_edit_time(item: dict[str, Any]) -> str:
+    values = [
+        value
+        for key in ("last_edited_at", "updated_at")
+        if isinstance((value := item.get(key)), str) and value
+    ]
+    return max(values, default="")
+
+
+def review_activity_time(item: dict[str, Any]) -> str:
+    values = [
+        value
+        for key in ("submitted_at", "created_at")
+        if isinstance((value := item.get(key)), str) and value
+    ]
+    edit_time = review_edit_time(item)
+    if edit_time:
+        values.append(edit_time)
+    return max(values, default="")
+
+
+def evidence_time(item: dict[str, Any]) -> str:
+    if "submitted_at" in item:
+        return review_activity_time(item)
+    return artifact_time(item)
+
+
+def review_blocking_reasons(review: dict[str, Any], head_sha: str) -> list[str]:
+    state = str(review.get("state") or "").upper()
+    body = str(review.get("body") or "")
+    reasons: list[str] = []
+    if state not in {"APPROVED", "COMMENTED", "CHANGES_REQUESTED"}:
+        reasons.append(
+            f"Codex review has unsupported current-head state: {state or 'MISSING'}"
+        )
+    if state == "CHANGES_REQUESTED":
+        reasons.append("Codex requested changes on the current head")
+    if finding_body(body):
+        reasons.append("Codex review body contains a current-head finding")
+    if stale_or_invalid_review_marker(body, head_sha):
+        reasons.append(
+            "Codex review body contains a stale or invalid reviewed-commit marker"
+        )
+    if state == "APPROVED" and body.strip() and not clean_body(body):
+        reasons.append(
+            "Codex APPROVED review contains non-clean text for the current head"
+        )
+    if state == "COMMENTED" and not recognized_commented_review_body(
+        body, head_sha
+    ):
+        reasons.append(
+            "Codex COMMENTED review is incomplete or unrecognized for the current head"
+        )
+    return reasons
 
 
 def evaluate(
@@ -627,10 +693,22 @@ def evaluate(
             return bool(timestamp)
         return bool(timestamp and timestamp >= trigger_time)
 
+    def review_after_latest_trigger(item: dict[str, Any]) -> bool:
+        timestamp = review_activity_time(item)
+        if latest_trigger is None:
+            return bool(timestamp)
+        return bool(timestamp and timestamp > trigger_time)
+
+    def review_at_or_after_latest_trigger(item: dict[str, Any]) -> bool:
+        timestamp = review_activity_time(item)
+        if latest_trigger is None:
+            return bool(timestamp)
+        return bool(timestamp and timestamp >= trigger_time)
+
     def issue_clean_has_provenance(item: dict[str, Any], body: str) -> bool:
         if not reviewed_head(body, head_sha):
             return False
-        if STANDARD_FOOTER_CLEAN_BODY_RE.fullmatch(body):
+        if structured_footer_clean_body(body):
             return True
         timestamp = artifact_time(item)
         return bool(
@@ -643,10 +721,21 @@ def evaluate(
         for item in reviews
         if trusted_codex_actor(item, authors)
         and str(item.get("commit_id") or "").lower() == head_sha
-        and at_or_after_latest_trigger(item)
+        and (
+            review_at_or_after_latest_trigger(item)
+            or (
+                # REST review rows do not expose an unforgeable edit time. If
+                # the current row is blocking, exclusion would permit a later
+                # reaction to hide a post-trigger edit, so ambiguity fails
+                # closed. Ordinary stale clean rows remain outside the round.
+                latest_trigger is not None
+                and not review_edit_time(item)
+                and bool(review_blocking_reasons(item, head_sha))
+            )
+        )
     ]
     current_reviews = [
-        item for item in current_review_round if after_latest_trigger(item)
+        item for item in current_review_round if review_after_latest_trigger(item)
     ]
     current_review_ids = {
         str(item.get("id"))
@@ -681,30 +770,7 @@ def evaluate(
 
     blockers: list[str] = []
     for review in current_review_round:
-        state = str(review.get("state") or "").upper()
-        body = str(review.get("body") or "")
-        if state not in {"APPROVED", "COMMENTED", "CHANGES_REQUESTED"}:
-            blockers.append(
-                f"Codex review has unsupported current-head state: {state or 'MISSING'}"
-            )
-        if state == "CHANGES_REQUESTED":
-            blockers.append("Codex requested changes on the current head")
-        if finding_body(body):
-            blockers.append("Codex review body contains a current-head finding")
-        if stale_or_invalid_review_marker(body, head_sha):
-            blockers.append(
-                "Codex review body contains a stale or invalid reviewed-commit marker"
-            )
-        if state == "APPROVED" and body.strip() and not clean_body(body):
-            blockers.append(
-                "Codex APPROVED review contains non-clean text for the current head"
-            )
-        if state == "COMMENTED" and not recognized_commented_review_body(
-            body, head_sha
-        ):
-            blockers.append(
-                "Codex COMMENTED review is incomplete or unrecognized for the current head"
-            )
+        blockers.extend(review_blocking_reasons(review, head_sha))
     if current_inline:
         blockers.append(
             f"Codex left {len(current_inline)} inline finding(s) on the current head"
@@ -770,7 +836,7 @@ def evaluate(
 
     ambiguous_issue_comments: list[dict[str, Any]] = []
     if clean_artifacts:
-        latest_clean_time = max(artifact_time(item) for item in clean_artifacts)
+        latest_clean_time = max(evidence_time(item) for item in clean_artifacts)
         for comment in issue_comments:
             body = str(comment.get("body") or "")
             if (
@@ -830,7 +896,7 @@ def evaluate(
             evidence_url=artifact_url(latest_trigger) if latest_trigger else None,
         )
 
-    latest = max(clean_artifacts, key=artifact_time)
+    latest = max(clean_artifacts, key=evidence_time)
     return GateResult(
         state="success",
         classification="non-trivial",

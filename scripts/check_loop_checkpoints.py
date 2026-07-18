@@ -72,6 +72,7 @@ TRUSTED_DOCS_ROOT_NAME = exact_docs_root_name(
 )
 ACTIVE_DIR = ROOT / DOCS_ROOT_NAME / "exec-plans" / "active"
 COMPLETED_DIR = ROOT / DOCS_ROOT_NAME / "exec-plans" / "completed"
+ACTIVE_SENTINEL = ACTIVE_DIR / ".gitkeep"
 RULES_PATH = ROOT / DOCS_ROOT_NAME / "doc-sync-rules.json"
 TRUSTED_RULES_PATH = TRUSTED_ROOT / TRUSTED_DOCS_ROOT_NAME / "doc-sync-rules.json"
 TRIVIAL_WITHOUT_PLAN_FILES = {
@@ -261,6 +262,22 @@ def find_active_plan(changed_paths: set[str]) -> tuple[Path | None, set[str]]:
                 f"{label} must be a real directory, not a symlink: "
                 f"{path.relative_to(ROOT)}"
             ])
+    sentinel_relative = ACTIVE_SENTINEL.relative_to(ROOT).as_posix()
+    if ACTIVE_SENTINEL.is_symlink() or not ACTIVE_SENTINEL.is_file():
+        fail([
+            "active-plan directory sentinel must be a regular file, not a symlink "
+            f"or special file: {sentinel_relative}"
+        ])
+    if ACTIVE_SENTINEL.read_bytes() != b"":
+        fail([
+            "active-plan directory sentinel must be exactly zero bytes: "
+            f"{sentinel_relative}"
+        ])
+    if ACTIVE_SENTINEL.stat().st_mode & 0o111:
+        fail([
+            "active-plan directory sentinel must not be executable: "
+            f"{sentinel_relative}"
+        ])
     plans = plan_files(ACTIVE_DIR, "Active Plan")
     completed = plan_files(COMPLETED_DIR, "Completed plan")
     if len(plans) > 1:

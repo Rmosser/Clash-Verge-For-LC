@@ -434,3 +434,34 @@ jobs:
       - env:
           HARNESS_STANDALONE_BASE_SHA: ${{ github.event.before }}
         run: python3 -I -B scripts/check_docs.py --all
+      - name: Validate the pushed scope against its predecessor
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          zero_sha=0000000000000000000000000000000000000000
+          if [[ ! "${BEFORE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "github.event.before is not an exact commit SHA." >&2
+            exit 1
+          fi
+          if [[ "${BEFORE_SHA}" != "${zero_sha}" ]]; then
+            git rev-parse --verify "${BEFORE_SHA}^{commit}" >/dev/null
+            python3 -I -B scripts/check_loop_checkpoints.py \
+              --base "${BEFORE_SHA}" --head HEAD
+            exit 0
+          fi
+
+          if git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+            base_sha="$(git rev-parse HEAD^)"
+            python3 -I -B scripts/check_loop_checkpoints.py \
+              --base "${base_sha}" --head HEAD
+            exit 0
+          fi
+
+          if [[ "$(git rev-list --parents -n 1 HEAD)" == *" "* ]]; then
+            echo "Zero-SHA bootstrap fallback requires a root commit." >&2
+            exit 1
+          fi
+          python3 -I -B scripts/check_loop_checkpoints.py --worktree-only

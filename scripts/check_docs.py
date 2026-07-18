@@ -52,6 +52,7 @@ DOCS_ROOT = exact_docs_root_at(ROOT, "validation target")
 TRUSTED_DOCS_ROOT = exact_docs_root_at(TRUSTED_ROOT, "trusted verifier checkout")
 ACTIVE_PLAN_DIR = DOCS_ROOT / "exec-plans" / "active"
 COMPLETED_PLAN_DIR = DOCS_ROOT / "exec-plans" / "completed"
+ACTIVE_PLAN_SENTINEL = ACTIVE_PLAN_DIR / ".gitkeep"
 PROJECT_CHECK = TRUSTED_ROOT / "scripts" / "check_docs_project.py"
 INLINE_LINK_RE = re.compile(
     r"!?\[[^\]]*\]\(\s*(?:<([^>\r\n]+)>|([^\s)]+))"
@@ -1230,6 +1231,24 @@ def check_active_plan_directories(errors: list[str]) -> bool:
     ):
         if path.is_symlink() or not path.is_dir():
             errors.append(f"{label} must be a real directory, not a symlink: {path.relative_to(ROOT)}")
+            valid = False
+    if valid:
+        relative = ACTIVE_PLAN_SENTINEL.relative_to(ROOT).as_posix()
+        if ACTIVE_PLAN_SENTINEL.is_symlink() or not ACTIVE_PLAN_SENTINEL.is_file():
+            errors.append(
+                "active-plan directory sentinel must be a regular file, not a "
+                f"symlink or special file: {relative}"
+            )
+            valid = False
+        elif ACTIVE_PLAN_SENTINEL.read_bytes() != b"":
+            errors.append(
+                f"active-plan directory sentinel must be exactly zero bytes: {relative}"
+            )
+            valid = False
+        elif ACTIVE_PLAN_SENTINEL.stat().st_mode & 0o111:
+            errors.append(
+                f"active-plan directory sentinel must not be executable: {relative}"
+            )
             valid = False
     return valid
 

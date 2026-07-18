@@ -78,7 +78,7 @@ Scope 对账约定：`## Scope` 段中反引号包裹的路径是机器可读的
 
 当非平凡 baseline PR 必须依赖 `active/` 中的计划证明 Scope 时，归档采用强制两阶段：先合并已经完成 current-head review 的 baseline，再立即用独立 cleanup PR 把该计划移入 `completed/`。计划模板必须含唯一 `Status: active`；cleanup 归档时原子改为 `Status: completed`、`Active Plan archived: completed` 与 `Transition invariant: satisfied/closed`。过渡窗口不是 rollout 完成态；现存 Active Plan 的 Scope gate 必须让无关产品 PR fail closed，并且 required-check 激活、本地分支/worktree 删除和完成声明都必须等待 cleanup PR 合并且 `active/` 槽清空。
 
-归档目标还必须精确写入 `Main synced: completed`、`Local branch deleted: deferred-to-rollout-closure` 与 `Heartbeat closed: deferred-to-rollout-closure`。这两个 deferred 值不是完成声明；rollout closure 必须在 cleanup PR 合并后另行证明分支/worktree 已删除且 heartbeat 已关闭。archive-only Scope 例外只允许 Active Plan 的六个 lifecycle 字段按该契约变化、把唯一 active 文件原子移入 `completed/`，并把唯一索引链接从 active 路径切换到 completed 路径。
+归档目标还必须精确写入 `Main synced: completed`、`Local branch deleted: deferred-to-rollout-closure` 与 `Heartbeat closed: deferred-to-rollout-closure`。这两个 deferred 值不是完成声明；rollout closure 必须在 cleanup PR 合并后另行证明分支/worktree 已删除且 heartbeat 已关闭。`docs/exec-plans/active/.gitkeep` 是零字节、非可执行的普通文件哨兵，必须在 baseline 中建立并在 cleanup 中保持不变，使空闲态的 fresh checkout 仍保留 `active/`；archive-only Scope 例外不得把该哨兵当作可变路径。archive-only Scope 例外只允许 Active Plan 的六个 lifecycle 字段按该契约变化、把唯一 active 文件原子移入 `completed/`，并把唯一索引链接从 active 路径切换到 completed 路径。
 
 ## Batch Validation Evidence
 
