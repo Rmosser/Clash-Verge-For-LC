@@ -448,8 +448,7 @@ jobs:
 
   dispatch-open-pull-requests:
     name: reconcile-open-pull-requests
-    if: ${{ always() && github.event_name == 'push' }}
-    needs: default-branch-checkpoints
+    if: github.event_name == 'push'
     permissions:
       contents: write
       pull-requests: read

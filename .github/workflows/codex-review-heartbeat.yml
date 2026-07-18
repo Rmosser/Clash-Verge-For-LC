@@ -33,5 +33,6 @@ jobs:
             gh api --method POST \
               "repos/${GITHUB_REPOSITORY}/dispatches" \
               -f event_type=codex-review-reconcile \
-              -F "client_payload[pr_number]=${number}"
+              -F "client_payload[pr_number]=${number}" \
+              -f "client_payload[reconcile_reason]=heartbeat"
           done <<< "${PR_NUMBERS}"

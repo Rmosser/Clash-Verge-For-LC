@@ -4,7 +4,8 @@
 The trusted default-branch workflow calls this script for PR, review, and
 comment events. It never executes code from the pull-request branch. A
 non-trivial PR passes only when a Codex artifact is explicitly bound to the
-current head SHA and no current-head Codex finding is present.
+current head SHA and the live base review epoch, with no current-head Codex
+finding present.
 """
 from __future__ import annotations
 
@@ -28,6 +29,7 @@ DEFAULT_CONTEXT = "codex-review"
 DEFAULT_BASE_REF = "main"
 GITHUB_ACTIONS_APP_ID = 15368
 GITHUB_ACTIONS_STATUS_CREATOR = "github-actions[bot]"
+STATUS_BASE_RE = re.compile(r"; base=([0-9a-f]{40})\.$", re.IGNORECASE)
 TRIVIAL_FILES = {
     "README.md",
     "CHANGELOG.md",
@@ -599,6 +601,7 @@ def evaluate(
     contract: dict[str, Any],
     expected_head: str = "",
     bootstrap_control_plane_review: bool = False,
+    evidence_not_before: str = "",
 ) -> GateResult:
     pull = payload.get("pull")
     if not isinstance(pull, dict):
@@ -734,6 +737,10 @@ def evaluate(
             and any(artifact_time(request) < timestamp for request in triggers)
         )
 
+    def belongs_to_live_base_epoch(item: dict[str, Any]) -> bool:
+        timestamp = evidence_time(item)
+        return bool(timestamp and (not evidence_not_before or timestamp > evidence_not_before))
+
     current_review_round = [
         item
         for item in reviews
@@ -803,16 +810,19 @@ def evaluate(
         body = str(review.get("body") or "")
         marker_is_consistent = not stale_or_invalid_review_marker(body, head_sha)
         if (
-            state == "APPROVED"
-            and (not body.strip() or clean_body(body))
-            and not finding_body(body)
-            and marker_is_consistent
-        ) or (
-            state == "COMMENTED"
-            and not finding_body(body)
-            and marker_is_consistent
-            and recognized_commented_review_body(body, head_sha)
-        ):
+            (
+                state == "APPROVED"
+                and (not body.strip() or clean_body(body))
+                and not finding_body(body)
+                and marker_is_consistent
+            )
+            or (
+                state == "COMMENTED"
+                and not finding_body(body)
+                and marker_is_consistent
+                and recognized_commented_review_body(body, head_sha)
+            )
+        ) and belongs_to_live_base_epoch(review):
             clean_artifacts.append(review)
     for comment in issue_comments:
         body = str(comment.get("body") or "")
@@ -824,6 +834,7 @@ def evaluate(
             and not finding_body(body)
             and after_latest_trigger(comment)
             and issue_clean_has_provenance(comment, body)
+            and belongs_to_live_base_epoch(comment)
         ):
             clean_artifacts.append(comment)
 
@@ -840,6 +851,7 @@ def evaluate(
                 and trusted_codex_actor(reaction, authors)
                 and isinstance(created_at, str)
                 and created_at >= trigger_time
+                and belongs_to_live_base_epoch(reaction)
             ):
                 reaction_artifact = dict(reaction)
                 reaction_artifact["html_url"] = artifact_url(latest_trigger)
@@ -893,10 +905,11 @@ def evaluate(
             else f"Codex review was not requested for head {head_sha[:10]}."
         )
         reason = (
-            "no clean Codex artifact is explicitly bound to the live PR head"
+            "no clean Codex artifact is explicitly bound to the live PR head "
+            "and current base review epoch"
             if request_was_observed
             else "no automatic current-head artifact or trusted explicit review request "
-            "produced clean evidence"
+            "produced clean evidence for the current base review epoch"
         )
         return GateResult(
             state="failure",
@@ -913,7 +926,10 @@ def evaluate(
         classification="non-trivial",
         head_sha=head_sha,
         description=f"Codex review is clean for current head {head_sha[:10]}.",
-        reasons=("clean current-head Codex artifact found with no current-head findings",),
+        reasons=(
+            "clean current-head Codex artifact found in the live base review epoch "
+            "with no current-head findings",
+        ),
         evidence_url=artifact_url(latest),
     )
 
@@ -1068,13 +1084,12 @@ def post_status(
     )
 
 
-def latest_status_for_identity(
+def statuses_for_identity(
     api: GitHubAPI,
     repository: str,
     pr_number: int,
     expected_identity: PullIdentity,
-    context: str,
-) -> dict[str, Any] | None:
+) -> list[dict[str, Any]]:
     live_identity = pull_identity(live_pull(api, repository, pr_number), repository)
     if not same_pull_identity(live_identity, expected_identity):
         raise GateError("pull request identity changed before current status read")
@@ -1085,8 +1100,24 @@ def latest_status_for_identity(
     live_identity = pull_identity(live_pull(api, repository, pr_number), repository)
     if not same_pull_identity(live_identity, expected_identity):
         raise GateError("pull request identity changed during current status read")
+    return statuses
+
+
+def latest_status_for_identity(
+    api: GitHubAPI,
+    repository: str,
+    pr_number: int,
+    expected_identity: PullIdentity,
+    context: str,
+) -> dict[str, Any] | None:
     return next(
-        (status for status in statuses if status.get("context") == context),
+        (
+            status
+            for status in statuses_for_identity(
+                api, repository, pr_number, expected_identity
+            )
+            if status.get("context") == context
+        ),
         None,
     )
 
@@ -1151,6 +1182,85 @@ def status_matches_pending(
         and status.get("state") == "pending"
         and status.get("description") == pending_status_description(expected_identity)
     )
+
+
+def status_base_sha(status: dict[str, Any]) -> str:
+    description = status.get("description")
+    if not isinstance(description, str):
+        return ""
+    match = STATUS_BASE_RE.search(description)
+    return match.group(1).lower() if match else ""
+
+
+def live_base_evidence_cutoff(
+    statuses: list[dict[str, Any]],
+    context: str,
+    expected_identity: PullIdentity,
+    status_app_id: int,
+) -> tuple[bool, str]:
+    trusted = [
+        status
+        for status in statuses
+        if status.get("context") == context
+        and trusted_status_writer(status, status_app_id)
+    ]
+    base_drifted = any(
+        (base_sha := status_base_sha(status))
+        and base_sha != expected_identity.base_sha
+        for status in trusted
+    )
+    current_base_pending_times = [
+        created_at
+        for status in trusted
+        if status.get("state") == "pending"
+        and status_base_sha(status) == expected_identity.base_sha
+        and isinstance((created_at := status.get("created_at")), str)
+        and created_at
+    ]
+    return base_drifted, min(current_base_pending_times, default="")
+
+
+def prepare_live_base_evidence_epoch(
+    api: GitHubAPI,
+    repository: str,
+    pr_number: int,
+    expected_identity: PullIdentity,
+    context: str,
+    target_url: str,
+    status_app_id: int,
+    *,
+    publish_early_pending: bool,
+) -> str:
+    statuses = statuses_for_identity(
+        api, repository, pr_number, expected_identity
+    )
+    base_drifted, cutoff = live_base_evidence_cutoff(
+        statuses, context, expected_identity, status_app_id
+    )
+    if not base_drifted and not publish_early_pending:
+        return ""
+    if not publish_pending(
+        api,
+        repository,
+        pr_number,
+        expected_identity,
+        context,
+        target_url,
+    ):
+        raise GateError("could not establish the live base review epoch")
+    if not base_drifted:
+        return ""
+    if cutoff:
+        return cutoff
+    statuses = statuses_for_identity(
+        api, repository, pr_number, expected_identity
+    )
+    _, cutoff = live_base_evidence_cutoff(
+        statuses, context, expected_identity, status_app_id
+    )
+    if not cutoff:
+        raise GateError("live base pending status did not expose a review epoch timestamp")
+    return cutoff
 
 
 def publish_fail_closed_for_bound_head(
@@ -1497,6 +1607,28 @@ def main() -> int:
             raise GateError("codex_review.status_app_id must be an integer")
         status_app_id = raw_status_app_id
         context = args.context or str(config.get("required_check") or DEFAULT_CONTEXT)
+        evidence_not_before = ""
+        if (
+            args.publish
+            and initial_identity is not None
+            and (
+                not args.expected_head
+                or args.expected_head.lower() == initial_identity.head_sha
+            )
+        ):
+            reconcile_reason = os.environ.get(
+                "HARNESS_RECONCILE_REASON", ""
+            ).strip().casefold()
+            evidence_not_before = prepare_live_base_evidence_epoch(
+                api,
+                args.repository,
+                pr_number,
+                initial_identity,
+                context,
+                args.target_url,
+                status_app_id,
+                publish_early_pending=reconcile_reason != "heartbeat",
+            )
         if args.fixture:
             payload = json.loads(args.fixture.read_text(encoding="utf-8"))
             if not isinstance(payload, dict):
@@ -1524,6 +1656,7 @@ def main() -> int:
             contract,
             args.expected_head,
             args.bootstrap_control_plane_review,
+            evidence_not_before=evidence_not_before,
         )
         if args.publish:
             if args.fixture:
@@ -1545,6 +1678,7 @@ def main() -> int:
                     ),
                     contract,
                     args.expected_head,
+                    evidence_not_before=evidence_not_before,
                 )
             if result.publish and not publish_status_if_changed(
                 api,

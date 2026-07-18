@@ -97,6 +97,7 @@ jobs:
           PR_NUMBER: ${{ steps.resolve-live-pr.outputs.pr_number }}
           EXPECTED_HEAD_SHA: ${{ steps.resolve-live-pr.outputs.head_sha }}
           EXPECTED_BASE_SHA: ${{ steps.resolve-live-pr.outputs.base_sha }}
+          HARNESS_RECONCILE_REASON: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.reconcile_reason || github.event_name }}
           GITHUB_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         shell: bash
         run: |
@@ -124,5 +125,6 @@ jobs:
             gh api --method POST \
               "repos/${GITHUB_REPOSITORY}/dispatches" \
               -f event_type=codex-review-reconcile \
-              -F "client_payload[pr_number]=${pull_request_number}"
+              -F "client_payload[pr_number]=${pull_request_number}" \
+              -f "client_payload[reconcile_reason]=default-branch-push"
           done

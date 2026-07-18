@@ -194,7 +194,7 @@ OUT_OF_REPO_SCOPE_RE = re.compile(
 )
 CURRENT_HEAD_REVIEW_HEADING = "## Current-Head Codex Review\n\n"
 CURRENT_HEAD_REVIEW_SHA256 = (
-    "434cd5d13d8a7bc5f366a9730392eac8813f89f5d0aa7c73b732639702482098"
+    "ada1a80c2178d10b25acc0e9257a424a2620f8a22ad2ded4286b822055711be9"
 )
 TRUSTED_CONTROL_FILES = (
     f"{DOCS_ROOT.name}/doc-sync-rules.json",
@@ -1456,6 +1456,57 @@ def lifecycle_skeleton(text: str) -> str | None:
     return skeleton
 
 
+def canonical_legacy_archive_text(source_text: str) -> str | None:
+    matches_by_field: dict[str, re.Match[str]] = {}
+    for field in PLAN_LIFECYCLE_FIELDS:
+        pattern = re.compile(
+            rf"^(?P<prefix>[ \t]*-[ \t]*{re.escape(field)}[ \t]*[:：][ \t]*)"
+            rf"(?P<value>[^\r\n]*)(?P<line_ending>\r?\n?)$",
+            re.MULTILINE | re.IGNORECASE,
+        )
+        matches = list(pattern.finditer(source_text))
+        if len(matches) > 1:
+            return None
+        if matches:
+            matches_by_field[field] = matches[0]
+    missing = [field for field in PLAN_LIFECYCLE_FIELDS if field not in matches_by_field]
+    if not missing:
+        return None
+
+    line_ending = "\r\n" if "\r\n" in source_text else "\n"
+    migrated = source_text
+    present_fields = sorted(
+        matches_by_field,
+        key=lambda field: matches_by_field[field].start(),
+        reverse=True,
+    )
+    for field in present_fields:
+        match = matches_by_field[field]
+        canonical = next(iter(COMPLETED_LIFECYCLE_CONTRACT[field]))
+        previous = match.group("value").strip()
+        ending = match.group("line_ending") or line_ending
+        replacement = (
+            f"{match.group('prefix')}{canonical}{ending}"
+            f"Completed-plan migration evidence for {field}; previous value JSON = "
+            f"{json.dumps(previous)}.{ending}"
+        )
+        if not match.group("line_ending"):
+            replacement = replacement.removesuffix(ending)
+        migrated = migrated[: match.start()] + replacement + migrated[match.end() :]
+
+    lines = migrated.splitlines(keepends=True)
+    insert_at = 1
+    if len(lines) > 1 and not lines[1].strip():
+        insert_at = 2
+    inserted = [
+        f"- {field}: {next(iter(COMPLETED_LIFECYCLE_CONTRACT[field]))}{line_ending}"
+        for field in missing
+    ]
+    inserted.append(line_ending)
+    lines[insert_at:insert_at] = inserted
+    return "".join(lines)
+
+
 def check_active_plans(
     errors: list[str],
     allowed_no_subagent_fallback_reasons: set[str] | frozenset[str] = frozenset(),
@@ -1602,10 +1653,10 @@ def check_completed_plan_addition_provenance(
         )
         return
     target_active = active_plans(errors)
-    if target_active:
+    if len(target_active) > 1:
         errors.append(
-            "Completed-plan additions are forbidden while an Active Plan remains; "
-            "the unique Active Plan must be moved to completed/"
+            "Completed-plan additions may retain at most one migration successor "
+            f"Active Plan; found {len(target_active)}"
         )
         return
 
@@ -1663,13 +1714,46 @@ def check_completed_plan_addition_provenance(
         source_mode = base_mode
         source_text = source_blob.decode("utf-8")
 
-    expected_relative = (
+    same_name_relative = (
         COMPLETED_PLAN_DIR / Path(source_relative).name
     ).relative_to(ROOT).as_posix()
+    source_lifecycle_counts = {
+        field: len(lifecycle_field_values(source_text, field))
+        for field in PLAN_LIFECYCLE_FIELDS
+    }
+    legacy_source = any(count == 0 for count in source_lifecycle_counts.values())
+    expected_relative = (
+        (
+            COMPLETED_PLAN_DIR
+            / f"archived-before-harness-upgrade-{Path(source_relative).name}"
+        ).relative_to(ROOT).as_posix()
+        if legacy_source
+        else same_name_relative
+    )
     if added_relative != expected_relative:
         errors.append(
-            "Completed-plan additions must preserve the unique Active Plan filename: "
+            "Completed-plan additions must use the canonical archive filename for "
+            "the unique Active Plan: "
             f"expected {expected_relative}, found {added_relative}"
+        )
+        return
+    source_target = ROOT / source_relative
+    if source_target.exists() or source_target.is_symlink():
+        errors.append(
+            "Completed-plan additions must remove the archived source Active Plan: "
+            f"{source_relative}"
+        )
+        return
+    if target_active and not legacy_source:
+        errors.append(
+            "Completed-plan additions are forbidden while an Active Plan remains; "
+            "only an exact pre-Harness migration may retain a successor"
+        )
+        return
+    if target_active and target_active[0].name == Path(source_relative).name:
+        errors.append(
+            "A pre-Harness migration may retain only a differently named successor "
+            "Active Plan"
         )
         return
     validate_archive_plan_transition(source_text, source_mode, completed_plan, errors)
@@ -1877,19 +1961,30 @@ def validate_archive_plan_transition(
         )
         return False
 
-    source_status = lifecycle_field_values(source_text, "Status")
-    if len(source_status) != 1 or normalized(source_status[0]) != "active":
+    source_values = {
+        field: lifecycle_field_values(source_text, field)
+        for field in PLAN_LIFECYCLE_FIELDS
+    }
+    if any(len(values) > 1 for values in source_values.values()):
         errors.append(
-            "archive cleanup source must contain exactly one 'Status: active' field"
+            "archive cleanup source has duplicate or mixed lifecycle state"
         )
         return False
-    source_archived = lifecycle_field_values(source_text, "Active Plan archived")
-    source_transition = lifecycle_field_values(source_text, "Transition invariant")
+    source_status = source_values["Status"]
+    if source_status and normalized(source_status[0]) != "active":
+        errors.append(
+            "archive cleanup source Status must be absent for a legacy plan or exactly "
+            "'active'"
+        )
+        return False
+    source_archived = source_values["Active Plan archived"]
+    source_transition = source_values["Transition invariant"]
     if (
-        len(source_archived) != 1
-        or normalized(source_archived[0]) == "completed"
-        or len(source_transition) != 1
-        or normalized(source_transition[0]) in COMPLETED_TRANSITION_VALUES
+        (source_archived and normalized(source_archived[0]) == "completed")
+        or (
+            source_transition
+            and normalized(source_transition[0]) in COMPLETED_TRANSITION_VALUES
+        )
     ):
         errors.append(
             "archive cleanup source contains mixed or already-completed lifecycle state"
@@ -1906,12 +2001,20 @@ def validate_archive_plan_transition(
         return False
     source_skeleton = lifecycle_skeleton(source_text)
     completed_skeleton = lifecycle_skeleton(completed_text)
-    if source_skeleton is None or completed_skeleton is None:
+    if completed_skeleton is None:
         errors.append(
             "archive cleanup plans must contain exactly one of each lifecycle field"
         )
         return False
-    if source_skeleton != completed_skeleton:
+    if source_skeleton is None:
+        expected_legacy = canonical_legacy_archive_text(source_text)
+        if expected_legacy is None or completed_text != expected_legacy:
+            errors.append(
+                "legacy archive cleanup must add only canonical lifecycle fields and "
+                "migration evidence"
+            )
+            return False
+    elif source_skeleton != completed_skeleton:
         errors.append(
             "archive cleanup may only change the canonical lifecycle fields in the "
             "moved plan"
@@ -2170,6 +2273,8 @@ def workflow_structure_errors(text: str) -> list[str]:
         )
     if entries.get(("permissions",), []) != ["{}"]:
         errors.append("top-level permissions must be an empty mapping")
+    if entries.get(("jobs", "dispatch-open-pull-requests", "needs"), []):
+        errors.append("dispatch-open-pull-requests must not wait for another job")
     return errors
 
 
@@ -2369,7 +2474,7 @@ def check_document_status_workflow(
         "repos/${GITHUB_REPOSITORY}/dispatches",
         "event_type=loop-checkpoints-reconcile",
         "client_payload[pull_request_number]",
-        "if: ${{ always() && github.event_name == 'push' }}",
+        "if: github.event_name == 'push'",
         '--base "${BEFORE_SHA}" --head HEAD --diff-mode direct',
         '--head HEAD --diff-mode root',
         "A zero-before created-ref push must point at a root commit.",
