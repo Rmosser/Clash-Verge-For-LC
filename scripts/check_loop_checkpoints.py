@@ -142,6 +142,7 @@ FIELD_RE_TEMPLATE = r"^[ \t]*-[ \t]*{field}[ \t]*[:：][ \t]*(.*)$"
 COMPLETED_TRANSITION_VALUES = {"satisfied", "closed", "satisfied/closed"}
 CANONICAL_COMPLETED_TRANSITION_VALUES = {"satisfied/closed"}
 DEFERRED_ROLLOUT_CLOSURE_VALUES = {"deferred-to-rollout-closure"}
+LEGACY_ARCHIVE_PREFIX = "archived-before-harness-upgrade-"
 PLAN_LIFECYCLE_FIELDS = (
     "Status",
     "Main synced",
@@ -150,6 +151,14 @@ PLAN_LIFECYCLE_FIELDS = (
     "Local branch deleted",
     "Heartbeat closed",
 )
+COMPLETED_LIFECYCLE_CONTRACT = {
+    "Status": "completed",
+    "Main synced": "completed",
+    "Active Plan archived": "completed",
+    "Transition invariant": "satisfied/closed",
+    "Local branch deleted": "deferred-to-rollout-closure",
+    "Heartbeat closed": "deferred-to-rollout-closure",
+}
 INLINE_LINK_RE = re.compile(
     r"!?\[[^\]]*\]\(\s*(?:<([^>\r\n]+)>|([^\s)]+))"
 )
@@ -431,6 +440,20 @@ def worktree_paths() -> set[str]:
     return paths
 
 
+def untracked_worktree_paths() -> set[str]:
+    paths = set(
+        git_nul_paths("ls-files", "-z", "--others", "--exclude-standard")
+    )
+    return {
+        path
+        for path in paths
+        if not any(
+            fnmatch.fnmatch(path, pattern)
+            for pattern in IGNORED_WORKTREE_PATTERNS
+        )
+    }
+
+
 def ref_exists(ref: str) -> bool:
     return subprocess.run(
         ["git", "-C", str(ROOT), "rev-parse", "--verify", ref],
@@ -496,6 +519,25 @@ def changed_files(
         ])
     if worktree_only:
         return sorted(worktree)
+    current_head = (
+        git_output("rev-parse", "HEAD").strip() if ref_exists("HEAD") else ""
+    )
+    resolved_head = git_output("rev-parse", head).strip() if head_exists else ""
+    if worktree and base_exists and resolved_head == current_head:
+        comparison_ref = base
+        if diff_mode == "merge-base" and not same_commit:
+            comparison_ref = git_output("merge-base", base, head).strip()
+        files.update(
+            git_nul_paths(
+                "diff",
+                "-z",
+                "--name-only",
+                "--no-renames",
+                comparison_ref,
+            )
+        )
+        files.update(untracked_worktree_paths())
+        return sorted(files)
     if head_exists and base_exists and not same_commit:
         diff_range = (
             f"{base}...{head}" if diff_mode == "merge-base" else f"{base}..{head}"
@@ -651,6 +693,61 @@ def lifecycle_skeleton(text: str) -> str | None:
     return skeleton
 
 
+def canonical_legacy_archive_text(source_text: str) -> str | None:
+    matches_by_field: dict[str, re.Match[str]] = {}
+    for field in PLAN_LIFECYCLE_FIELDS:
+        pattern = re.compile(
+            rf"^(?P<prefix>[ \t]*-[ \t]*{re.escape(field)}[ \t]*[:：][ \t]*)"
+            rf"(?P<value>[^\r\n]*)(?P<line_ending>\r?\n?)$",
+            re.MULTILINE | re.IGNORECASE,
+        )
+        matches = list(pattern.finditer(source_text))
+        if len(matches) > 1:
+            return None
+        if matches:
+            matches_by_field[field] = matches[0]
+    missing = [field for field in PLAN_LIFECYCLE_FIELDS if field not in matches_by_field]
+    if not missing:
+        return None
+
+    line_ending = "\r\n" if "\r\n" in source_text else "\n"
+    migrated = source_text
+    present_fields = sorted(
+        matches_by_field,
+        key=lambda field: matches_by_field[field].start(),
+        reverse=True,
+    )
+    for field in present_fields:
+        match = matches_by_field[field]
+        previous = match.group("value").strip()
+        ending = match.group("line_ending") or line_ending
+        replacement = (
+            f"- {field}: {COMPLETED_LIFECYCLE_CONTRACT[field]}{ending}"
+            f"Completed-plan migration evidence for {field}; previous value JSON = "
+            f"{json.dumps(previous)}.{ending}"
+        )
+        if not match.group("line_ending"):
+            replacement = replacement.removesuffix(ending)
+        migrated = migrated[: match.start()] + replacement + migrated[match.end() :]
+
+    lines = migrated.splitlines(keepends=True)
+    insert_at = 1
+    if len(lines) > 1 and not lines[1].strip():
+        insert_at = 2
+    inserted: list[str] = []
+    for field in missing:
+        inserted.extend(
+            [
+                f"- {field}: {COMPLETED_LIFECYCLE_CONTRACT[field]}{line_ending}",
+                f"Completed-plan migration evidence for {field}; "
+                f"previous value JSON = null.{line_ending}",
+            ]
+        )
+    inserted.append(line_ending)
+    lines[insert_at:insert_at] = inserted
+    return "".join(lines)
+
+
 def markdown_link_targets(text: str) -> list[str]:
     targets: list[str] = []
     for pattern in (INLINE_LINK_RE, REFERENCE_LINK_RE):
@@ -751,8 +848,15 @@ def archive_cleanup_index_allowlist(
     if len(index_paths) != 1:
         fail(["Active Plan archive cleanup requires exactly one index-link invariant"])
     index_path = index_paths[0]
+    legacy_source = any(
+        len(lifecycle_field_values(source_text, field)) == 0
+        for field in PLAN_LIFECYCLE_FIELDS
+    )
+    completed_name = Path(source_path).name
+    if legacy_source:
+        completed_name = f"{LEGACY_ARCHIVE_PREFIX}{completed_name}"
     completed_path = (
-        f"{DOCS_ROOT_NAME}/exec-plans/completed/{Path(source_path).name}"
+        f"{DOCS_ROOT_NAME}/exec-plans/completed/{completed_name}"
     )
     required = {source_path, completed_path, index_path}
     missing = sorted(required - set(changed))
@@ -783,23 +887,33 @@ def archive_cleanup_index_allowlist(
         "Local branch deleted": DEFERRED_ROLLOUT_CLOSURE_VALUES,
         "Heartbeat closed": DEFERRED_ROLLOUT_CLOSURE_VALUES,
     }
-    source_status = lifecycle_field_values(source_text, "Status")
-    source_archived = lifecycle_field_values(source_text, "Active Plan archived")
-    source_transition = lifecycle_field_values(source_text, "Transition invariant")
-    if (
-        len(source_status) != 1
-        or normalized(source_status[0]) != "active"
-        or len(source_archived) != 1
-        or normalized(source_archived[0]) == "completed"
-        or len(source_transition) != 1
-        or normalized(source_transition[0]) in COMPLETED_TRANSITION_VALUES
-    ):
-        fail(["archive cleanup source has duplicate or mixed lifecycle state"])
+    if legacy_source:
+        if canonical_legacy_archive_text(source_text) != completed_text:
+            fail([
+                "legacy archive destination must be the exact reversible canonical "
+                "migration of the source Active Plan"
+            ])
+    else:
+        source_status = lifecycle_field_values(source_text, "Status")
+        source_archived = lifecycle_field_values(source_text, "Active Plan archived")
+        source_transition = lifecycle_field_values(source_text, "Transition invariant")
+        if (
+            len(source_status) != 1
+            or normalized(source_status[0]) != "active"
+            or len(source_archived) != 1
+            or normalized(source_archived[0]) == "completed"
+            or len(source_transition) != 1
+            or normalized(source_transition[0]) in COMPLETED_TRANSITION_VALUES
+        ):
+            fail(["archive cleanup source has duplicate or mixed lifecycle state"])
     for field, allowed in completed_contract.items():
         values = lifecycle_field_values(completed_text, field)
         if len(values) != 1 or normalized(values[0]) not in allowed:
             fail([f"archive destination has invalid or duplicate {field}"])
-    if lifecycle_skeleton(source_text) != lifecycle_skeleton(completed_text):
+    if (
+        not legacy_source
+        and lifecycle_skeleton(source_text) != lifecycle_skeleton(completed_text)
+    ):
         fail([
             "archive cleanup may only change canonical lifecycle fields in the moved plan"
         ])

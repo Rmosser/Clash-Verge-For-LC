@@ -1,8 +1,11 @@
 # Runtime Hardening Recovery
 
 - Status: completed
+Completed-plan migration evidence for Status; previous value JSON = null.
 - Active Plan archived: completed
+Completed-plan migration evidence for Active Plan archived; previous value JSON = null.
 - Transition invariant: satisfied/closed
+Completed-plan migration evidence for Transition invariant; previous value JSON = null.
 
 ## 任务分类
 
@@ -107,11 +110,6 @@
 | 0 | - | none | - | - | no feedback repair yet | wait for review |
 
 ## Post-Merge Cleanup
-
-## Harness Upgrade Disposition (2026-07-10)
-
-- This plan was unfinished when archived: `Final accepted diff` remained pending final checks and Codex Review.
-- Archival is administrative only. The runtime-hardening work remains unaccepted and must receive its own branch-bound reactivation or explicit closure outside this Harness repair.
 
 - Main synced: completed
 Completed-plan migration evidence for Main synced; previous value JSON = "`pending`".

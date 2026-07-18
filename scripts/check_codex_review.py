@@ -850,7 +850,7 @@ def evaluate(
                 reaction.get("content") == "+1"
                 and trusted_codex_actor(reaction, authors)
                 and isinstance(created_at, str)
-                and created_at >= trigger_time
+                and created_at > trigger_time
                 and belongs_to_live_base_epoch(reaction)
             ):
                 reaction_artifact = dict(reaction)
@@ -1170,6 +1170,15 @@ def pending_status_description(expected_identity: PullIdentity) -> str:
     )
 
 
+def reconciliation_pending_status_description(
+    expected_identity: PullIdentity,
+) -> str:
+    return bound_status_description(
+        f"Codex review evidence changed for current head {expected_identity.head_sha[:10]}.",
+        expected_identity.base_sha,
+    )
+
+
 def status_matches_pending(
     status: dict[str, Any] | None,
     context: str,
@@ -1180,7 +1189,11 @@ def status_matches_pending(
         trusted_status_writer(status, status_app_id)
         and status.get("context") == context
         and status.get("state") == "pending"
-        and status.get("description") == pending_status_description(expected_identity)
+        and status.get("description")
+        in {
+            pending_status_description(expected_identity),
+            reconciliation_pending_status_description(expected_identity),
+        }
     )
 
 
@@ -1203,21 +1216,29 @@ def live_base_evidence_cutoff(
         for status in statuses
         if status.get("context") == context
         and trusted_status_writer(status, status_app_id)
+        and status_base_sha(status)
     ]
-    base_drifted = any(
-        (base_sha := status_base_sha(status))
-        and base_sha != expected_identity.base_sha
-        for status in trusted
-    )
+    if not trusted:
+        return False, ""
+
+    latest_base_sha = status_base_sha(trusted[0])
+    if latest_base_sha != expected_identity.base_sha:
+        return True, ""
+
+    current_epoch: list[dict[str, Any]] = []
+    for status in trusted:
+        if status_base_sha(status) != expected_identity.base_sha:
+            break
+        current_epoch.append(status)
     current_base_pending_times = [
         created_at
-        for status in trusted
+        for status in current_epoch
         if status.get("state") == "pending"
-        and status_base_sha(status) == expected_identity.base_sha
+        and status.get("description") == pending_status_description(expected_identity)
         and isinstance((created_at := status.get("created_at")), str)
         and created_at
     ]
-    return base_drifted, min(current_base_pending_times, default="")
+    return False, min(current_base_pending_times, default="")
 
 
 def prepare_live_base_evidence_epoch(
@@ -1229,7 +1250,7 @@ def prepare_live_base_evidence_epoch(
     target_url: str,
     status_app_id: int,
     *,
-    publish_early_pending: bool,
+    establish_missing_epoch: bool,
 ) -> str:
     statuses = statuses_for_identity(
         api, repository, pr_number, expected_identity
@@ -1237,7 +1258,9 @@ def prepare_live_base_evidence_epoch(
     base_drifted, cutoff = live_base_evidence_cutoff(
         statuses, context, expected_identity, status_app_id
     )
-    if not base_drifted and not publish_early_pending:
+    if cutoff:
+        return cutoff
+    if not base_drifted and not establish_missing_epoch:
         return ""
     if not publish_pending(
         api,
@@ -1248,17 +1271,13 @@ def prepare_live_base_evidence_epoch(
         target_url,
     ):
         raise GateError("could not establish the live base review epoch")
-    if not base_drifted:
-        return ""
-    if cutoff:
-        return cutoff
     statuses = statuses_for_identity(
         api, repository, pr_number, expected_identity
     )
-    _, cutoff = live_base_evidence_cutoff(
+    base_drifted, cutoff = live_base_evidence_cutoff(
         statuses, context, expected_identity, status_app_id
     )
-    if not cutoff:
+    if base_drifted or not cutoff:
         raise GateError("live base pending status did not expose a review epoch timestamp")
     return cutoff
 
@@ -1298,6 +1317,7 @@ def publish_pending(
     expected_identity: PullIdentity,
     context: str,
     target_url: str,
+    description: str = "",
 ) -> bool:
     observed_pull: dict[str, Any] | None = None
     try:
@@ -1333,7 +1353,7 @@ def publish_pending(
         expected_identity.head_sha,
         "pending",
         context,
-        pending_status_description(expected_identity),
+        description or pending_status_description(expected_identity),
         target_url,
     )
     return fail_closed_after_status_write(
@@ -1434,6 +1454,83 @@ def publish_status(
         expected_identity,
         context,
         target_url,
+    )
+
+
+def github_event_payload() -> dict[str, Any]:
+    raw_path = os.environ.get("GITHUB_EVENT_PATH", "").strip()
+    if not raw_path:
+        return {}
+    try:
+        payload = json.loads(Path(raw_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise GateError("could not read the trusted GitHub event payload") from exc
+    if not isinstance(payload, dict):
+        raise GateError("trusted GitHub event payload must be an object")
+    return payload
+
+
+def evidence_event_requires_pending(
+    contract: dict[str, Any],
+    expected_head: str,
+    *,
+    event_name: str = "",
+    event_payload: dict[str, Any] | None = None,
+) -> bool:
+    resolved_event_name = (
+        event_name
+        or os.environ.get("HARNESS_RECONCILE_REASON", "")
+        or os.environ.get("GITHUB_EVENT_NAME", "")
+    ).strip().casefold()
+    if resolved_event_name != "issue_comment":
+        return False
+    payload = github_event_payload() if event_payload is None else event_payload
+    if str(payload.get("action") or "").casefold() not in {
+        "created",
+        "edited",
+        "deleted",
+    }:
+        return False
+    comment = payload.get("comment")
+    if not isinstance(comment, dict):
+        return False
+    authors = accepted_authors(contract)
+    if trusted_codex_actor(comment, authors):
+        return True
+    return bool(
+        trusted_trigger(comment, authors)
+        and trigger_bound_to_full_head(comment, expected_head)
+    )
+
+
+def publish_evidence_pending_before_artifacts(
+    api: GitHubAPI,
+    repository: str,
+    pr_number: int,
+    expected_identity: PullIdentity,
+    context: str,
+    target_url: str,
+    status_app_id: int,
+) -> bool:
+    latest_status = latest_status_for_identity(
+        api,
+        repository,
+        pr_number,
+        expected_identity,
+        context,
+    )
+    if status_matches_pending(
+        latest_status, context, expected_identity, status_app_id
+    ):
+        return True
+    return publish_pending(
+        api,
+        repository,
+        pr_number,
+        expected_identity,
+        context,
+        target_url,
+        reconciliation_pending_status_description(expected_identity),
     )
 
 
@@ -1608,6 +1705,9 @@ def main() -> int:
         status_app_id = raw_status_app_id
         context = args.context or str(config.get("required_check") or DEFAULT_CONTEXT)
         evidence_not_before = ""
+        reconcile_reason = os.environ.get(
+            "HARNESS_RECONCILE_REASON", ""
+        ).strip().casefold()
         if (
             args.publish
             and initial_identity is not None
@@ -1616,9 +1716,14 @@ def main() -> int:
                 or args.expected_head.lower() == initial_identity.head_sha
             )
         ):
-            reconcile_reason = os.environ.get(
-                "HARNESS_RECONCILE_REASON", ""
-            ).strip().casefold()
+            is_evidence_event = evidence_event_requires_pending(
+                contract,
+                initial_identity.head_sha,
+                event_name=reconcile_reason,
+            )
+            if reconcile_reason == "issue_comment" and not is_evidence_event:
+                print("Ignoring unrelated issue_comment reconciliation event.")
+                return 0
             evidence_not_before = prepare_live_base_evidence_epoch(
                 api,
                 args.repository,
@@ -1627,8 +1732,22 @@ def main() -> int:
                 context,
                 args.target_url,
                 status_app_id,
-                publish_early_pending=reconcile_reason != "heartbeat",
+                establish_missing_epoch=(
+                    reconcile_reason == "default-branch-push"
+                ),
             )
+            if is_evidence_event and not publish_evidence_pending_before_artifacts(
+                api,
+                args.repository,
+                pr_number,
+                initial_identity,
+                context,
+                args.target_url,
+                status_app_id,
+            ):
+                raise GateError(
+                    "could not invalidate prior status before reading changed evidence"
+                )
         if args.fixture:
             payload = json.loads(args.fixture.read_text(encoding="utf-8"))
             if not isinstance(payload, dict):

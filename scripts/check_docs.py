@@ -27,6 +27,7 @@ TRUSTED_ROOT = Path(
 MAX_GOVERNANCE_TEXT_BYTES = 1024 * 1024
 STANDALONE_BASE_ENV = "HARNESS_STANDALONE_BASE_SHA"
 ZERO_COMMIT_SHA = "0" * 40
+LEGACY_ARCHIVE_PREFIX = "archived-before-harness-upgrade-"
 YAML_MAPPING_KEY_RE = re.compile(
     r"^(?P<indent> *)(?P<key>[A-Za-z0-9_.-]+):(?P<value>.*)$"
 )
@@ -194,7 +195,7 @@ OUT_OF_REPO_SCOPE_RE = re.compile(
 )
 CURRENT_HEAD_REVIEW_HEADING = "## Current-Head Codex Review\n\n"
 CURRENT_HEAD_REVIEW_SHA256 = (
-    "ada1a80c2178d10b25acc0e9257a424a2620f8a22ad2ded4286b822055711be9"
+    "f934dd550088299d80a7729d3cbe00e5e8183f3be56ebb68cacdb746bab38de5"
 )
 TRUSTED_CONTROL_FILES = (
     f"{DOCS_ROOT.name}/doc-sync-rules.json",
@@ -1486,7 +1487,7 @@ def canonical_legacy_archive_text(source_text: str) -> str | None:
         previous = match.group("value").strip()
         ending = match.group("line_ending") or line_ending
         replacement = (
-            f"{match.group('prefix')}{canonical}{ending}"
+            f"- {field}: {canonical}{ending}"
             f"Completed-plan migration evidence for {field}; previous value JSON = "
             f"{json.dumps(previous)}.{ending}"
         )
@@ -1498,13 +1499,131 @@ def canonical_legacy_archive_text(source_text: str) -> str | None:
     insert_at = 1
     if len(lines) > 1 and not lines[1].strip():
         insert_at = 2
-    inserted = [
-        f"- {field}: {next(iter(COMPLETED_LIFECYCLE_CONTRACT[field]))}{line_ending}"
-        for field in missing
-    ]
+    inserted: list[str] = []
+    for field in missing:
+        inserted.extend(
+            [
+                f"- {field}: "
+                f"{next(iter(COMPLETED_LIFECYCLE_CONTRACT[field]))}{line_ending}",
+                f"Completed-plan migration evidence for {field}; "
+                f"previous value JSON = null.{line_ending}",
+            ]
+        )
     inserted.append(line_ending)
     lines[insert_at:insert_at] = inserted
     return "".join(lines)
+
+
+def legacy_archive_source(completed_text: str) -> str | None:
+    field_matches: dict[str, re.Match[str]] = {}
+    evidence_matches: dict[str, tuple[re.Match[str], str | None]] = {}
+    for field in PLAN_LIFECYCLE_FIELDS:
+        field_pattern = re.compile(
+            rf"^(?P<prefix>[ \t]*-[ \t]*{re.escape(field)}[ \t]*[:：][ \t]*)"
+            rf"(?P<value>[^\r\n]*)(?P<line_ending>\r?\n|\Z)",
+            re.MULTILINE | re.IGNORECASE,
+        )
+        matches = list(field_pattern.finditer(completed_text))
+        if len(matches) != 1:
+            return None
+        field_match = matches[0]
+        canonical = next(iter(COMPLETED_LIFECYCLE_CONTRACT[field]))
+        if field_match.group("value").strip() != canonical:
+            return None
+        evidence_pattern = re.compile(
+            rf"^Completed-plan migration evidence for {re.escape(field)}; "
+            rf"previous value JSON = (?P<previous>[^\r\n]+)\."
+            rf"(?P<line_ending>\r?\n|\Z)",
+            re.MULTILINE,
+        )
+        evidence = list(evidence_pattern.finditer(completed_text))
+        if len(evidence) != 1 or evidence[0].start() != field_match.end():
+            return None
+        try:
+            previous = json.loads(evidence[0].group("previous"))
+        except json.JSONDecodeError:
+            return None
+        if previous is not None and not isinstance(previous, str):
+            return None
+        field_matches[field] = field_match
+        evidence_matches[field] = (evidence[0], previous)
+
+    generic_evidence = re.findall(
+        r"^Completed-plan migration evidence for [^;\r\n]+; "
+        r"previous value JSON = [^\r\n]+\.\r?$",
+        completed_text,
+        re.MULTILINE,
+    )
+    if len(generic_evidence) != len(PLAN_LIFECYCLE_FIELDS):
+        return None
+    if not any(previous is None for _, previous in evidence_matches.values()):
+        return None
+
+    reconstructed = completed_text
+    for field in sorted(
+        PLAN_LIFECYCLE_FIELDS,
+        key=lambda item: field_matches[item].start(),
+        reverse=True,
+    ):
+        field_match = field_matches[field]
+        evidence_match, previous = evidence_matches[field]
+        replacement = ""
+        if previous is not None:
+            replacement = (
+                field_match.group("prefix")
+                + previous
+                + field_match.group("line_ending")
+            )
+        reconstructed = (
+            reconstructed[: field_match.start()]
+            + replacement
+            + reconstructed[evidence_match.end() :]
+        )
+
+    candidates = [reconstructed]
+    lines = reconstructed.splitlines(keepends=True)
+    insert_at = 1
+    if len(lines) > 1 and not lines[1].strip():
+        insert_at = 2
+    if insert_at < len(lines) and not lines[insert_at].strip():
+        candidates.append("".join(lines[:insert_at] + lines[insert_at + 1 :]))
+    for candidate in candidates:
+        if canonical_legacy_archive_text(candidate) == completed_text:
+            return candidate
+    return None
+
+
+def archive_completed_relative(source_relative: str, source_text: str) -> str:
+    source_name = Path(source_relative).name
+    legacy = any(
+        len(lifecycle_field_values(source_text, field)) == 0
+        for field in PLAN_LIFECYCLE_FIELDS
+    )
+    filename = f"{LEGACY_ARCHIVE_PREFIX}{source_name}" if legacy else source_name
+    return (COMPLETED_PLAN_DIR / filename).relative_to(ROOT).as_posix()
+
+
+def standalone_path_absent(
+    base_sha: str, relative: str, errors: list[str]
+) -> bool | None:
+    output = git_plumbing_output(
+        ["ls-tree", "-z", "--full-tree", base_sha, "--", f":(literal){relative}"],
+        f"inspect standalone base path {relative}",
+        errors,
+        len(relative.encode("utf-8")) + 256,
+    )
+    if output is None:
+        return None
+    if not output:
+        return True
+    if output.count(b"\0") != 1 or not output.endswith(b"\0") or b"\t" not in output:
+        errors.append(f"malformed standalone base tree entry for {relative}")
+        return None
+    _, entry_path = output[:-1].split(b"\t", 1)
+    if entry_path != relative.encode("utf-8"):
+        errors.append(f"malformed standalone base tree entry for {relative}")
+        return None
+    return False
 
 
 def check_active_plans(
@@ -1696,40 +1815,77 @@ def check_completed_plan_addition_provenance(
         source_relatives = standalone_active_plan_relatives(standalone_base, errors)
         if source_relatives is None:
             return
-        if len(source_relatives) != 1:
+        if len(source_relatives) > 1:
             errors.append(
-                "Completed-plan additions require exactly one standalone base Active "
+                "Completed-plan additions require at most one standalone base Active "
                 f"Plan; found {len(source_relatives)}"
             )
             return
-        source_relative = next(iter(source_relatives))
-        valid_entry, base_mode, source_blob = standalone_tree_plan(
-            standalone_base, source_relative, errors
-        )
-        if not valid_entry:
-            return
-        if base_mode is None or source_blob is None:
-            errors.append("standalone base Active Plan must be a regular file")
-            return
-        source_mode = base_mode
-        source_text = source_blob.decode("utf-8")
+        if source_relatives:
+            source_relative = next(iter(source_relatives))
+            valid_entry, base_mode, source_blob = standalone_tree_plan(
+                standalone_base, source_relative, errors
+            )
+            if not valid_entry:
+                return
+            if base_mode is None or source_blob is None:
+                errors.append("standalone base Active Plan must be a regular file")
+                return
+            source_mode = base_mode
+            source_text = source_blob.decode("utf-8")
+        else:
+            checker_absent = standalone_path_absent(
+                standalone_base, "scripts/check_docs.py", errors
+            )
+            if checker_absent is not True:
+                errors.append(
+                    "A zero-Active-Plan archive migration is allowed only during the "
+                    "first Harness bootstrap, before scripts/check_docs.py exists in "
+                    "the standalone base"
+                )
+                return
+            if len(target_active) != 1:
+                errors.append(
+                    "A first Harness bootstrap legacy migration requires exactly one "
+                    "successor Active Plan"
+                )
+                return
+            completed_name = Path(added_relative).name
+            if (
+                not completed_name.startswith(LEGACY_ARCHIVE_PREFIX)
+                or not completed_name.removeprefix(LEGACY_ARCHIVE_PREFIX).endswith(".md")
+            ):
+                errors.append(
+                    "A first Harness bootstrap legacy migration must use the canonical "
+                    f"{LEGACY_ARCHIVE_PREFIX} filename"
+                )
+                return
+            source_name = completed_name.removeprefix(LEGACY_ARCHIVE_PREFIX)
+            source_relative = (
+                ACTIVE_PLAN_DIR / source_name
+            ).relative_to(ROOT).as_posix()
+            completed_metadata: list[os.stat_result] = []
+            completed_text = read_regular_text_at(
+                ROOT, added_relative, errors, metadata_out=completed_metadata
+            )
+            if completed_text is None:
+                return
+            source_text = legacy_archive_source(completed_text) or ""
+            if not source_text:
+                errors.append(
+                    "A first Harness bootstrap completed plan must be a reversible "
+                    "canonical legacy migration with complete lifecycle evidence"
+                )
+                return
+            source_mode = (
+                "100755" if completed_metadata[0].st_mode & 0o111 else "100644"
+            )
 
-    same_name_relative = (
-        COMPLETED_PLAN_DIR / Path(source_relative).name
-    ).relative_to(ROOT).as_posix()
-    source_lifecycle_counts = {
-        field: len(lifecycle_field_values(source_text, field))
+    legacy_source = any(
+        len(lifecycle_field_values(source_text, field)) == 0
         for field in PLAN_LIFECYCLE_FIELDS
-    }
-    legacy_source = any(count == 0 for count in source_lifecycle_counts.values())
-    expected_relative = (
-        (
-            COMPLETED_PLAN_DIR
-            / f"archived-before-harness-upgrade-{Path(source_relative).name}"
-        ).relative_to(ROOT).as_posix()
-        if legacy_source
-        else same_name_relative
     )
+    expected_relative = archive_completed_relative(source_relative, source_text)
     if added_relative != expected_relative:
         errors.append(
             "Completed-plan additions must use the canonical archive filename for "
@@ -2038,14 +2194,6 @@ def exact_standalone_archive_cleanup(
         )
         return False
     active_relative = next(iter(active_relatives))
-    completed_plan = COMPLETED_PLAN_DIR / Path(active_relative).name
-    if completed_plan.is_symlink() or not completed_plan.is_file():
-        errors.append(
-            "archive cleanup must move the standalone base Active Plan to the same "
-            f"regular completed filename: {completed_plan.relative_to(ROOT).as_posix()}"
-        )
-        return False
-
     valid_entry, source_mode, source_blob = standalone_tree_plan(
         base_sha, active_relative, errors
     )
@@ -2055,6 +2203,14 @@ def exact_standalone_archive_cleanup(
         errors.append("standalone base Active Plan must be a regular file")
         return False
     source_text = source_blob.decode("utf-8")
+    completed_relative = archive_completed_relative(active_relative, source_text)
+    completed_plan = ROOT / completed_relative
+    if completed_plan.is_symlink() or not completed_plan.is_file():
+        errors.append(
+            "archive cleanup must move the standalone base Active Plan to the "
+            f"canonical regular completed filename: {completed_relative}"
+        )
+        return False
     source_plan = ROOT / active_relative
     if not validate_archive_plan_transition(
         source_text, source_mode, completed_plan, errors
@@ -2078,14 +2234,6 @@ def exact_archive_cleanup(index_path: str, errors: list[str]) -> bool:
         )
         return False
     trusted_plan = trusted_plans[0]
-    completed_plan = COMPLETED_PLAN_DIR / trusted_plan.name
-    if completed_plan.is_symlink() or not completed_plan.is_file():
-        errors.append(
-            "archive cleanup must move the trusted Active Plan to the same regular "
-            f"completed filename: {completed_plan.relative_to(ROOT).as_posix()}"
-        )
-        return False
-
     trusted_relative = trusted_plan.relative_to(TRUSTED_ROOT).as_posix()
     trusted_metadata: list[os.stat_result] = []
     trusted_text = read_regular_text_at(
@@ -2094,6 +2242,14 @@ def exact_archive_cleanup(index_path: str, errors: list[str]) -> bool:
     if trusted_text is None:
         return False
     trusted_mode = "100755" if trusted_metadata[0].st_mode & 0o111 else "100644"
+    completed_relative = archive_completed_relative(trusted_relative, trusted_text)
+    completed_plan = ROOT / completed_relative
+    if completed_plan.is_symlink() or not completed_plan.is_file():
+        errors.append(
+            "archive cleanup must move the trusted Active Plan to the canonical "
+            f"regular completed filename: {completed_relative}"
+        )
+        return False
     if not validate_archive_plan_transition(
         trusted_text, trusted_mode, completed_plan, errors
     ):
