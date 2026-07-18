@@ -170,7 +170,7 @@ OUT_OF_REPO_SCOPE_RE = re.compile(
 )
 CURRENT_HEAD_REVIEW_HEADING = "## Current-Head Codex Review\n\n"
 CURRENT_HEAD_REVIEW_SHA256 = (
-    "0636f81e81911e1c289f624a953352d3d789ab5cdd9344bc94f6a7896d130f00"
+    "ecc90681230b537ca89c66d8f623ce526aeac6fd949963bd7bf9810df6cf0f12"
 )
 TRUSTED_CONTROL_FILES = (
     f"{DOCS_ROOT.name}/doc-sync-rules.json",
@@ -2189,6 +2189,9 @@ def check_document_status_workflow(
         '"${live_head_repository}" != "${EXPECTED_HEAD_REPOSITORY}"',
         '"${live_base_sha}" != "${EXPECTED_BASE_SHA}"',
         "refusing a stale status write",
+        "fail_closed_before_pending_write()",
+        'prewrite_drift_description="Live base changed before pending status;',
+        "Failed to leave the bound head with the latest pre-pending fail-closed status.",
         "repos/${GITHUB_REPOSITORY}/dispatches",
         "event_type=loop-checkpoints-reconcile",
         "client_payload[pull_request_number]",
@@ -2201,7 +2204,7 @@ def check_document_status_workflow(
         errors.append(f"Trusted document status workflow is incomplete: {relative}")
     if (
         "jq -r '.base.sha'" in text
-        or text.count("/git/ref/heads/${") != 3
+        or text.count("/git/ref/heads/${") != 4
         or text.count(
             'if [[ "${live_base_sha}" != "${EXPECTED_BASE_SHA}" ]]; then'
         )
@@ -2282,7 +2285,7 @@ def check_document_status_workflow(
         errors.append(
             f"Trusted document status workflow must isolate exactly two status writers: {relative}"
         )
-    if text.count("actions/checkout@v4") != 3:
+    if text.count("actions/checkout@v7") != 3:
         errors.append(
             f"Trusted document status workflow must use two isolated PR checkouts and one default checkout: {relative}"
         )
@@ -2350,6 +2353,17 @@ def check_document_status_workflow(
     if "actions/checkout" in pending_job or "actions/checkout" in publisher_job:
         errors.append(
             f"Trusted document status-writing jobs cannot check out repository content: {relative}"
+        )
+    prewrite_drift_guard = (
+        "if ! verify_live_identity; then\n"
+        "            fail_closed_before_pending_write\n"
+        "            exit 1\n"
+        "          fi"
+    )
+    if pending_job.count(prewrite_drift_guard) != 2:
+        errors.append(
+            "Trusted document pending writer must fail the bound head when the live "
+            f"base drifts before either pending pre-write check: {relative}"
         )
     if any(
         "actions/checkout" in job or "statuses: write" in job
@@ -2555,11 +2569,21 @@ def check_entrypoint_links(
             path for _, path in extract_links(source) if path is not None
         }
         for target in sorted(targets):
-            expected_targets = {
-                (ROOT / target).resolve(),
-                (source.parent / target).resolve(),
-            }
-            if linked_targets.isdisjoint(expected_targets):
+            declared = PurePosixPath(target)
+            if declared.is_absolute() or not declared.parts or any(
+                part in {"", ".", ".."} for part in declared.parts
+            ):
+                errors.append(
+                    f"Entrypoint target must be a repository-relative path: {target}"
+                )
+                continue
+            expected_target = exact_case_real_path_at(ROOT, target)
+            if expected_target is None or not expected_target.is_file():
+                errors.append(
+                    f"Entrypoint target must be a regular repository file: {target}"
+                )
+                continue
+            if expected_target.resolve() not in linked_targets:
                 errors.append(f"Entrypoint {source_value} must link to {target}")
 
 

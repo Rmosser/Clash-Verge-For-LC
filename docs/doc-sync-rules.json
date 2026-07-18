@@ -107,7 +107,7 @@
     "workflow": ".github/workflows/docs-ci.yml",
     "emitter": "trusted_commit_status",
     "required_on": "main",
-    "workflow_sha256": "86c394edc11b6dd231b63e3696b250c3c4665a404ba48e2150ce7dcabf55deba"
+    "workflow_sha256": "967370c60d99ec90903d6ef2bdbf1f9db7961553d55e6f9d997cf013dc2e6a2d"
   },
   "additional_required_checks": [],
   "diff_classes": {},

@@ -128,6 +128,58 @@ jobs:
             fi
           }
 
+          verify_bound_head_with_base_drift() {
+            local pull_json live_state live_base_repository live_base_ref
+            local live_base_sha live_head_repository live_head_sha
+            pull_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}")"
+            live_state="$(jq -r '.state' <<<"${pull_json}")"
+            live_base_repository="$(jq -r '.base.repo.full_name' <<<"${pull_json}")"
+            live_base_ref="$(jq -r '.base.ref' <<<"${pull_json}")"
+            live_head_repository="$(jq -r '.head.repo.full_name // empty' <<<"${pull_json}")"
+            live_head_sha="$(jq -r '.head.sha' <<<"${pull_json}")"
+            if [[ "${live_state}" != open || "${live_base_repository}" != "${GITHUB_REPOSITORY}" || "${live_base_ref}" != main || "${live_head_repository}" != "${EXPECTED_HEAD_REPOSITORY}" || "${live_head_sha}" != "${EXPECTED_HEAD_SHA}" ]]; then
+              return 1
+            fi
+            live_base_sha="$(
+              gh api "repos/${live_base_repository}/git/ref/heads/${live_base_ref}" --jq '.object.sha'
+            )"
+            live_base_sha="${live_base_sha,,}"
+            [[ "${live_base_sha}" != "${EXPECTED_BASE_SHA}" ]]
+          }
+
+          fail_closed_before_pending_write() {
+            local prewrite_drift_description statuses_json latest_status
+            if ! verify_bound_head_with_base_drift; then
+              echo "Pending identity verification failed without a stable bound-head base drift." >&2
+              return 1
+            fi
+            prewrite_drift_description="Live base changed before pending status; expected=${EXPECTED_BASE_SHA}."
+            gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/statuses/${EXPECTED_HEAD_SHA}" \
+              -f state=failure \
+              -f context="${STATUS_CONTEXT}" \
+              -f description="${prewrite_drift_description}" \
+              -f target_url="${RUN_URL}"
+            if ! verify_bound_head_with_base_drift; then
+              echo "Pull request identity changed after the pre-pending fail-closed write." >&2
+              return 1
+            fi
+            statuses_json="$(
+              gh api --paginate --slurp \
+                "repos/${GITHUB_REPOSITORY}/commits/${EXPECTED_HEAD_SHA}/statuses?per_page=100"
+            )"
+            latest_status="$(
+              jq -c --arg context "${STATUS_CONTEXT}" \
+                '[.[][] | select(.context == $context)][0] // {}' \
+                <<<"${statuses_json}"
+            )"
+            if [[ "$(jq -r '.state // empty' <<<"${latest_status}")" != failure || "$(jq -r '.description // empty' <<<"${latest_status}")" != "${prewrite_drift_description}" || "$(jq -r '.creator.login // empty' <<<"${latest_status}")" != "github-actions[bot]" || "$(jq -r '.creator.type // empty' <<<"${latest_status}")" != Bot ]]; then
+              echo "Failed to leave the bound head with the latest pre-pending fail-closed status." >&2
+              return 1
+            fi
+            echo "The live base drifted before pending; the bound head was failed closed." >&2
+          }
+
           fail_closed_after_status_write() {
             local drift_description statuses_json latest_status
             if verify_live_identity; then
@@ -161,7 +213,10 @@ jobs:
           success_description="Trusted checkpoint evidence is complete; base=${EXPECTED_BASE_SHA}."
           failure_description="Trusted checkpoint evidence failed; base=${EXPECTED_BASE_SHA}."
           pending_failure_description="Pending status failed; validation did not run; base=${EXPECTED_BASE_SHA}."
-          verify_live_identity || exit 1
+          if ! verify_live_identity; then
+            fail_closed_before_pending_write
+            exit 1
+          fi
           statuses_json="$(
             gh api --paginate --slurp \
               "repos/${GITHUB_REPOSITORY}/commits/${EXPECTED_HEAD_SHA}/statuses?per_page=100"
@@ -175,7 +230,10 @@ jobs:
           latest_description="$(jq -r '.description // empty' <<<"${latest_status}")"
           latest_creator_login="$(jq -r '.creator.login // empty' <<<"${latest_status}")"
           latest_creator_type="$(jq -r '.creator.type // empty' <<<"${latest_status}")"
-          verify_live_identity || exit 1
+          if ! verify_live_identity; then
+            fail_closed_before_pending_write
+            exit 1
+          fi
           if [[ "${latest_creator_login}" == "github-actions[bot]" && "${latest_creator_type}" == Bot ]]; then
             case "${latest_state}:${latest_description}" in
               "pending:${pending_description}"|\
@@ -205,7 +263,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out the untrusted validation target as data
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ needs.resolve-pull-request.outputs.head_repository }}
           ref: ${{ needs.resolve-pull-request.outputs.head_sha }}
@@ -215,7 +273,7 @@ jobs:
           path: target
           persist-credentials: false
       - name: Check out verifiers from the trusted PR base
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ github.repository }}
           ref: ${{ needs.resolve-pull-request.outputs.base_sha }}
@@ -424,7 +482,7 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0

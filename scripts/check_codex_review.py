@@ -520,14 +520,24 @@ def artifact_time(item: dict[str, Any]) -> str:
     return ""
 
 
-def review_submission_time(item: dict[str, Any]) -> str:
-    value = item.get("submitted_at")
-    return value if isinstance(value, str) else ""
+def review_activity_time(item: dict[str, Any]) -> str:
+    values = [
+        value
+        for key in (
+            "submitted_at",
+            "created_at",
+            "updated_at",
+            "edited_at",
+            "last_edited_at",
+        )
+        if isinstance((value := item.get(key)), str) and value
+    ]
+    return max(values, default="")
 
 
 def evidence_time(item: dict[str, Any]) -> str:
     if "submitted_at" in item:
-        return review_submission_time(item)
+        return review_activity_time(item)
     return artifact_time(item)
 
 
@@ -678,13 +688,13 @@ def evaluate(
         return bool(timestamp and timestamp >= trigger_time)
 
     def review_after_latest_trigger(item: dict[str, Any]) -> bool:
-        timestamp = review_submission_time(item)
+        timestamp = review_activity_time(item)
         if latest_trigger is None:
             return bool(timestamp)
         return bool(timestamp and timestamp > trigger_time)
 
     def review_at_or_after_latest_trigger(item: dict[str, Any]) -> bool:
-        timestamp = review_submission_time(item)
+        timestamp = review_activity_time(item)
         if latest_trigger is None:
             return bool(timestamp)
         return bool(timestamp and timestamp >= trigger_time)
@@ -802,7 +812,7 @@ def evaluate(
                 reaction.get("content") == "+1"
                 and trusted_codex_actor(reaction, authors)
                 and isinstance(created_at, str)
-                and created_at > trigger_time
+                and created_at >= trigger_time
             ):
                 reaction_artifact = dict(reaction)
                 reaction_artifact["html_url"] = artifact_url(latest_trigger)
@@ -1116,6 +1126,34 @@ def status_matches_pending(
     )
 
 
+def publish_fail_closed_for_bound_head(
+    api: GitHubAPI,
+    repository: str,
+    pr_number: int,
+    expected_identity: PullIdentity,
+    context: str,
+    target_url: str,
+    description: str,
+    observed_pull: dict[str, Any] | None = None,
+) -> bool:
+    try:
+        current_pull = observed_pull or live_pull(api, repository, pr_number)
+        if pull_head(current_pull) != expected_identity.head_sha:
+            return False
+    except GateError:
+        return False
+    post_status(
+        api,
+        repository,
+        expected_identity.head_sha,
+        "failure",
+        context,
+        bound_status_description(description, expected_identity.base_sha),
+        target_url,
+    )
+    return True
+
+
 def publish_pending(
     api: GitHubAPI,
     repository: str,
@@ -1124,8 +1162,33 @@ def publish_pending(
     context: str,
     target_url: str,
 ) -> bool:
-    live_identity = pull_identity(live_pull(api, repository, pr_number), repository)
+    observed_pull: dict[str, Any] | None = None
+    try:
+        observed_pull = live_pull(api, repository, pr_number)
+        live_identity = pull_identity(observed_pull, repository)
+    except GateError:
+        publish_fail_closed_for_bound_head(
+            api,
+            repository,
+            pr_number,
+            expected_identity,
+            context,
+            target_url,
+            "PR identity changed before codex-review pending publication.",
+            observed_pull,
+        )
+        return False
     if not same_pull_identity(live_identity, expected_identity):
+        publish_fail_closed_for_bound_head(
+            api,
+            repository,
+            pr_number,
+            expected_identity,
+            context,
+            target_url,
+            "PR identity changed before codex-review pending publication.",
+            observed_pull,
+        )
         return False
     post_status(
         api,
@@ -1154,23 +1217,23 @@ def fail_closed_after_status_write(
     context: str,
     target_url: str,
 ) -> bool:
+    observed_pull: dict[str, Any] | None = None
     try:
-        live_identity = pull_identity(live_pull(api, repository, pr_number), repository)
+        observed_pull = live_pull(api, repository, pr_number)
+        live_identity = pull_identity(observed_pull, repository)
         if same_pull_identity(live_identity, expected_identity):
             return True
     except GateError:
         pass
-    post_status(
+    publish_fail_closed_for_bound_head(
         api,
         repository,
-        expected_identity.head_sha,
-        "failure",
+        pr_number,
+        expected_identity,
         context,
-        bound_status_description(
-            "PR identity changed after codex-review status write.",
-            expected_identity.base_sha,
-        ),
         target_url,
+        "PR identity changed after codex-review status write.",
+        observed_pull,
     )
     return False
 
@@ -1188,16 +1251,43 @@ def publish_status(
         return False
     if result.head_sha != expected_identity.head_sha:
         return False
-    live_identity = pull_identity(live_pull(api, repository, pr_number), repository)
+    observed_pull: dict[str, Any] | None = None
+    try:
+        observed_pull = live_pull(api, repository, pr_number)
+        live_identity = pull_identity(observed_pull, repository)
+    except GateError:
+        publish_fail_closed_for_bound_head(
+            api,
+            repository,
+            pr_number,
+            expected_identity,
+            context,
+            target_url,
+            "PR identity changed before final codex-review status publication.",
+            observed_pull,
+        )
+        return False
     if not same_pull_identity(live_identity, expected_identity):
+        publish_fail_closed_for_bound_head(
+            api,
+            repository,
+            pr_number,
+            expected_identity,
+            context,
+            target_url,
+            "PR identity changed before final codex-review status publication.",
+            observed_pull,
+        )
         return False
     post_status(
         api,
         repository,
-        result.head_sha,
+        expected_identity.head_sha,
         result.state,
         context,
-        bound_status_description(result.description, expected_identity.base_sha),
+        bound_status_description(
+            result.description, expected_identity.base_sha
+        ),
         target_url,
     )
     return fail_closed_after_status_write(
@@ -1275,13 +1365,24 @@ def invalidate_status_after_exception(
         ),
         reasons=("gate evaluation or publication raised an exception",),
     )
-    latest_status = latest_status_for_identity(
-        api,
-        repository,
-        pr_number,
-        expected_identity,
-        context,
-    )
+    try:
+        latest_status = latest_status_for_identity(
+            api,
+            repository,
+            pr_number,
+            expected_identity,
+            context,
+        )
+    except GateError:
+        return publish_fail_closed_for_bound_head(
+            api,
+            repository,
+            pr_number,
+            expected_identity,
+            context,
+            target_url,
+            result.description,
+        )
     if status_matches_result(
         latest_status,
         result,
@@ -1434,7 +1535,6 @@ def main() -> int:
                     head_sha=result.head_sha,
                     description="PR identity changed before the final review status write.",
                     reasons=("final status was not published to a changed PR identity",),
-                    publish=False,
                 )
     except Exception as exc:
         print(f"check_codex_review: {exc}", file=sys.stderr)
