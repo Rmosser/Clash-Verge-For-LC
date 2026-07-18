@@ -108,6 +108,30 @@ ALLOWED_ROUTES = {
         "no-subagent-fallback",
     },
 }
+EXPECTED_CODEX_REVIEW_POLICY = {
+    "required_for_non_trivial_pr": True,
+    "accepted_authors": ["chatgpt-codex-connector[bot]"],
+    "supervision_model": "repository_self_supervised",
+    "required_check": "codex-review",
+    "status_app_id": GITHUB_ACTIONS_APP_ID,
+    "status_source_isolation": "shared_actions_app_not_isolated",
+    "source_isolated": False,
+    "required_check_activation": "required_after_live_emitter_smoke",
+    "required_check_activation_scope": "per_repository",
+    "trusted_status_workflow": ".github/workflows/codex-review-gate.yml",
+    "trusted_events": [
+        "pull_request_target",
+        "issue_comment",
+        "repository_dispatch",
+    ],
+    "status_writer_events": [
+        "pull_request_target",
+        "issue_comment",
+        "repository_dispatch",
+    ],
+    "heartbeat_event": "schedule",
+    "artifact_binding": "live_pr_head_sha",
+}
 REQUIRED_EVIDENCE_SECTIONS = [
     "Task class",
     "Reasoning budget",
@@ -170,7 +194,7 @@ OUT_OF_REPO_SCOPE_RE = re.compile(
 )
 CURRENT_HEAD_REVIEW_HEADING = "## Current-Head Codex Review\n\n"
 CURRENT_HEAD_REVIEW_SHA256 = (
-    "eb8c69f114f85d19aff911fd43920031ce024d97789c0cc10933964cd46fd4d0"
+    "434cd5d13d8a7bc5f366a9730392eac8813f89f5d0aa7c73b732639702482098"
 )
 TRUSTED_CONTROL_FILES = (
     f"{DOCS_ROOT.name}/doc-sync-rules.json",
@@ -1087,7 +1111,57 @@ def enum_field(
     return value
 
 
-def check_delegation_contract(text: str, plan: Path, errors: list[str]) -> None:
+def no_subagent_fallback_categories(
+    contract: dict[str, object], errors: list[str]
+) -> set[str]:
+    delegation = contract.get("delegation_contract")
+    if not isinstance(delegation, dict):
+        errors.append("repo contract delegation_contract must be an object")
+        return set()
+    raw_categories = delegation.get("no_subagent_fallback_allowed_only_when")
+    if not isinstance(raw_categories, list) or not raw_categories:
+        errors.append(
+            "repo contract delegation_contract "
+            "no_subagent_fallback_allowed_only_when must be a non-empty list"
+        )
+        return set()
+    if not all(
+        isinstance(value, str) and value and normalized(value) == value
+        for value in raw_categories
+    ):
+        errors.append(
+            "repo contract delegation_contract "
+            "no_subagent_fallback_allowed_only_when must contain normalized category strings"
+        )
+        return set()
+    categories = set(raw_categories)
+    if len(categories) != len(raw_categories):
+        errors.append(
+            "repo contract delegation_contract "
+            "no_subagent_fallback_allowed_only_when must not contain duplicates"
+        )
+    return categories
+
+
+def check_codex_review_contract_policy(review: object, errors: list[str]) -> None:
+    if not isinstance(review, dict):
+        errors.append("repo contract codex_review must be an object")
+        return
+    for field, expected in EXPECTED_CODEX_REVIEW_POLICY.items():
+        if review.get(field) != expected:
+            errors.append(
+                "repo contract codex_review "
+                f"{field} must be {expected!r} for the ordinary "
+                "repository-self-supervised template"
+            )
+
+
+def check_delegation_contract(
+    text: str,
+    plan: Path,
+    errors: list[str],
+    allowed_no_subagent_fallback_reasons: set[str] | frozenset[str] = frozenset(),
+) -> None:
     task_class = enum_field(text, plan, "Task class", VALID_TASK_CLASSES, errors)
     budget = enum_field(text, plan, "Reasoning budget", VALID_REASONING_BUDGETS, errors)
     route = enum_field(text, plan, "Delegation route", VALID_DELEGATION_ROUTES, errors)
@@ -1136,11 +1210,15 @@ def check_delegation_contract(text: str, plan: Path, errors: list[str]) -> None:
             f"Active plan {plan.relative_to(ROOT).as_posix()} uses {route} but "
             "does not record Used subagent: no"
         )
-    if route == "no-subagent-fallback" and pending(fallback):
-        errors.append(
-            f"Active plan {plan.relative_to(ROOT).as_posix()} must provide a "
-            "non-pending No-subagent fallback reason"
-        )
+    if route == "no-subagent-fallback":
+        fallback_reason = normalized(fallback)
+        if fallback_reason not in allowed_no_subagent_fallback_reasons:
+            expected = ", ".join(sorted(allowed_no_subagent_fallback_reasons))
+            errors.append(
+                f"Active plan {plan.relative_to(ROOT).as_posix()} has invalid "
+                f"No-subagent fallback reason: {fallback_reason or '<empty>'}; "
+                f"expected one of {expected or '<no valid contract categories>'}"
+            )
 
     delegated_scope = required_field(
         text, plan, "Delegated scope", errors, allow_pending=not delegated
@@ -1378,7 +1456,10 @@ def lifecycle_skeleton(text: str) -> str | None:
     return skeleton
 
 
-def check_active_plans(errors: list[str]) -> None:
+def check_active_plans(
+    errors: list[str],
+    allowed_no_subagent_fallback_reasons: set[str] | frozenset[str] = frozenset(),
+) -> None:
     plans = active_plans(errors)
     if len(plans) > 1:
         errors.append(
@@ -1420,7 +1501,9 @@ def check_active_plans(errors: list[str]) -> None:
                     f"Active plan {plan.relative_to(ROOT).as_posix()} "
                     f"missing required evidence section: {section}"
                 )
-        check_delegation_contract(text, plan, errors)
+        check_delegation_contract(
+            text, plan, errors, allowed_no_subagent_fallback_reasons
+        )
         check_claims_and_review(text, plan, errors)
         check_required_check_name(text, plan, errors)
 
@@ -1428,6 +1511,7 @@ def check_active_plans(errors: list[str]) -> None:
 def check_completed_plans(errors: list[str]) -> None:
     plans = completed_plans(errors)
     target_relatives = {plan.relative_to(ROOT).as_posix() for plan in plans}
+    added_relatives: set[str] = set()
     standalone_base: str | None = None
     if TRUSTED_ROOT == ROOT:
         advertised_sha = os.environ.get(STANDALONE_BASE_ENV)
@@ -1439,6 +1523,7 @@ def check_completed_plans(errors: list[str]) -> None:
             standalone_base = optional_standalone_head()
     if TRUSTED_ROOT != ROOT:
         trusted_relatives = trusted_completed_plan_relatives(errors)
+        added_relatives = target_relatives - trusted_relatives
         for relative in sorted(trusted_relatives - target_relatives):
             errors.append(
                 "Completed plan content and mode are immutable after archival; deletion "
@@ -1448,6 +1533,7 @@ def check_completed_plans(errors: list[str]) -> None:
         base_relatives = standalone_completed_plan_relatives(standalone_base, errors)
         if base_relatives is None:
             return
+        added_relatives = target_relatives - base_relatives
         for relative in sorted(base_relatives - target_relatives):
             errors.append(
                 "Completed plan content and mode are immutable after archival; deletion "
@@ -1499,6 +1585,94 @@ def check_completed_plans(errors: list[str]) -> None:
                 continue
         for field, allowed in COMPLETED_LIFECYCLE_CONTRACT.items():
             require_canonical_lifecycle_value(text, plan, field, allowed, errors)
+    check_completed_plan_addition_provenance(added_relatives, standalone_base, errors)
+
+
+def check_completed_plan_addition_provenance(
+    added_relatives: set[str],
+    standalone_base: str | None,
+    errors: list[str],
+) -> None:
+    if not added_relatives:
+        return
+    if len(added_relatives) != 1:
+        errors.append(
+            "Completed-plan additions must be the unique Active Plan archive "
+            "transition; found additions: " + ", ".join(sorted(added_relatives))
+        )
+        return
+    target_active = active_plans(errors)
+    if target_active:
+        errors.append(
+            "Completed-plan additions are forbidden while an Active Plan remains; "
+            "the unique Active Plan must be moved to completed/"
+        )
+        return
+
+    added_relative = next(iter(added_relatives))
+    completed_plan = ROOT / added_relative
+    source_text: str
+    source_mode: str
+    source_relative: str
+    if TRUSTED_ROOT != ROOT:
+        source_plans = trusted_active_plans(errors)
+        if len(source_plans) != 1:
+            errors.append(
+                "Completed-plan additions require exactly one trusted Active Plan; "
+                f"found {len(source_plans)}"
+            )
+            return
+        source_plan = source_plans[0]
+        source_relative = source_plan.relative_to(TRUSTED_ROOT).as_posix()
+        source_metadata: list[os.stat_result] = []
+        trusted_text = read_regular_text_at(
+            TRUSTED_ROOT,
+            source_relative,
+            errors,
+            metadata_out=source_metadata,
+        )
+        if trusted_text is None:
+            return
+        source_text = trusted_text
+        source_mode = "100755" if source_metadata[0].st_mode & 0o111 else "100644"
+    else:
+        if standalone_base is None:
+            errors.append(
+                "Completed-plan additions require a trusted standalone base for "
+                "Active Plan provenance"
+            )
+            return
+        source_relatives = standalone_active_plan_relatives(standalone_base, errors)
+        if source_relatives is None:
+            return
+        if len(source_relatives) != 1:
+            errors.append(
+                "Completed-plan additions require exactly one standalone base Active "
+                f"Plan; found {len(source_relatives)}"
+            )
+            return
+        source_relative = next(iter(source_relatives))
+        valid_entry, base_mode, source_blob = standalone_tree_plan(
+            standalone_base, source_relative, errors
+        )
+        if not valid_entry:
+            return
+        if base_mode is None or source_blob is None:
+            errors.append("standalone base Active Plan must be a regular file")
+            return
+        source_mode = base_mode
+        source_text = source_blob.decode("utf-8")
+
+    expected_relative = (
+        COMPLETED_PLAN_DIR / Path(source_relative).name
+    ).relative_to(ROOT).as_posix()
+    if added_relative != expected_relative:
+        errors.append(
+            "Completed-plan additions must preserve the unique Active Plan filename: "
+            f"expected {expected_relative}, found {added_relative}"
+        )
+        return
+    validate_archive_plan_transition(source_text, source_mode, completed_plan, errors)
 
 
 def trusted_active_plans(errors: list[str]) -> list[Path]:
@@ -2365,6 +2539,15 @@ def check_document_status_workflow(
             "Trusted document pending writer must fail the bound head when the live "
             f"base drifts before either pending pre-write check: {relative}"
         )
+    publisher_fail_closed_guard = "\n          fail_closed_after_status_write\n"
+    if (
+        publisher_job.count(publisher_fail_closed_guard) != 3
+        or "verify_live_identity || exit 1" in publisher_job
+    ):
+        errors.append(
+            "Trusted document publisher must fail the bound head on both identity "
+            f"guards and after its final status write: {relative}"
+        )
     if any(
         "actions/checkout" in job or "statuses: write" in job
         for job in (resolver_job, fanout_job)
@@ -2647,6 +2830,9 @@ def validate_repo() -> tuple[list[str], dict[str, object]]:
         contract: dict[str, object] = {}
     else:
         contract = load_json(contract_path, errors, "repo contract")
+    allowed_no_subagent_fallback_reasons = (
+        no_subagent_fallback_categories(contract, errors) if contract else set()
+    )
     trusted_manifest = load_trusted_manifest(errors)
 
     required_paths = required_paths_from(manifest, errors, "doc-sync-rules")
@@ -2700,8 +2886,6 @@ def validate_repo() -> tuple[list[str], dict[str, object]]:
     if contract:
         if contract.get("mode") != "repo-native-agent-cicd":
             errors.append("repo contract mode must be repo-native-agent-cicd")
-        if "delegation_contract" not in contract:
-            errors.append("repo contract is missing delegation_contract")
         checkpoint = contract.get("checkpoint_gate")
         if not isinstance(checkpoint, dict):
             errors.append("repo contract checkpoint_gate must be an object")
@@ -2734,41 +2918,9 @@ def validate_repo() -> tuple[list[str], dict[str, object]]:
                             "repo contract checkpoint_gate required_check_job cannot "
                             "name an Actions job for a trusted commit-status context"
                         )
-        review = contract.get("codex_review")
-        if not isinstance(review, dict):
-            errors.append("repo contract codex_review must be an object")
-        else:
-            expected_review_policy = {
-                "supervision_model": "repository_self_supervised",
-                "required_check": "codex-review",
-                "status_app_id": 15368,
-                "status_source_isolation": "shared_actions_app_not_isolated",
-                "source_isolated": False,
-                "required_check_activation": "required_after_live_emitter_smoke",
-                "required_check_activation_scope": "per_repository",
-                "trusted_status_workflow": ".github/workflows/codex-review-gate.yml",
-                "trusted_events": [
-                    "pull_request_target",
-                    "issue_comment",
-                    "repository_dispatch",
-                ],
-                "status_writer_events": [
-                    "pull_request_target",
-                    "issue_comment",
-                    "repository_dispatch",
-                ],
-                "heartbeat_event": "schedule",
-                "artifact_binding": "live_pr_head_sha",
-            }
-            for field, expected in expected_review_policy.items():
-                if review.get(field) != expected:
-                    errors.append(
-                        "repo contract codex_review "
-                        f"{field} must be {expected!r} for the ordinary "
-                        "repository-self-supervised template"
-                    )
+        check_codex_review_contract_policy(contract.get("codex_review"), errors)
 
-    check_active_plans(errors)
+    check_active_plans(errors, allowed_no_subagent_fallback_reasons)
     check_completed_plans(errors)
     check_target_invariants(trusted_manifest, errors)
     return errors, manifest

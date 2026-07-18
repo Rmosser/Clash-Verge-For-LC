@@ -419,7 +419,7 @@ jobs:
             state=failure
             description="Trusted checkpoint evidence failed; base=${EXPECTED_BASE_SHA}."
           fi
-          verify_live_identity || exit 1
+          fail_closed_after_status_write
           statuses_json="$(
             gh api --paginate --slurp \
               "repos/${GITHUB_REPOSITORY}/commits/${EXPECTED_HEAD_SHA}/statuses?per_page=100"
@@ -433,7 +433,7 @@ jobs:
           latest_description="$(jq -r '.description // empty' <<<"${latest_status}")"
           latest_creator_login="$(jq -r '.creator.login // empty' <<<"${latest_status}")"
           latest_creator_type="$(jq -r '.creator.type // empty' <<<"${latest_status}")"
-          verify_live_identity || exit 1
+          fail_closed_after_status_write
           if [[ "${latest_creator_login}" == "github-actions[bot]" && "${latest_creator_type}" == Bot && "${latest_state}" == "${state}" && "${latest_description}" == "${description}" ]]; then
             echo "Current PR identity already has the requested ${STATUS_CONTEXT} result; skipping duplicate final write."
             exit 0

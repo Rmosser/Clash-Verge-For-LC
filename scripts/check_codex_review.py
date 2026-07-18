@@ -39,6 +39,30 @@ TRIVIAL_DOC_PREFIXES = ("docs/",)
 TRIVIAL_DOC_SUFFIXES = (".adoc", ".md", ".mdx", ".rst", ".txt")
 TRUSTED_TRIGGER_ASSOCIATIONS = {"COLLABORATOR", "MEMBER", "OWNER"}
 REACTIONS_FIELD = "_codex_trigger_reactions"
+PRIVILEGED_REVIEW_TRIGGER_ENTRYPOINTS = frozenset(
+    {
+        "scripts/fetch_pr_feedback.py",
+        "scripts/render_codex_docs_review_comment.py",
+        "scripts/run_docs_consistency_audit.py",
+        "scripts/should_trigger_codex_review.py",
+    }
+)
+# These modules are imported or dynamically loaded by the entrypoints above.
+# Keep the complete closure immutable because the workflow carries write
+# permissions and exposes CODEX_REVIEW_TRIGGER_TOKEN to its comment step.
+PRIVILEGED_REVIEW_TRIGGER_HELPERS = PRIVILEGED_REVIEW_TRIGGER_ENTRYPOINTS | {
+    "scripts/active_plan_checks.py",
+    "scripts/check_doc_sync.py",
+    "scripts/check_docs.py",
+    "scripts/check_docs_common.py",
+    "scripts/check_docs_links.py",
+    "scripts/check_docs_paths.py",
+    "scripts/check_docs_project.py",
+    "scripts/check_docs_structure.py",
+    "scripts/check_knowledge_index.py",
+    "scripts/check_plan_required.py",
+    "scripts/codex_review_adjudicator.py",
+}
 TRUSTED_CONTROL_PATHS = {
     ".github/doc-sync-rules.json",
     ".harness/repo-contract.json",
@@ -51,7 +75,7 @@ TRUSTED_CONTROL_PATHS = {
     "scripts/check_docs.py",
     "scripts/check_docs_project.py",
     "scripts/check_loop_checkpoints.py",
-}
+} | PRIVILEGED_REVIEW_TRIGGER_HELPERS
 TRUSTED_CONTROL_PREFIXES = (".github/workflows/",)
 NON_TRIVIAL_DOC_PATHS = (
     "docs/index.md",
@@ -714,7 +738,10 @@ def evaluate(
         item
         for item in reviews
         if trusted_codex_actor(item, authors)
-        and str(item.get("state") or "").upper() != "DISMISSED"
+        and (
+            str(item.get("state") or "").upper() != "DISMISSED"
+            or finding_body(str(item.get("body") or ""))
+        )
         and str(item.get("commit_id") or "").lower() == head_sha
         and review_at_or_after_latest_trigger(item)
     ]
