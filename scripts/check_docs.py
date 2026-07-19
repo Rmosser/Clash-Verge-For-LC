@@ -203,7 +203,7 @@ OUT_OF_REPO_SCOPE_RE = re.compile(
 )
 CURRENT_HEAD_REVIEW_HEADING = "## Current-Head Codex Review\n\n"
 CURRENT_HEAD_REVIEW_SHA256 = (
-    "a872ce5376c1bf2a0f879bdc0c24c670593458160c529287eb1ec82e49d944f9"
+    "fb219c05b40015d5a54b8509a806e5e3751263d341391bb68928b35fbb63d7d1"
 )
 TRUSTED_CONTROL_FILES = (
     f"{DOCS_ROOT.name}/doc-sync-rules.json",
@@ -2412,6 +2412,22 @@ def workflow_mapping_entries(text: str) -> dict[tuple[str, ...], list[str]]:
     return entries
 
 
+def workflow_concurrency_errors(text: str) -> list[str]:
+    entries = workflow_mapping_entries(text)
+    allowed = {"group", "cancel-in-progress"}
+    unsupported = sorted(
+        ".".join(path)
+        for path in entries
+        if len(path) >= 2
+        and path[-2] == "concurrency"
+        and path[-1] not in allowed
+    )
+    return [
+        f"unsupported GitHub Actions concurrency mapping key: {path}"
+        for path in unsupported
+    ]
+
+
 def workflow_structure_errors(text: str) -> list[str]:
     entries = workflow_mapping_entries(text)
     required_paths = (
@@ -2425,7 +2441,7 @@ def workflow_structure_errors(text: str) -> list[str]:
         ("jobs", "dispatch-open-pull-requests"),
         ("jobs", "default-branch-checkpoints"),
     )
-    errors = [
+    errors = workflow_concurrency_errors(text) + [
         f"missing or duplicate workflow mapping: {'.'.join(path)}"
         for path in required_paths
         if len(entries.get(path, [])) != 1
@@ -2449,9 +2465,14 @@ def check_codex_review_workflows(
     gate_relative = ".github/workflows/codex-review-gate.yml"
     heartbeat_relative = ".github/workflows/codex-review-heartbeat.yml"
     signal_relative = ".github/workflows/codex-review-signal.yml"
+    evaluator_relative = "scripts/check_codex_review.py"
     for relative in (gate_relative, heartbeat_relative, signal_relative):
         if relative not in required_paths:
             errors.append(f"doc-sync-rules must require trusted workflow: {relative}")
+    if evaluator_relative not in required_paths:
+        errors.append(
+            f"doc-sync-rules must require trusted review evaluator: {evaluator_relative}"
+        )
 
     signal_path = ROOT / signal_relative
     if signal_path.is_symlink() or not signal_path.is_file():
@@ -2460,6 +2481,7 @@ def check_codex_review_workflows(
         )
     else:
         signal_text = signal_path.read_text(encoding="utf-8")
+        errors.extend(workflow_concurrency_errors(signal_text))
         signal_entries = workflow_mapping_entries(signal_text)
         required_signal_entries = {
             ("on", "pull_request_review"): "",
@@ -2480,10 +2502,16 @@ def check_codex_review_workflows(
                 "with empty workflow and job permissions"
             )
         required_signal_fragments = (
-            "event-${{ github.event_name }}",
-            "action-${{ github.event.action }}",
-            "actor-${{ github.event.review.user.login || github.event.comment.user.login }}",
-            "type-${{ github.event.review.user.type || github.event.comment.user.type }}",
+            "p-${{ github.event.pull_request.number }}",
+            "h-${{ github.event.pull_request.head.sha }}",
+            "e-${{ github.event_name }}",
+            "a-${{ github.event.action }}",
+            "i-${{ github.event.review.id || github.event.comment.id }}",
+            "r-${{ github.event.review.id || github.event.comment.pull_request_review_id }}",
+            "c-${{ github.event.review.commit_id || github.event.comment.commit_id }}",
+            "x-${{ github.event.review.submitted_at || github.event.comment.updated_at || github.event.comment.created_at }}",
+            "u-${{ github.event.review.user.login || github.event.comment.user.login }}",
+            "t-${{ github.event.review.user.type || github.event.comment.user.type }}",
             "name: codex-review-artifact-changed",
             'run: "true"',
         )
@@ -2514,6 +2542,7 @@ def check_codex_review_workflows(
         errors.append(f"Codex review gate must be a regular file: {gate_relative}")
     else:
         gate_text = gate_path.read_text(encoding="utf-8")
+        errors.extend(workflow_concurrency_errors(gate_text))
         gate_entries = workflow_mapping_entries(gate_text)
         required_triggers = (
             ("on", "pull_request_target"),
@@ -2548,8 +2577,16 @@ def check_codex_review_workflows(
             "statuses: write",
             "github.event.workflow_run.workflow_id",
             "github.event.workflow_run.path",
-            "github.event.workflow_run.display_title",
-            "actor-(chatgpt-codex-connector",
+            "github.event.workflow_run.name",
+            "signal_artifact_id",
+            "signal_parent_review_id",
+            "signal_artifact_head",
+            "signal_actor_type",
+            '"${signal_actor}" == "chatgpt-codex-connector"',
+            "needs.resolve-review-signal.outputs.relevant == 'true'",
+            "artifact_node",
+            "PullRequestReview{databaseId updatedAt}",
+            "pull_request_review_id",
             "RUN_HEAD_SHA",
             "trusted_workflow_id",
             "source_signal_blob",
@@ -2560,16 +2597,35 @@ def check_codex_review_workflows(
             "source_gate_blob",
             "trusted_gate_blob",
             "Invalidate the old review result before queued reconciliation",
+            "publish_bound_failure()",
+            "Codex route identity recheck failed; retry required.",
+            "Failed to leave the bound head with the latest route failure status.",
             "statuses/${head_sha}",
-            "Codex invalidation h=",
+            "description=\"Codex lease h=${head_sha:0:10};t=${EVIDENCE_EVENT_TIME};r=${EVIDENCE_SOURCE_RUN_ID};a=${EVIDENCE_ARTIFACT_ID};p=${EVIDENCE_PARENT_REVIEW_ID};base=${live_base_sha}.\"",
             "client_payload[expected_head_sha]",
             "client_payload[reconcile_reason]=review-event",
             "client_payload[evidence_event_name]",
             "client_payload[evidence_event_action]",
             "client_payload[evidence_event_time]",
+            "client_payload[evidence_artifact_id]",
+            "client_payload[evidence_parent_review_id]",
             "HARNESS_REVIEW_EVENT_TIME",
+            "HARNESS_REVIEW_EVENT_ARTIFACT_ID",
+            "HARNESS_REVIEW_EVENT_PARENT_REVIEW_ID",
             "evidence_source_run_id",
             "HARNESS_REVIEW_EVENT_SOURCE_RUN_ID",
+            "COMMENT_PREVIOUS_BODY",
+            "explicitly_stale_review(current_body)",
+            "explicitly_stale_review(previous_body)",
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}",
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${PUSH_RUN_ID}",
+            "--jq '[.id, .event, .head_sha, .created_at] | @tsv'",
+            "client_payload[base_epoch_time]",
+            "client_payload[base_epoch_source_run_id]",
+            "client_payload[base_epoch_base_sha]",
+            "HARNESS_BASE_EPOCH_TIME",
+            "HARNESS_BASE_EPOCH_SOURCE_RUN_ID",
+            "HARNESS_BASE_EPOCH_BASE_SHA",
             "needs: resolve-review-signal",
             "needs: resolve-issue-comment",
             "group: codex-review-gate-${{ needs.resolve-review-signal.outputs.pr_number }}",
@@ -2580,6 +2636,22 @@ def check_codex_review_workflows(
             errors.append(
                 "Codex review workflow_run route must validate the canonical signal "
                 "workflow, live PR identity, and trusted-base blob before dispatch"
+            )
+        exact_lease_description = (
+            'description="Codex lease h=${head_sha:0:10};'
+            't=${EVIDENCE_EVENT_TIME};r=${EVIDENCE_SOURCE_RUN_ID};'
+            'a=${EVIDENCE_ARTIFACT_ID};p=${EVIDENCE_PARENT_REVIEW_ID};'
+            'base=${live_base_sha}."'
+        )
+        if gate_text.count(exact_lease_description) != 2:
+            errors.append(
+                "Codex review and issue routes must each publish the exact "
+                "parent-bound event lease"
+            )
+        if "Codex invalidation h=" in gate_text:
+            errors.append(
+                "Codex review routes cannot publish generic invalidation pending "
+                "instead of an owned event lease"
             )
         required_action_pins = (
             "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5",
@@ -2652,12 +2724,41 @@ def check_codex_review_workflows(
                 errors.append(
                     "Codex review issue comments must route through PR serialization before final writing"
                 )
-        if (
-            gate_text.count("cancel-in-progress: false") != 3
-            or gate_text.count("queue: max") != 3
+        if gate_text.count("cancel-in-progress: false") != 3:
+            errors.append(
+                "Codex review signal route, issue route, and final writer must share non-cancelling PR serialization"
+            )
+
+    evaluator_path = ROOT / evaluator_relative
+    if evaluator_path.is_symlink() or not evaluator_path.is_file():
+        errors.append(
+            f"Codex review evaluator must be a regular file: {evaluator_relative}"
+        )
+    else:
+        evaluator_text = evaluator_path.read_text(encoding="utf-8")
+        required_evaluator_fragments = (
+            'r"^Codex lease h=([0-9a-f]{10});"',
+            'r"p=([1-9][0-9]*);"',
+            "routed_event_parent_review_id",
+            'str(artifact.get("pull_request_review_id") or "")',
+            "or parent_is_current",
+            "routed_event_pending_metadata(latest_status, expected_identity)",
+            "if any(observed_lease) and observed_lease != writer_lease:",
+            "BASE_EPOCH_PENDING_RE",
+            "base_epoch_time",
+            "base_epoch_source_run_id",
+            "base_epoch_base_sha",
+            "timestamp > evidence_not_before",
+            "timestamp >= blockers_not_before",
+            'return base_drifted, created_at, ""',
+        )
+        if any(
+            fragment not in evaluator_text
+            for fragment in required_evaluator_fragments
         ):
             errors.append(
-                "Codex review signal route, issue route, and final writer must share queued non-cancelling PR serialization"
+                "Codex review evaluator must preserve parent-bound lease ownership, "
+                "exact base epochs, and asymmetric positive/negative cutoffs"
             )
 
     heartbeat_path = ROOT / heartbeat_relative
@@ -2667,6 +2768,7 @@ def check_codex_review_workflows(
         )
     else:
         heartbeat_text = heartbeat_path.read_text(encoding="utf-8")
+        errors.extend(workflow_concurrency_errors(heartbeat_text))
         heartbeat_entries = workflow_mapping_entries(heartbeat_text)
         if len(heartbeat_entries.get(("on", "schedule"), [])) != 1:
             errors.append("Codex review heartbeat must use a default-branch schedule")

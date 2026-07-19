@@ -1,5 +1,5 @@
 name: codex-review-signal
-run-name: codex-review-signal pr-${{ github.event.pull_request.number }} head-${{ github.event.pull_request.head.sha }} event-${{ github.event_name }} action-${{ github.event.action }} actor-${{ github.event.review.user.login || github.event.comment.user.login }} type-${{ github.event.review.user.type || github.event.comment.user.type }}
+run-name: codex-review-signal p-${{ github.event.pull_request.number }} h-${{ github.event.pull_request.head.sha }} e-${{ github.event_name }} a-${{ github.event.action }} i-${{ github.event.review.id || github.event.comment.id }} r-${{ github.event.review.id || github.event.comment.pull_request_review_id }} c-${{ github.event.review.commit_id || github.event.comment.commit_id }} x-${{ github.event.review.submitted_at || github.event.comment.updated_at || github.event.comment.created_at }} u-${{ github.event.review.user.login || github.event.comment.user.login }} t-${{ github.event.review.user.type || github.event.comment.user.type }}
 
 on:
   pull_request_review:
