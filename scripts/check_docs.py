@@ -203,7 +203,7 @@ OUT_OF_REPO_SCOPE_RE = re.compile(
 )
 CURRENT_HEAD_REVIEW_HEADING = "## Current-Head Codex Review\n\n"
 CURRENT_HEAD_REVIEW_SHA256 = (
-    "fb219c05b40015d5a54b8509a806e5e3751263d341391bb68928b35fbb63d7d1"
+    "17dce11e99537386a20651bf0b1b00f805a7392de2c7d870cc4a57f03b285177"
 )
 TRUSTED_CONTROL_FILES = (
     f"{DOCS_ROOT.name}/doc-sync-rules.json",
@@ -2578,6 +2578,8 @@ def check_codex_review_workflows(
             "github.event.workflow_run.workflow_id",
             "github.event.workflow_run.path",
             "github.event.workflow_run.name",
+            "github.event.workflow_run.display_title",
+            '"${RUN_WORKFLOW_NAME}" != "${RUN_DISPLAY_TITLE}"',
             "signal_artifact_id",
             "signal_parent_review_id",
             "signal_artifact_head",
@@ -2601,7 +2603,7 @@ def check_codex_review_workflows(
             "Codex route identity recheck failed; retry required.",
             "Failed to leave the bound head with the latest route failure status.",
             "statuses/${head_sha}",
-            "description=\"Codex lease h=${head_sha:0:10};t=${EVIDENCE_EVENT_TIME};r=${EVIDENCE_SOURCE_RUN_ID};a=${EVIDENCE_ARTIFACT_ID};p=${EVIDENCE_PARENT_REVIEW_ID};base=${live_base_sha}.\"",
+            "description=\"Lease t=${compact_event_time};r=${EVIDENCE_SOURCE_RUN_ID};a=${EVIDENCE_ARTIFACT_ID};p=${EVIDENCE_PARENT_REVIEW_ID};b=${live_base_sha}.\"",
             "client_payload[expected_head_sha]",
             "client_payload[reconcile_reason]=review-event",
             "client_payload[evidence_event_name]",
@@ -2638,10 +2640,10 @@ def check_codex_review_workflows(
                 "workflow, live PR identity, and trusted-base blob before dispatch"
             )
         exact_lease_description = (
-            'description="Codex lease h=${head_sha:0:10};'
-            't=${EVIDENCE_EVENT_TIME};r=${EVIDENCE_SOURCE_RUN_ID};'
+            'description="Lease t=${compact_event_time};'
+            'r=${EVIDENCE_SOURCE_RUN_ID};'
             'a=${EVIDENCE_ARTIFACT_ID};p=${EVIDENCE_PARENT_REVIEW_ID};'
-            'base=${live_base_sha}."'
+            'b=${live_base_sha}."'
         )
         if gate_text.count(exact_lease_description) != 2:
             errors.append(
@@ -2737,7 +2739,8 @@ def check_codex_review_workflows(
     else:
         evaluator_text = evaluator_path.read_text(encoding="utf-8")
         required_evaluator_fragments = (
-            'r"^Codex lease h=([0-9a-f]{10});"',
+            'r"^Lease t=(\\d{8}T\\d{6}Z);"',
+            "LEGACY_ROUTED_EVENT_PENDING_RE",
             'r"p=([1-9][0-9]*);"',
             "routed_event_parent_review_id",
             'str(artifact.get("pull_request_review_id") or "")',

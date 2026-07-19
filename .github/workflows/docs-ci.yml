@@ -497,4 +497,4 @@ jobs:
             exit 1
           fi
           python3 -I -B scripts/check_loop_checkpoints.py \
-            --head HEAD --diff-mode root
+            --head HEAD --diff-mode root --allow-harness-bootstrap

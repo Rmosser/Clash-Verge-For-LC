@@ -28,8 +28,16 @@ DEFAULT_CONTEXT = "codex-review"
 DEFAULT_BASE_REF = "main"
 GITHUB_ACTIONS_APP_ID = 15368
 GITHUB_ACTIONS_STATUS_CREATOR = "github-actions[bot]"
-STATUS_BASE_RE = re.compile(r"; base=([0-9a-f]{40})\.$", re.IGNORECASE)
+STATUS_BASE_RE = re.compile(
+    r";(?: ?base|b)=([0-9a-f]{40})\.$", re.IGNORECASE
+)
 ROUTED_EVENT_PENDING_RE = re.compile(
+    r"^Lease t=(\d{8}T\d{6}Z);"
+    r"r=([1-9][0-9]*);a=([1-9][0-9]*);"
+    r"p=([1-9][0-9]*);b=([0-9a-f]{40})\.$",
+    re.IGNORECASE,
+)
+LEGACY_ROUTED_EVENT_PENDING_RE = re.compile(
     r"^Codex lease h=([0-9a-f]{10});"
     r"t=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z);"
     r"r=([1-9][0-9]*);a=([1-9][0-9]*);"
@@ -409,12 +417,18 @@ def trusted_trigger(
     item: dict[str, Any], authors: set[str]
 ) -> bool:
     return bool(
+        trusted_trigger_actor(item, authors)
+        and TRIGGER_RE.search(str(item.get("body") or ""))
+        and artifact_time(item)
+    )
+
+
+def trusted_trigger_actor(item: dict[str, Any], authors: set[str]) -> bool:
+    return bool(
         actor_login(item)
         and actor_login(item) not in authors
         and str(item.get("author_association") or "").upper()
         in TRUSTED_TRIGGER_ASSOCIATIONS
-        and TRIGGER_RE.search(str(item.get("body") or ""))
-        and artifact_time(item)
     )
 
 
@@ -685,6 +699,9 @@ def require_routed_review_event_observed(
         trusted_source = trusted_codex_actor(artifact, authors) or (
             trusted_trigger(artifact, authors)
             and trigger_bound_to_full_head(artifact, head_sha)
+        ) or (
+            normalized_action == "edited"
+            and trusted_trigger_actor(artifact, authors)
         )
     elif normalized_name == "pull_request_review":
         trusted_source = trusted_codex_actor(artifact, authors)
@@ -888,7 +905,18 @@ def evaluate(
 
     def belongs_to_live_base_epoch(item: dict[str, Any]) -> bool:
         timestamp = evidence_time(item)
-        return bool(timestamp and (not evidence_not_before or timestamp > evidence_not_before))
+        exact_edited_artifact = bool(
+            routed_event_action.strip().casefold() == "edited"
+            and artifact_database_id(item) == routed_event_artifact_id
+        )
+        return bool(
+            timestamp
+            and (
+                not evidence_not_before
+                or timestamp > evidence_not_before
+                or (timestamp == evidence_not_before and exact_edited_artifact)
+            )
+        )
 
     def belongs_to_live_base_blocker_epoch(item: dict[str, Any]) -> bool:
         timestamp = evidence_time(item)
@@ -1441,11 +1469,10 @@ def routed_event_pending_status_description(
         raise GateError("routed artifact id is malformed")
     if not re.fullmatch(r"[1-9][0-9]*", parent_review_id):
         raise GateError("routed parent review id is malformed")
+    compact_event_time = event_time.replace("-", "").replace(":", "")
     description = (
-        f"Codex lease h={expected_identity.head_sha[:10]};"
-        f"t={event_time};r={source_run_id};a={artifact_id};"
-        f"p={parent_review_id};"
-        f"base={expected_identity.base_sha}."
+        f"Lease t={compact_event_time};r={source_run_id};a={artifact_id};"
+        f"p={parent_review_id};b={expected_identity.base_sha}."
     )
     if len(description) > 140:
         raise GateError("routed event lease exceeds the status description limit")
@@ -1459,20 +1486,34 @@ def routed_event_pending_metadata(
     if not isinstance(description, str):
         return "", "", "", ""
     match = ROUTED_EVENT_PENDING_RE.fullmatch(description)
-    if not match:
-        return "", "", "", ""
-    (
-        head_prefix,
-        event_time,
-        source_run_id,
-        artifact_id,
-        parent_review_id,
-        base_sha,
-    ) = match.groups()
-    if (
-        head_prefix.casefold() != expected_identity.head_sha[:10].casefold()
-        or base_sha.casefold() != expected_identity.base_sha.casefold()
-    ):
+    if match:
+        (
+            compact_event_time,
+            source_run_id,
+            artifact_id,
+            parent_review_id,
+            base_sha,
+        ) = match.groups()
+        event_time = (
+            f"{compact_event_time[:4]}-{compact_event_time[4:6]}-"
+            f"{compact_event_time[6:8]}{compact_event_time[8:11]}:"
+            f"{compact_event_time[11:13]}:{compact_event_time[13:]}"
+        )
+    else:
+        legacy_match = LEGACY_ROUTED_EVENT_PENDING_RE.fullmatch(description)
+        if not legacy_match:
+            return "", "", "", ""
+        (
+            head_prefix,
+            event_time,
+            source_run_id,
+            artifact_id,
+            parent_review_id,
+            base_sha,
+        ) = legacy_match.groups()
+        if head_prefix.casefold() != expected_identity.head_sha[:10].casefold():
+            return "", "", "", ""
+    if base_sha.casefold() != expected_identity.base_sha.casefold():
         return "", "", "", ""
     return event_time, source_run_id, artifact_id, parent_review_id
 
@@ -1590,6 +1631,7 @@ def live_base_evidence_cutoffs(
         if status.get("context") == context
         and trusted_status_writer(status, status_app_id)
         and status_base_sha(status)
+        and not routed_event_pending_time(status, expected_identity)
     ]
     if not trusted:
         return False, "", ""
@@ -2059,16 +2101,15 @@ def routed_review_event_cutoff(
         raise GateError("routed review artifact id is missing or malformed")
     if not re.fullmatch(r"[1-9][0-9]*", parent_review_id):
         raise GateError("routed parent review id is missing or malformed")
-    statuses = statuses_for_identity(
-        api, repository, pr_number, expected_identity
+    latest_status = latest_status_for_identity(
+        api, repository, pr_number, expected_identity, context
     )
-    if not any(
+    if not (
         status_matches_pending(
-            status, context, expected_identity, status_app_id
+            latest_status, context, expected_identity, status_app_id
         )
-        and routed_event_pending_metadata(status, expected_identity)
+        and routed_event_pending_metadata(latest_status, expected_identity)
         == (event_time, source_run_id, artifact_id, parent_review_id)
-        for status in statuses
     ):
         raise GateError(
             "routed event pending is missing for the exact lease identity"
@@ -2400,6 +2441,24 @@ def main() -> int:
                 raise GateError(
                     "default-branch push reconciliation requires an exact epoch identity"
                 )
+            if reconcile_reason == "default-branch-push":
+                if (
+                    not re.fullmatch(
+                        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z",
+                        base_epoch_time,
+                    )
+                    or not re.fullmatch(r"[1-9][0-9]*", base_epoch_source_run_id)
+                    or not re.fullmatch(r"[0-9a-fA-F]{40}", base_epoch_base_sha)
+                ):
+                    raise GateError(
+                        "default-branch push epoch identity is malformed"
+                    )
+                if (
+                    base_epoch_base_sha.casefold()
+                    != initial_identity.base_sha.casefold()
+                ):
+                    print("Ignoring a stale default-branch push epoch.")
+                    return 0
             evidence_not_before = prepare_live_base_evidence_epoch(
                 api,
                 args.repository,
@@ -2458,7 +2517,7 @@ def main() -> int:
                 routed_event_source_run_id = os.environ.get(
                     "HARNESS_REVIEW_EVENT_SOURCE_RUN_ID", ""
                 )
-                routed_review_event_cutoff(
+                routed_event_cutoff = routed_review_event_cutoff(
                     api,
                     args.repository,
                     pr_number,
@@ -2473,6 +2532,35 @@ def main() -> int:
                     routed_event_artifact_id,
                     routed_event_parent_review_id,
                 )
+                if review_event_is_destructive(
+                    routed_event_name, routed_event_action
+                ):
+                    evidence_not_before = max(
+                        evidence_not_before, routed_event_cutoff
+                    )
+            if reconcile_reason == "heartbeat":
+                latest_status = latest_status_for_identity(
+                    api,
+                    args.repository,
+                    pr_number,
+                    initial_identity,
+                    context,
+                )
+                stranded_lease = (
+                    routed_event_pending_metadata(latest_status, initial_identity)
+                    if trusted_status_writer(latest_status, status_app_id)
+                    else ("", "", "", "")
+                )
+                if all(stranded_lease):
+                    (
+                        routed_event_time,
+                        routed_event_source_run_id,
+                        routed_event_artifact_id,
+                        routed_event_parent_review_id,
+                    ) = stranded_lease
+                    evidence_not_before = max(
+                        evidence_not_before, routed_event_time
+                    )
             if is_evidence_event:
                 destructive_evidence_event = str(
                     event_payload.get("action") or ""
@@ -2490,6 +2578,10 @@ def main() -> int:
                 if not evidence_event_cutoff:
                     raise GateError(
                         "could not invalidate prior status before reading changed evidence"
+                    )
+                if destructive_evidence_event:
+                    evidence_not_before = max(
+                        evidence_not_before, evidence_event_cutoff
                     )
         if args.fixture:
             payload = json.loads(args.fixture.read_text(encoding="utf-8"))

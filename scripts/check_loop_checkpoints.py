@@ -76,6 +76,38 @@ COMPLETED_DIR = ROOT / DOCS_ROOT_NAME / "exec-plans" / "completed"
 ACTIVE_SENTINEL = ACTIVE_DIR / ".gitkeep"
 RULES_PATH = ROOT / DOCS_ROOT_NAME / "doc-sync-rules.json"
 TRUSTED_RULES_PATH = TRUSTED_ROOT / TRUSTED_DOCS_ROOT_NAME / "doc-sync-rules.json"
+HARNESS_BOOTSTRAP_PATHS = {
+    ".github/pull_request_template.md",
+    ".github/workflows/codex-review-gate.yml",
+    ".github/workflows/codex-review-heartbeat.yml",
+    ".github/workflows/codex-review-signal.yml",
+    ".github/workflows/docs-ci.yml",
+    ".harness/repo-contract.json",
+    "AGENTS.md",
+    "README.md",
+    "TEMPLATE.md",
+    f"{DOCS_ROOT_NAME}/doc-sync-rules.json",
+    f"{DOCS_ROOT_NAME}/exec-plans/active/.gitkeep",
+    f"{DOCS_ROOT_NAME}/exec-plans/completed/.gitkeep",
+    f"{DOCS_ROOT_NAME}/exec-plans/template.md",
+    f"{DOCS_ROOT_NAME}/governance/checkpoint-ci-gate.md",
+    f"{DOCS_ROOT_NAME}/index.md",
+    "scripts/check_codex_review.py",
+    "scripts/check_docs.py",
+    "scripts/check_loop_checkpoints.py",
+}
+HARNESS_BOOTSTRAP_REQUIRED_PATHS = {
+    ".github/workflows/codex-review-gate.yml",
+    ".github/workflows/codex-review-heartbeat.yml",
+    ".github/workflows/codex-review-signal.yml",
+    ".github/workflows/docs-ci.yml",
+    ".harness/repo-contract.json",
+    f"{DOCS_ROOT_NAME}/doc-sync-rules.json",
+    f"{DOCS_ROOT_NAME}/governance/checkpoint-ci-gate.md",
+    "scripts/check_codex_review.py",
+    "scripts/check_docs.py",
+    "scripts/check_loop_checkpoints.py",
+}
 TRIVIAL_WITHOUT_PLAN_FILES = {
     "README.md",
     "CHANGELOG.md",
@@ -1021,6 +1053,19 @@ def require_active_plan_ownership(plan: Path | None, changed: list[str]) -> None
         ])
 
 
+def harness_bootstrap_allowlist(changed: list[str]) -> set[str]:
+    changed_set = set(changed)
+    unexpected = sorted(changed_set - HARNESS_BOOTSTRAP_PATHS)
+    missing = sorted(HARNESS_BOOTSTRAP_REQUIRED_PATHS - changed_set)
+    if unexpected or missing:
+        fail([
+            "first-push Harness bootstrap does not match the canonical template surface",
+            f"unexpected bootstrap paths: {unexpected}",
+            f"missing bootstrap controls: {missing}",
+        ])
+    return changed_set
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", help="base ref for the merge-base diff")
@@ -1036,12 +1081,23 @@ def main() -> None:
         default="merge-base",
         help="use PR merge-base, push-predecessor, or root-tree diff semantics",
     )
+    parser.add_argument(
+        "--allow-harness-bootstrap",
+        action="store_true",
+        help="allow only the canonical Harness template surface on a root push",
+    )
     args = parser.parse_args()
     if args.worktree_only and args.diff_mode != "merge-base":
         parser.error("--worktree-only cannot be combined with --diff-mode")
     if args.diff_mode == "root" and args.base:
         parser.error("--diff-mode root does not accept --base")
-    base = args.base or ("HEAD" if args.worktree_only else default_base())
+    if args.allow_harness_bootstrap and args.diff_mode != "root":
+        parser.error("--allow-harness-bootstrap requires --diff-mode root")
+    base = args.base or (
+        "HEAD"
+        if args.worktree_only or args.diff_mode == "root"
+        else default_base()
+    )
 
     changed = changed_files(
         base,
@@ -1074,6 +1130,11 @@ def main() -> None:
         if plan is None
         else set()
     )
+    bootstrap_allowed = (
+        harness_bootstrap_allowlist(changed)
+        if plan is None and args.allow_harness_bootstrap
+        else set()
+    )
     problems = [
         f"{reason}: {path}"
         for path in changed
@@ -1084,7 +1145,7 @@ def main() -> None:
                 denies,
                 has_active_plan=plan is not None,
                 required_plan_patterns=required_plan_patterns,
-                no_plan_allowed=archive_allowed,
+                no_plan_allowed=archive_allowed | bootstrap_allowed,
                 bookkeeping_allowed=bookkeeping_allowed,
             )
         )
