@@ -1334,7 +1334,7 @@ def post_status(
     context: str,
     description: str,
     target_url: str,
-) -> None:
+) -> int:
     payload: dict[str, Any] = {
         "state": state,
         "context": context,
@@ -1342,11 +1342,15 @@ def post_status(
     }
     if target_url:
         payload["target_url"] = target_url
-    api.request(
+    response = api.request(
         "POST",
         f"/repos/{repo_path(repository)}/statuses/{head_sha}",
         payload,
     )
+    status_id = response.get("id") if isinstance(response, dict) else None
+    if not isinstance(status_id, int) or isinstance(status_id, bool) or status_id < 1:
+        raise GateError("GitHub status creation response did not include a valid id")
+    return status_id
 
 
 def statuses_for_identity(
@@ -1758,10 +1762,10 @@ def live_base_evidence_cutoffs(
             base_sha = routed_epoch_match.group(5).casefold()
             if base_sha != expected_identity.base_sha.casefold():
                 return True, "", ""
-            created_at = status.get("created_at")
-            if not isinstance(created_at, str) or not created_at:
+            event_time = routed_event_pending_time(status, expected_identity)
+            if not event_time:
                 return base_drifted, "", ""
-            return base_drifted, created_at, ""
+            return base_drifted, event_time, ""
         exact_match = (
             BASE_EPOCH_PENDING_RE.fullmatch(description)
             if isinstance(description, str)
@@ -2029,7 +2033,7 @@ def publish_pending(
     context: str,
     target_url: str,
     description: str = "",
-) -> bool:
+) -> int:
     observed_pull: dict[str, Any] | None = None
     try:
         observed_pull = live_pull(api, repository, pr_number)
@@ -2045,7 +2049,7 @@ def publish_pending(
             "PR identity changed before codex-review pending publication.",
             observed_pull,
         )
-        return False
+        return 0
     if not same_pull_identity(live_identity, expected_identity):
         publish_fail_closed_for_bound_head(
             api,
@@ -2057,8 +2061,8 @@ def publish_pending(
             "PR identity changed before codex-review pending publication.",
             observed_pull,
         )
-        return False
-    post_status(
+        return 0
+    status_id = post_status(
         api,
         repository,
         expected_identity.head_sha,
@@ -2067,14 +2071,16 @@ def publish_pending(
         description or pending_status_description(expected_identity),
         target_url,
     )
-    return fail_closed_after_status_write(
+    if not fail_closed_after_status_write(
         api,
         repository,
         pr_number,
         expected_identity,
         context,
         target_url,
-    )
+    ):
+        return 0
+    return status_id
 
 
 def fail_closed_after_status_write(
@@ -2114,11 +2120,11 @@ def publish_status(
     result: GateResult,
     context: str,
     target_url: str,
-) -> bool:
+) -> int:
     if not result.publish:
-        return False
+        return 0
     if result.head_sha != expected_identity.head_sha:
-        return False
+        return 0
     observed_pull: dict[str, Any] | None = None
     try:
         observed_pull = live_pull(api, repository, pr_number)
@@ -2134,7 +2140,7 @@ def publish_status(
             "PR identity changed before final codex-review status publication.",
             observed_pull,
         )
-        return False
+        return 0
     if not same_pull_identity(live_identity, expected_identity):
         publish_fail_closed_for_bound_head(
             api,
@@ -2146,8 +2152,8 @@ def publish_status(
             "PR identity changed before final codex-review status publication.",
             observed_pull,
         )
-        return False
-    post_status(
+        return 0
+    status_id = post_status(
         api,
         repository,
         expected_identity.head_sha,
@@ -2158,14 +2164,16 @@ def publish_status(
         ),
         target_url,
     )
-    return fail_closed_after_status_write(
+    if not fail_closed_after_status_write(
         api,
         repository,
         pr_number,
         expected_identity,
         context,
         target_url,
-    )
+    ):
+        return 0
+    return status_id
 
 
 def github_event_payload() -> dict[str, Any]:
@@ -2267,6 +2275,7 @@ def routed_review_event_cutoff(
     source_run_id: str,
     artifact_id: str,
     parent_review_id: str,
+    event_base_sha: str,
 ) -> str:
     review_event_is_destructive(event_name, event_action)
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", event_time):
@@ -2277,6 +2286,10 @@ def routed_review_event_cutoff(
         raise GateError("routed review artifact id is missing or malformed")
     if not re.fullmatch(r"[1-9][0-9]*", parent_review_id):
         raise GateError("routed parent review id is missing or malformed")
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", event_base_sha):
+        raise GateError("routed event base sha is missing or malformed")
+    if event_base_sha.casefold() != expected_identity.base_sha.casefold():
+        return ""
     statuses = [
         status
         for status in statuses_for_identity(
@@ -2374,9 +2387,16 @@ def restore_newer_routed_lease_after_status_write(
     target_url: str,
     status_app_id: int,
     writer_lease: tuple[str, str, str, str],
+    written_status_id: int,
 ) -> bool:
     if not all(writer_lease):
         return True
+    if (
+        not isinstance(written_status_id, int)
+        or isinstance(written_status_id, bool)
+        or written_status_id < 1
+    ):
+        raise GateError("routed final writer status id is invalid")
     statuses = [
         status
         for status in statuses_for_identity(
@@ -2396,15 +2416,18 @@ def restore_newer_routed_lease_after_status_write(
     )
     if owner_index is None:
         raise GateError("routed writer lease disappeared after status write")
-    newer_lease = ("", "", "", "")
-    for status in statuses[:owner_index]:
-        candidate = routed_event_pending_metadata(status, expected_identity)
-        if all(candidate) and candidate != writer_lease:
-            newer_lease = candidate
-            break
+    latest_status = statuses[0]
+    latest_lease = routed_event_pending_metadata(latest_status, expected_identity)
+    if all(latest_lease):
+        return True
+    if latest_status.get("id") != written_status_id or len(statuses) < 2:
+        return True
+    newer_lease = routed_event_pending_metadata(statuses[1], expected_identity)
     if not all(newer_lease):
         return True
-    if not publish_pending(
+    if newer_lease == writer_lease:
+        return True
+    restored_status_id = publish_pending(
         api,
         repository,
         pr_number,
@@ -2414,22 +2437,94 @@ def restore_newer_routed_lease_after_status_write(
         routed_event_pending_status_description(
             expected_identity, *newer_lease
         ),
-    ):
-        return False
-    latest_status = latest_status_for_identity(
-        api,
-        repository,
-        pr_number,
-        expected_identity,
-        context,
     )
-    if (
-        not trusted_status_writer(latest_status, status_app_id)
-        or routed_event_pending_metadata(latest_status, expected_identity)
-        != newer_lease
-    ):
-        raise GateError("newer routed lease was not restored after status write")
-    return True
+    if not restored_status_id:
+        return False
+    statuses = [
+        status
+        for status in statuses_for_identity(
+            api, repository, pr_number, expected_identity
+        )
+        if status.get("context") == context
+        and trusted_status_writer(status, status_app_id)
+    ]
+    if not statuses:
+        raise GateError("newer routed lease audit lost all trusted statuses")
+    latest_status = statuses[0]
+    if routed_event_pending_metadata(latest_status, expected_identity) != newer_lease:
+        return True
+    if latest_status.get("id") != restored_status_id or len(statuses) < 2:
+        return True
+    predecessor = statuses[1]
+    if predecessor.get("id") == written_status_id:
+        return True
+    expected_latest_id = restored_status_id
+    displaced_status = predecessor
+    for _attempt in range(3):
+        displaced_id = displaced_status.get("id")
+        displaced_state = displaced_status.get("state")
+        displaced_description = displaced_status.get("description")
+        displaced_target_url = displaced_status.get("target_url")
+        if (
+            not isinstance(displaced_id, int)
+            or isinstance(displaced_id, bool)
+            or displaced_id < 1
+            or displaced_state not in {"error", "failure", "pending", "success"}
+            or not isinstance(displaced_description, str)
+            or status_base_sha(displaced_status) != expected_identity.base_sha
+            or (
+                displaced_target_url is not None
+                and not isinstance(displaced_target_url, str)
+            )
+        ):
+            raise GateError("intervening trusted status is malformed")
+        statuses = [
+            status
+            for status in statuses_for_identity(
+                api, repository, pr_number, expected_identity
+            )
+            if status.get("context") == context
+            and trusted_status_writer(status, status_app_id)
+        ]
+        if (
+            len(statuses) < 2
+            or statuses[0].get("id") != expected_latest_id
+            or statuses[1].get("id") != displaced_id
+        ):
+            return True
+        replayed_status_id = post_status(
+            api,
+            repository,
+            expected_identity.head_sha,
+            displaced_state,
+            context,
+            displaced_description,
+            displaced_target_url or target_url,
+        )
+        if not fail_closed_after_status_write(
+            api,
+            repository,
+            pr_number,
+            expected_identity,
+            context,
+            displaced_target_url or target_url,
+        ):
+            return False
+        statuses = [
+            status
+            for status in statuses_for_identity(
+                api, repository, pr_number, expected_identity
+            )
+            if status.get("context") == context
+            and trusted_status_writer(status, status_app_id)
+        ]
+        if not statuses or statuses[0].get("id") != replayed_status_id:
+            return True
+        if len(statuses) < 2 or statuses[1].get("id") == expected_latest_id:
+            return True
+        expected_latest_id = replayed_status_id
+        displaced_status = statuses[1]
+    raise GateError("intervening routed status did not quiesce after restoration")
 
 
 def restore_displaced_routed_lease_after_status_write(
@@ -2666,7 +2761,7 @@ def publish_status_if_changed(
         target_url,
     ):
         return False
-    published = publish_status(
+    published_status_id = publish_status(
         api,
         repository,
         pr_number,
@@ -2675,8 +2770,8 @@ def publish_status_if_changed(
         context,
         target_url,
     )
-    if not published:
-        return published
+    if not published_status_id:
+        return False
     return restore_newer_routed_lease_after_status_write(
         api,
         repository,
@@ -2686,6 +2781,7 @@ def publish_status_if_changed(
         target_url,
         status_app_id,
         writer_lease,
+        published_status_id,
     )
 
 
@@ -2774,7 +2870,7 @@ def invalidate_status_after_exception(
         expected_identity,
     ):
         return True
-    published = publish_status(
+    published_status_id = publish_status(
         api,
         repository,
         pr_number,
@@ -2783,7 +2879,7 @@ def invalidate_status_after_exception(
         context,
         target_url,
     )
-    if not published:
+    if not published_status_id:
         return False
     return restore_newer_routed_lease_after_status_write(
         api,
@@ -2794,6 +2890,7 @@ def invalidate_status_after_exception(
         target_url,
         status_app_id,
         writer_lease,
+        published_status_id,
     )
 
 
@@ -2945,6 +3042,9 @@ def main() -> int:
                 routed_event_source_run_id = os.environ.get(
                     "HARNESS_REVIEW_EVENT_SOURCE_RUN_ID", ""
                 )
+                routed_event_base_sha = os.environ.get(
+                    "HARNESS_REVIEW_EVENT_BASE_SHA", ""
+                )
                 routed_event_cutoff = routed_review_event_cutoff(
                     api,
                     args.repository,
@@ -2959,6 +3059,7 @@ def main() -> int:
                     routed_event_source_run_id,
                     routed_event_artifact_id,
                     routed_event_parent_review_id,
+                    routed_event_base_sha,
                 )
                 if not routed_event_cutoff:
                     print("Ignoring a routed review writer whose lease was already consumed.")

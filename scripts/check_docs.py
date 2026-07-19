@@ -203,7 +203,7 @@ OUT_OF_REPO_SCOPE_RE = re.compile(
 )
 CURRENT_HEAD_REVIEW_HEADING = "## Current-Head Codex Review\n\n"
 CURRENT_HEAD_REVIEW_SHA256 = (
-    "db36989b6351034c6b7a9ace0f267ec2f702cc59d126ccd4aa25f05b9d82dda7"
+    "38e107d5b713d5fc729b1fc54cfe27116a4f40f2b0bf23b1900a33c9002db8cf"
 )
 TRUSTED_CONTROL_FILES = (
     f"{DOCS_ROOT.name}/doc-sync-rules.json",
@@ -2504,6 +2504,7 @@ def check_codex_review_workflows(
         required_signal_fragments = (
             "p-${{ github.event.pull_request.number }}",
             "h-${{ github.event.pull_request.head.sha }}",
+            "b-${{ github.event.pull_request.base.sha }}",
             "e-${{ github.event_name }}",
             "a-${{ github.event.action }}",
             "i-${{ github.event.review.id || github.event.comment.id }}",
@@ -2583,6 +2584,8 @@ def check_codex_review_workflows(
             '"${RUN_WORKFLOW_NAME}" != "${RUN_DISPLAY_TITLE}"',
             "signal_artifact_id",
             "signal_parent_review_id",
+            "signal_base_sha",
+            '"${signal_base_sha}" != "${base_sha}"',
             "signal_artifact_head",
             "signal_actor_type",
             '"${signal_actor}" == "chatgpt-codex-connector"',
@@ -2618,11 +2621,17 @@ def check_codex_review_workflows(
             "client_payload[evidence_artifact_id]",
             "client_payload[evidence_parent_review_id]",
             "HARNESS_REVIEW_EVENT_TIME",
+            "client_payload[evidence_base_sha]",
+            "EVIDENCE_BASE_SHA: ${{ needs.resolve-review-signal.outputs.base_sha }}",
+            "EVIDENCE_BASE_SHA: ${{ needs.resolve-issue-comment.outputs.base_sha }}",
+            "HARNESS_REVIEW_EVENT_BASE_SHA",
             "HARNESS_REVIEW_EVENT_ARTIFACT_ID",
             "HARNESS_REVIEW_EVENT_PARENT_REVIEW_ID",
             "evidence_source_run_id",
             "HARNESS_REVIEW_EVENT_SOURCE_RUN_ID",
             "COMMENT_PREVIOUS_BODY",
+            "EVENT_BASE_SHA: ${{ github.sha }}",
+            '"${event_base_sha}" != "${base_sha}"',
             "explicitly_stale_review(current_body)",
             "explicitly_stale_review(previous_body)",
             "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}",
@@ -2756,6 +2765,13 @@ def check_codex_review_workflows(
             "recover_routed_review_event(",
             "routed_event_pending_metadata(status, expected_identity) == exact_lease",
             "if any(observed_lease) and observed_lease != writer_lease:",
+            "routed_event_base_sha",
+            'return base_drifted, event_time, ""',
+            "written_status_id",
+            'latest_status.get("id") != written_status_id',
+            "restored_status_id",
+            "replayed_status_id",
+            "intervening routed status did not quiesce after restoration",
             "BASE_EPOCH_PENDING_RE",
             "base_epoch_time",
             "base_epoch_source_run_id",
