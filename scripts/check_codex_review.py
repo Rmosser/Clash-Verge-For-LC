@@ -38,6 +38,12 @@ ROUTED_EVENT_PENDING_RE = re.compile(
     r"p=([1-9][0-9]*);b=([0-9a-f]{40})\.$",
     re.IGNORECASE,
 )
+ROUTED_EVENT_EPOCH_PENDING_RE = re.compile(
+    r"^Epoch t=(\d{8}T\d{6}Z);"
+    r"r=([1-9][0-9]*);a=([1-9][0-9]*);"
+    r"p=([1-9][0-9]*);base=([0-9a-f]{40})\.$",
+    re.IGNORECASE,
+)
 LEGACY_ROUTED_EVENT_PENDING_RE = re.compile(
     r"^Codex lease h=([0-9a-f]{10});"
     r"t=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z);"
@@ -1481,6 +1487,30 @@ def routed_event_pending_status_description(
     return description
 
 
+def routed_event_epoch_pending_status_description(
+    expected_identity: PullIdentity,
+    event_time: str,
+    source_run_id: str,
+    artifact_id: str,
+    parent_review_id: str,
+) -> str:
+    routed_event_pending_status_description(
+        expected_identity,
+        event_time,
+        source_run_id,
+        artifact_id,
+        parent_review_id,
+    )
+    compact_event_time = event_time.replace("-", "").replace(":", "")
+    description = (
+        f"Epoch t={compact_event_time};r={source_run_id};a={artifact_id};"
+        f"p={parent_review_id};base={expected_identity.base_sha}."
+    )
+    if len(description) > 140:
+        raise GateError("routed epoch lease exceeds the status description limit")
+    return description
+
+
 def routed_event_pending_metadata(
     status: dict[str, Any], expected_identity: PullIdentity
 ) -> tuple[str, str, str, str]:
@@ -1488,6 +1518,8 @@ def routed_event_pending_metadata(
     if not isinstance(description, str):
         return "", "", "", ""
     match = ROUTED_EVENT_PENDING_RE.fullmatch(description)
+    if not match:
+        match = ROUTED_EVENT_EPOCH_PENDING_RE.fullmatch(description)
     if match:
         (
             compact_event_time,
@@ -1682,6 +1714,10 @@ def status_base_sha(status: dict[str, Any]) -> str:
     return match.group(1).lower() if match else ""
 
 
+def review_epoch_context(context: str) -> str:
+    return f"{context}/epoch"
+
+
 def live_base_evidence_cutoffs(
     statuses: list[dict[str, Any]],
     context: str,
@@ -1691,10 +1727,17 @@ def live_base_evidence_cutoffs(
     trusted = [
         status
         for status in statuses
-        if status.get("context") == context
+        if status.get("context") in {context, review_epoch_context(context)}
         and trusted_status_writer(status, status_app_id)
         and status_base_sha(status)
-        and not routed_event_pending_time(status, expected_identity)
+        and (
+            not routed_event_pending_time(status, expected_identity)
+            or bool(
+                ROUTED_EVENT_EPOCH_PENDING_RE.fullmatch(
+                    str(status.get("description") or "")
+                )
+            )
+        )
     ]
     if not trusted:
         return False, "", ""
@@ -1706,6 +1749,19 @@ def live_base_evidence_cutoffs(
         if status.get("state") != "pending":
             continue
         description = status.get("description")
+        routed_epoch_match = (
+            ROUTED_EVENT_EPOCH_PENDING_RE.fullmatch(description)
+            if isinstance(description, str)
+            else None
+        )
+        if routed_epoch_match:
+            base_sha = routed_epoch_match.group(5).casefold()
+            if base_sha != expected_identity.base_sha.casefold():
+                return True, "", ""
+            created_at = status.get("created_at")
+            if not isinstance(created_at, str) or not created_at:
+                return base_drifted, "", ""
+            return base_drifted, created_at, ""
         exact_match = (
             BASE_EPOCH_PENDING_RE.fullmatch(description)
             if isinstance(description, str)
@@ -1780,6 +1836,10 @@ def prepare_live_base_evidence_epoch(
     base_epoch_time: str = "",
     base_epoch_source_run_id: str = "",
     base_epoch_base_sha: str = "",
+    routed_event_time: str = "",
+    routed_event_source_run_id: str = "",
+    routed_event_artifact_id: str = "",
+    routed_event_parent_review_id: str = "",
 ) -> str:
     supplied_epoch_fields = (
         base_epoch_time,
@@ -1788,6 +1848,16 @@ def prepare_live_base_evidence_epoch(
     )
     if any(supplied_epoch_fields) and not all(supplied_epoch_fields):
         raise GateError("default-branch push epoch identity is incomplete")
+    writer_lease = (
+        routed_event_time,
+        routed_event_source_run_id,
+        routed_event_artifact_id,
+        routed_event_parent_review_id,
+    )
+    if any(writer_lease) and not all(writer_lease):
+        raise GateError("routed writer lease identity is incomplete")
+    if all(writer_lease):
+        routed_event_pending_status_description(expected_identity, *writer_lease)
     exact_epoch = bool(base_epoch_time)
     if exact_epoch:
         if (
@@ -1807,35 +1877,45 @@ def prepare_live_base_evidence_epoch(
         statuses, context, expected_identity, status_app_id
     )
     if exact_epoch:
-        if any(
+        exact_epoch_exists = any(
             base_epoch_pending_metadata(status, expected_identity)[0]
             for status in statuses
-            if status.get("context") == context
+            if status.get("context") in {context, review_epoch_context(context)}
             and trusted_status_writer(status, status_app_id)
-        ):
-            return cutoff
-        if not publish_pending(
+        )
+        if not exact_epoch_exists:
+            if not publish_pending(
+                api,
+                repository,
+                pr_number,
+                expected_identity,
+                review_epoch_context(context),
+                target_url,
+                base_epoch_pending_status_description(
+                    expected_identity,
+                    base_epoch_time,
+                    base_epoch_source_run_id,
+                ),
+            ):
+                raise GateError("could not establish the routed default-branch epoch")
+            statuses = statuses_for_identity(
+                api, repository, pr_number, expected_identity
+            )
+            _base_drifted, cutoff, blocker_cutoff = live_base_evidence_cutoffs(
+                statuses, context, expected_identity, status_app_id
+            )
+            if cutoff != base_epoch_time or blocker_cutoff != base_epoch_time:
+                raise GateError("routed default-branch epoch was not persisted exactly")
+        if not invalidate_prior_result_for_exact_epoch(
             api,
             repository,
             pr_number,
             expected_identity,
             context,
             target_url,
-            base_epoch_pending_status_description(
-                expected_identity,
-                base_epoch_time,
-                base_epoch_source_run_id,
-            ),
+            status_app_id,
         ):
-            raise GateError("could not establish the routed default-branch epoch")
-        statuses = statuses_for_identity(
-            api, repository, pr_number, expected_identity
-        )
-        _base_drifted, cutoff, blocker_cutoff = live_base_evidence_cutoffs(
-            statuses, context, expected_identity, status_app_id
-        )
-        if cutoff != base_epoch_time or blocker_cutoff != base_epoch_time:
-            raise GateError("routed default-branch epoch was not persisted exactly")
+            raise GateError("could not invalidate the prior review result for the new base")
         return cutoff
     if cutoff:
         return cutoff
@@ -1859,14 +1939,33 @@ def prepare_live_base_evidence_epoch(
         ):
             raise GateError("could not invalidate the prior review status")
         return ""
+    epoch_description = review_epoch_pending_status_description(expected_identity)
+    epoch_status_context = review_epoch_context(context)
+    if all(writer_lease):
+        latest_status = latest_status_for_identity(
+            api,
+            repository,
+            pr_number,
+            expected_identity,
+            context,
+        )
+        if not (
+            trusted_status_writer(latest_status, status_app_id)
+            and routed_event_pending_metadata(latest_status, expected_identity)
+            == writer_lease
+        ):
+            raise GateError("routed lease ownership changed before epoch write")
+        epoch_description = routed_event_epoch_pending_status_description(
+            expected_identity, *writer_lease
+        )
     if not publish_pending(
         api,
         repository,
         pr_number,
         expected_identity,
-        context,
+        epoch_status_context,
         target_url,
-        review_epoch_pending_status_description(expected_identity),
+        epoch_description,
     ):
         raise GateError("could not establish the live base review epoch")
     statuses = statuses_for_identity(
@@ -1877,6 +1976,20 @@ def prepare_live_base_evidence_epoch(
     )
     if not cutoff:
         raise GateError("live base pending status did not expose a review epoch timestamp")
+    if all(writer_lease):
+        latest_status = latest_status_for_identity(
+            api,
+            repository,
+            pr_number,
+            expected_identity,
+            context,
+        )
+        if not (
+            trusted_status_writer(latest_status, status_app_id)
+            and routed_event_pending_metadata(latest_status, expected_identity)
+            == writer_lease
+        ):
+            raise GateError("routed lease ownership changed during epoch write")
     return cutoff
 
 
@@ -2252,6 +2365,247 @@ def publish_evidence_pending_before_artifacts(
     created_at = latest_status.get("created_at")
     return created_at if isinstance(created_at, str) else ""
 
+def restore_newer_routed_lease_after_status_write(
+    api: GitHubAPI,
+    repository: str,
+    pr_number: int,
+    expected_identity: PullIdentity,
+    context: str,
+    target_url: str,
+    status_app_id: int,
+    writer_lease: tuple[str, str, str, str],
+) -> bool:
+    if not all(writer_lease):
+        return True
+    statuses = [
+        status
+        for status in statuses_for_identity(
+            api, repository, pr_number, expected_identity
+        )
+        if status.get("context") == context
+        and trusted_status_writer(status, status_app_id)
+    ]
+    owner_index = next(
+        (
+            index
+            for index, status in enumerate(statuses)
+            if routed_event_pending_metadata(status, expected_identity)
+            == writer_lease
+        ),
+        None,
+    )
+    if owner_index is None:
+        raise GateError("routed writer lease disappeared after status write")
+    newer_lease = ("", "", "", "")
+    for status in statuses[:owner_index]:
+        candidate = routed_event_pending_metadata(status, expected_identity)
+        if all(candidate) and candidate != writer_lease:
+            newer_lease = candidate
+            break
+    if not all(newer_lease):
+        return True
+    if not publish_pending(
+        api,
+        repository,
+        pr_number,
+        expected_identity,
+        context,
+        target_url,
+        routed_event_pending_status_description(
+            expected_identity, *newer_lease
+        ),
+    ):
+        return False
+    latest_status = latest_status_for_identity(
+        api,
+        repository,
+        pr_number,
+        expected_identity,
+        context,
+    )
+    if (
+        not trusted_status_writer(latest_status, status_app_id)
+        or routed_event_pending_metadata(latest_status, expected_identity)
+        != newer_lease
+    ):
+        raise GateError("newer routed lease was not restored after status write")
+    return True
+
+
+def restore_displaced_routed_lease_after_status_write(
+    api: GitHubAPI,
+    repository: str,
+    pr_number: int,
+    expected_identity: PullIdentity,
+    context: str,
+    target_url: str,
+    status_app_id: int,
+    written_state: str,
+    written_description: str,
+) -> bool:
+    statuses = [
+        status
+        for status in statuses_for_identity(
+            api, repository, pr_number, expected_identity
+        )
+        if status.get("context") == context
+        and trusted_status_writer(status, status_app_id)
+    ]
+    if not statuses:
+        raise GateError("status write disappeared before routed lease audit")
+    latest_status = statuses[0]
+    latest_lease = routed_event_pending_metadata(latest_status, expected_identity)
+    if all(latest_lease):
+        return True
+    if (
+        latest_status.get("state") != written_state
+        or latest_status.get("description") != written_description
+    ):
+        return True
+    if len(statuses) < 2:
+        return True
+    displaced_lease = routed_event_pending_metadata(
+        statuses[1], expected_identity
+    )
+    if not all(displaced_lease):
+        return True
+    if not publish_pending(
+        api,
+        repository,
+        pr_number,
+        expected_identity,
+        context,
+        target_url,
+        routed_event_pending_status_description(
+            expected_identity, *displaced_lease
+        ),
+    ):
+        return False
+    statuses = [
+        status
+        for status in statuses_for_identity(
+            api, repository, pr_number, expected_identity
+        )
+        if status.get("context") == context
+        and trusted_status_writer(status, status_app_id)
+    ]
+    if not statuses:
+        raise GateError("displaced routed lease audit lost all trusted statuses")
+    if routed_event_pending_metadata(
+        statuses[0], expected_identity
+    ) != displaced_lease:
+        return True
+    if len(statuses) < 2:
+        return True
+    predecessor = statuses[1]
+    if (
+        predecessor.get("state") == written_state
+        and predecessor.get("description") == written_description
+    ):
+        return True
+    predecessor_state = predecessor.get("state")
+    predecessor_description = predecessor.get("description")
+    predecessor_target_url = predecessor.get("target_url")
+    if (
+        predecessor_state not in {"error", "failure", "pending", "success"}
+        or not isinstance(predecessor_description, str)
+        or status_base_sha(predecessor) != expected_identity.base_sha
+        or (
+            predecessor_target_url is not None
+            and not isinstance(predecessor_target_url, str)
+        )
+    ):
+        raise GateError("intervening trusted status is malformed")
+    live_identity = pull_identity(
+        live_pull(api, repository, pr_number), repository
+    )
+    if not same_pull_identity(live_identity, expected_identity):
+        return False
+    post_status(
+        api,
+        repository,
+        expected_identity.head_sha,
+        predecessor_state,
+        context,
+        predecessor_description,
+        predecessor_target_url or target_url,
+    )
+    if not fail_closed_after_status_write(
+        api,
+        repository,
+        pr_number,
+        expected_identity,
+        context,
+        predecessor_target_url or target_url,
+    ):
+        return False
+    latest_status = latest_status_for_identity(
+        api,
+        repository,
+        pr_number,
+        expected_identity,
+        context,
+    )
+    if (
+        trusted_status_writer(latest_status, status_app_id)
+        and latest_status.get("state") == predecessor_state
+        and latest_status.get("description") == predecessor_description
+    ):
+        return True
+    return bool(
+        trusted_status_writer(latest_status, status_app_id)
+        and routed_event_pending_metadata(latest_status, expected_identity)
+    )
+
+
+def invalidate_prior_result_for_exact_epoch(
+    api: GitHubAPI,
+    repository: str,
+    pr_number: int,
+    expected_identity: PullIdentity,
+    context: str,
+    target_url: str,
+    status_app_id: int,
+) -> bool:
+    latest_status = latest_status_for_identity(
+        api,
+        repository,
+        pr_number,
+        expected_identity,
+        context,
+    )
+    if trusted_status_writer(latest_status, status_app_id):
+        current_lease = routed_event_pending_metadata(
+            latest_status, expected_identity
+        )
+        if all(current_lease):
+            return True
+    if status_matches_pending(
+        latest_status, context, expected_identity, status_app_id
+    ):
+        return True
+    description = pending_status_description(expected_identity)
+    if not publish_pending(
+        api,
+        repository,
+        pr_number,
+        expected_identity,
+        context,
+        target_url,
+        description,
+    ):
+        return False
+    return restore_displaced_routed_lease_after_status_write(
+        api,
+        repository,
+        pr_number,
+        expected_identity,
+        context,
+        target_url,
+        status_app_id,
+        "pending",
+        description,
+    )
 
 
 def publish_status_if_changed(
@@ -2312,7 +2666,7 @@ def publish_status_if_changed(
         target_url,
     ):
         return False
-    return publish_status(
+    published = publish_status(
         api,
         repository,
         pr_number,
@@ -2320,6 +2674,18 @@ def publish_status_if_changed(
         result,
         context,
         target_url,
+    )
+    if not published:
+        return published
+    return restore_newer_routed_lease_after_status_write(
+        api,
+        repository,
+        pr_number,
+        expected_identity,
+        context,
+        target_url,
+        status_app_id,
+        writer_lease,
     )
 
 
@@ -2355,7 +2721,10 @@ def invalidate_status_after_exception(
             context,
         )
     except GateError:
-        return publish_fail_closed_for_bound_head(
+        failure_description = bound_status_description(
+            result.description, expected_identity.base_sha
+        )
+        if not publish_fail_closed_for_bound_head(
             api,
             repository,
             pr_number,
@@ -2363,7 +2732,25 @@ def invalidate_status_after_exception(
             context,
             target_url,
             result.description,
-        )
+        ):
+            return False
+        try:
+            return restore_displaced_routed_lease_after_status_write(
+                api,
+                repository,
+                pr_number,
+                expected_identity,
+                context,
+                target_url,
+                status_app_id,
+                "failure",
+                failure_description,
+            )
+        except GateError:
+            # The bound-head failure is already fail closed. If status reads stay
+            # unavailable or the PR moved to another base, the next reconciliation
+            # owns recovery for that live identity.
+            return True
     writer_lease = (
         routed_event_time,
         routed_event_source_run_id,
@@ -2387,7 +2774,7 @@ def invalidate_status_after_exception(
         expected_identity,
     ):
         return True
-    return publish_status(
+    published = publish_status(
         api,
         repository,
         pr_number,
@@ -2395,6 +2782,18 @@ def invalidate_status_after_exception(
         result,
         context,
         target_url,
+    )
+    if not published:
+        return False
+    return restore_newer_routed_lease_after_status_write(
+        api,
+        repository,
+        pr_number,
+        expected_identity,
+        context,
+        target_url,
+        status_app_id,
+        writer_lease,
     )
 
 
@@ -2588,34 +2987,38 @@ def main() -> int:
                         routed_event_parent_review_id,
                     ) = stranded_lease
 
-            if reconcile_reason != "review-event" and not all(stranded_lease):
-                prepare_live_base_evidence_epoch(
-                    api,
-                    args.repository,
-                    pr_number,
-                    initial_identity,
-                    context,
-                    args.target_url,
-                    status_app_id,
-                    establish_missing_epoch=(
-                        reconcile_reason == "default-branch-push"
-                    ),
-                    base_epoch_time=(
-                        base_epoch_time
-                        if reconcile_reason == "default-branch-push"
-                        else ""
-                    ),
-                    base_epoch_source_run_id=(
-                        base_epoch_source_run_id
-                        if reconcile_reason == "default-branch-push"
-                        else ""
-                    ),
-                    base_epoch_base_sha=(
-                        base_epoch_base_sha
-                        if reconcile_reason == "default-branch-push"
-                        else ""
-                    ),
-                )
+            prepare_live_base_evidence_epoch(
+                api,
+                args.repository,
+                pr_number,
+                initial_identity,
+                context,
+                args.target_url,
+                status_app_id,
+                establish_missing_epoch=(
+                    reconcile_reason in {"default-branch-push", "review-event"}
+                    or all(stranded_lease)
+                ),
+                base_epoch_time=(
+                    base_epoch_time
+                    if reconcile_reason == "default-branch-push"
+                    else ""
+                ),
+                base_epoch_source_run_id=(
+                    base_epoch_source_run_id
+                    if reconcile_reason == "default-branch-push"
+                    else ""
+                ),
+                base_epoch_base_sha=(
+                    base_epoch_base_sha
+                    if reconcile_reason == "default-branch-push"
+                    else ""
+                ),
+                routed_event_time=routed_event_time,
+                routed_event_source_run_id=routed_event_source_run_id,
+                routed_event_artifact_id=routed_event_artifact_id,
+                routed_event_parent_review_id=routed_event_parent_review_id,
+            )
             (
                 _base_drifted,
                 evidence_not_before,

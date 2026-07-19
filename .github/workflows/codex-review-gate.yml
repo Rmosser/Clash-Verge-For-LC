@@ -48,6 +48,7 @@ jobs:
           RUN_EVENT: ${{ github.event.workflow_run.event }}
           RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           RUN_REPOSITORY: ${{ github.event.workflow_run.repository.full_name }}
+          RUN_HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
           RUN_WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
           RUN_DISPLAY_TITLE: ${{ github.event.workflow_run.display_title }}
           RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
@@ -91,6 +92,7 @@ jobs:
           fi
           signal_pr_number="${BASH_REMATCH[1]}"
           signal_head_sha="${BASH_REMATCH[2],,}"
+          run_head_sha="${RUN_HEAD_SHA,,}"
           signal_event_name="${BASH_REMATCH[3]}"
           signal_event_action="${BASH_REMATCH[4]}"
           signal_artifact_id="${BASH_REMATCH[5]}"
@@ -100,7 +102,8 @@ jobs:
           signal_actor="${BASH_REMATCH[9],,}"
           signal_actor="${signal_actor%\[bot\]}"
           signal_actor_type="${BASH_REMATCH[11]}"
-          if [[ "${signal_event_name}" != "${RUN_EVENT}" ||
+          if [[ "${run_head_sha}" != "${signal_head_sha}" ||
+                "${signal_event_name}" != "${RUN_EVENT}" ||
                 ( "${signal_event_name}" == "pull_request_review" &&
                   "${signal_event_action}" != "submitted" &&
                   "${signal_event_action}" != "edited" &&
@@ -113,17 +116,19 @@ jobs:
             exit 3
           fi
 
-          IFS=$'\t' read -r number state head_sha base_repository base_ref < <(
+          IFS=$'\t' read -r number state head_sha head_repository base_repository base_ref < <(
             gh api "repos/${GITHUB_REPOSITORY}/pulls/${signal_pr_number}" \
-              --jq '[.number, .state, .head.sha, .base.repo.full_name, .base.ref] | @tsv'
+              --jq '[.number, .state, .head.sha, .head.repo.full_name, .base.repo.full_name, .base.ref] | @tsv'
           )
           head_sha="${head_sha,,}"
           if [[ "${number}" != "${signal_pr_number}" ||
                 "${state}" != "open" ||
+                "${head_repository}" != "${RUN_HEAD_REPOSITORY}" ||
                 "${base_repository}" != "${GITHUB_REPOSITORY}" ||
                 "${base_ref}" != "main" ||
                 ! "${head_sha}" =~ ^[0-9a-f]{40}$ ||
-                "${head_sha}" != "${signal_head_sha}" ]]; then
+                "${head_sha}" != "${signal_head_sha}" ||
+                "${head_sha}" != "${run_head_sha}" ]]; then
             echo "The review signal no longer matches one live main PR head." >&2
             exit 4
           fi
@@ -168,7 +173,7 @@ jobs:
 
           source_signal_blob="$({
             gh api \
-              "repos/${GITHUB_REPOSITORY}/contents/.github/workflows/codex-review-signal.yml?ref=${GATE_WORKFLOW_SHA}" \
+              "repos/${head_repository}/contents/.github/workflows/codex-review-signal.yml?ref=${run_head_sha}" \
               --jq '.sha'
           })"
           trusted_signal_blob="$({

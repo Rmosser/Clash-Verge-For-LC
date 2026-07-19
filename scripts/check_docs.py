@@ -203,7 +203,7 @@ OUT_OF_REPO_SCOPE_RE = re.compile(
 )
 CURRENT_HEAD_REVIEW_HEADING = "## Current-Head Codex Review\n\n"
 CURRENT_HEAD_REVIEW_SHA256 = (
-    "1be6471edbf324e5b646dc5f56c745d74296447c2f1da1088fd8c4e15395d963"
+    "db36989b6351034c6b7a9ace0f267ec2f702cc59d126ccd4aa25f05b9d82dda7"
 )
 TRUSTED_CONTROL_FILES = (
     f"{DOCS_ROOT.name}/doc-sync-rules.json",
@@ -2577,6 +2577,7 @@ def check_codex_review_workflows(
             "statuses: write",
             "github.event.workflow_run.workflow_id",
             "github.event.workflow_run.path",
+            "github.event.workflow_run.head_repository.full_name",
             "github.event.workflow_run.name",
             "github.event.workflow_run.display_title",
             '"${RUN_WORKFLOW_NAME}" != "${RUN_DISPLAY_TITLE}"',
@@ -2590,9 +2591,14 @@ def check_codex_review_workflows(
             "PullRequestReview{databaseId updatedAt}",
             "pull_request_review_id",
             "RUN_HEAD_SHA",
+            "RUN_HEAD_REPOSITORY",
+            '"${run_head_sha}" != "${signal_head_sha}"',
+            '"${head_repository}" != "${RUN_HEAD_REPOSITORY}"',
+            '"${head_sha}" != "${run_head_sha}"',
             "trusted_workflow_id",
             "source_signal_blob",
             "trusted_signal_blob",
+            "repos/${head_repository}/contents/.github/workflows/codex-review-signal.yml?ref=${run_head_sha}",
             '"${source_signal_blob}" != "${trusted_signal_blob}"',
             "GATE_WORKFLOW_REF",
             "GATE_WORKFLOW_SHA",

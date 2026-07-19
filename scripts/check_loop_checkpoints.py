@@ -77,11 +77,9 @@ ACTIVE_SENTINEL = ACTIVE_DIR / ".gitkeep"
 RULES_PATH = ROOT / DOCS_ROOT_NAME / "doc-sync-rules.json"
 TRUSTED_RULES_PATH = TRUSTED_ROOT / TRUSTED_DOCS_ROOT_NAME / "doc-sync-rules.json"
 HARNESS_BOOTSTRAP_PATHS = {
-    ".github/pull_request_template.md",
     ".github/workflows/codex-review-gate.yml",
     ".github/workflows/codex-review-heartbeat.yml",
     ".github/workflows/codex-review-signal.yml",
-    ".github/workflows/docs-ci.yml",
     ".harness/repo-contract.json",
     "AGENTS.md",
     "README.md",
@@ -91,16 +89,20 @@ HARNESS_BOOTSTRAP_PATHS = {
     f"{DOCS_ROOT_NAME}/exec-plans/completed/.gitkeep",
     f"{DOCS_ROOT_NAME}/exec-plans/template.md",
     f"{DOCS_ROOT_NAME}/governance/checkpoint-ci-gate.md",
-    f"{DOCS_ROOT_NAME}/index.md",
     "scripts/check_codex_review.py",
     "scripts/check_docs.py",
     "scripts/check_loop_checkpoints.py",
+}
+HARNESS_BOOTSTRAP_MANIFEST_VARIANTS = {
+    ".github/PULL_REQUEST_TEMPLATE.md",
+    ".github/pull_request_template.md",
+    ".github/workflows/checkpoint-ci.yml",
+    ".github/workflows/docs-ci.yml",
 }
 HARNESS_BOOTSTRAP_REQUIRED_PATHS = {
     ".github/workflows/codex-review-gate.yml",
     ".github/workflows/codex-review-heartbeat.yml",
     ".github/workflows/codex-review-signal.yml",
-    ".github/workflows/docs-ci.yml",
     ".harness/repo-contract.json",
     f"{DOCS_ROOT_NAME}/doc-sync-rules.json",
     f"{DOCS_ROOT_NAME}/governance/checkpoint-ci-gate.md",
@@ -1129,6 +1131,24 @@ def trusted_bootstrap_manifest_paths() -> set[str]:
         f"{TRUSTED_DOCS_ROOT_NAME}/index.md",
         f"{TRUSTED_DOCS_ROOT_NAME}/INDEX.md",
     }
+    selector_groups = {
+        "checkpoint workflow": {
+            ".github/workflows/checkpoint-ci.yml",
+            ".github/workflows/docs-ci.yml",
+        },
+        "pull request template": {
+            ".github/PULL_REQUEST_TEMPLATE.md",
+            ".github/pull_request_template.md",
+        },
+        "docs index": trusted_index_paths,
+    }
+    for label, candidates in selector_groups.items():
+        selected = sorted(required_set & candidates)
+        if len(selected) != 1:
+            fail([
+                f"trusted required_paths must select exactly one {label} variant: "
+                f"{selected}"
+            ])
     trusted_directory_paths = {
         f"{TRUSTED_DOCS_ROOT_NAME}/exec-plans/active",
         f"{TRUSTED_DOCS_ROOT_NAME}/exec-plans/completed",
@@ -1147,6 +1167,7 @@ def trusted_bootstrap_manifest_paths() -> set[str]:
             continue
         if (
             relative in HARNESS_BOOTSTRAP_PATHS
+            or relative in HARNESS_BOOTSTRAP_MANIFEST_VARIANTS
             or relative in trusted_index_paths
             or relative in HARNESS_BOOTSTRAP_REPOSITORY_CHECKERS
             or relative in additional_workflows
