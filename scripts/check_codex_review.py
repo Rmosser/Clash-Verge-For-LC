@@ -19,6 +19,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -547,7 +548,7 @@ def changed_paths(files: list[dict[str, Any]]) -> list[str]:
         for key in ("filename", "previous_filename"):
             value = item.get(key)
             if isinstance(value, str) and value.strip():
-                paths.add(value.strip())
+                paths.add(value)
     return sorted(paths)
 
 
@@ -905,8 +906,9 @@ def evaluate(
 
     def belongs_to_live_base_epoch(item: dict[str, Any]) -> bool:
         timestamp = evidence_time(item)
-        exact_edited_artifact = bool(
-            routed_event_action.strip().casefold() == "edited"
+        exact_routed_artifact = bool(
+            routed_event_action.strip().casefold() != "deleted"
+            and routed_event_action.strip()
             and artifact_database_id(item) == routed_event_artifact_id
         )
         return bool(
@@ -914,7 +916,7 @@ def evaluate(
             and (
                 not evidence_not_before
                 or timestamp > evidence_not_before
-                or (timestamp == evidence_not_before and exact_edited_artifact)
+                or (timestamp == evidence_not_before and exact_routed_artifact)
             )
         )
 
@@ -1524,6 +1526,67 @@ def routed_event_pending_time(
     return routed_event_pending_metadata(status, expected_identity)[0]
 
 
+def routed_event_lease_is_stranded(
+    status: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> bool:
+    created_at = status.get("created_at")
+    if not isinstance(created_at, str) or not created_at:
+        return True
+    try:
+        created = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        return True
+    observed_now = now or datetime.now(timezone.utc)
+    return observed_now - created >= timedelta(minutes=5)
+
+
+def recover_routed_review_event(
+    payload: dict[str, Any], artifact_id: str, parent_review_id: str
+) -> tuple[str, str]:
+    reviews = payload.get("reviews")
+    review_comments = payload.get("review_comments")
+    issue_comments = payload.get("issue_comments")
+    if not all(
+        isinstance(items, list)
+        and all(isinstance(item, dict) for item in items)
+        for items in (reviews, review_comments, issue_comments)
+    ):
+        raise GateError("cannot recover routed event from malformed review payload")
+
+    if artifact_id != parent_review_id:
+        matches = [
+            item
+            for item in review_comments
+            if artifact_database_id(item) == artifact_id
+        ]
+        if len(matches) > 1:
+            raise GateError("routed review comment is not uniquely live")
+        return "pull_request_review_comment", "edited" if matches else "deleted"
+
+    review_matches = [
+        item for item in reviews if artifact_database_id(item) == artifact_id
+    ]
+    issue_matches = [
+        item for item in issue_comments if artifact_database_id(item) == artifact_id
+    ]
+    if len(review_matches) > 1 or len(issue_matches) > 1 or (
+        review_matches and issue_matches
+    ):
+        raise GateError("routed review artifact identity is ambiguous")
+    if review_matches:
+        action = (
+            "dismissed"
+            if str(review_matches[0].get("state") or "").upper() == "DISMISSED"
+            else "edited"
+        )
+        return "pull_request_review", action
+    return "issue_comment", "edited" if issue_matches else "deleted"
+
+
 def base_epoch_pending_status_description(
     expected_identity: PullIdentity,
     event_time: str,
@@ -2101,20 +2164,30 @@ def routed_review_event_cutoff(
         raise GateError("routed review artifact id is missing or malformed")
     if not re.fullmatch(r"[1-9][0-9]*", parent_review_id):
         raise GateError("routed parent review id is missing or malformed")
-    latest_status = latest_status_for_identity(
-        api, repository, pr_number, expected_identity, context
-    )
-    if not (
+    statuses = [
+        status
+        for status in statuses_for_identity(
+            api, repository, pr_number, expected_identity
+        )
+        if status.get("context") == context
+    ]
+    latest_status = statuses[0] if statuses else None
+    exact_lease = (event_time, source_run_id, artifact_id, parent_review_id)
+    if (
         status_matches_pending(
             latest_status, context, expected_identity, status_app_id
         )
         and routed_event_pending_metadata(latest_status, expected_identity)
-        == (event_time, source_run_id, artifact_id, parent_review_id)
+        == exact_lease
     ):
-        raise GateError(
-            "routed event pending is missing for the exact lease identity"
-        )
-    return event_time
+        return event_time
+    if any(
+        trusted_status_writer(status, status_app_id)
+        and routed_event_pending_metadata(status, expected_identity) == exact_lease
+        for status in statuses[1:]
+    ):
+        return ""
+    raise GateError("routed event pending is missing for the exact lease identity")
 
 
 def publish_evidence_pending_before_artifacts(
@@ -2362,6 +2435,16 @@ def main() -> int:
     initial_identity: PullIdentity | None = None
     status_app_id: int | None = None
     context = args.context or DEFAULT_CONTEXT
+    evidence_not_before = ""
+    blockers_not_before = ""
+    routed_event_name = ""
+    routed_event_action = ""
+    routed_event_time = ""
+    routed_event_source_run_id = ""
+    routed_event_artifact_id = ""
+    routed_event_parent_review_id = ""
+    stranded_lease = ("", "", "", "")
+    reconcile_reason = os.environ.get("HARNESS_RECONCILE_REASON", "").strip().casefold()
     try:
         if args.bootstrap_control_plane_review and (
             not args.fixture or args.publish
@@ -2393,17 +2476,6 @@ def main() -> int:
             raise GateError("codex_review.status_app_id must be an integer")
         status_app_id = raw_status_app_id
         context = args.context or str(config.get("required_check") or DEFAULT_CONTEXT)
-        evidence_not_before = ""
-        blockers_not_before = ""
-        routed_event_name = ""
-        routed_event_action = ""
-        routed_event_time = ""
-        routed_event_source_run_id = ""
-        routed_event_artifact_id = ""
-        routed_event_parent_review_id = ""
-        reconcile_reason = os.environ.get(
-            "HARNESS_RECONCILE_REASON", ""
-        ).strip().casefold()
         if (
             args.publish
             and initial_identity is not None
@@ -2459,55 +2531,12 @@ def main() -> int:
                 ):
                     print("Ignoring a stale default-branch push epoch.")
                     return 0
-            evidence_not_before = prepare_live_base_evidence_epoch(
-                api,
-                args.repository,
-                pr_number,
-                initial_identity,
-                context,
-                args.target_url,
-                status_app_id,
-                establish_missing_epoch=(
-                    reconcile_reason == "default-branch-push"
-                ),
-                base_epoch_time=(
-                    base_epoch_time
-                    if reconcile_reason == "default-branch-push"
-                    else ""
-                ),
-                base_epoch_source_run_id=(
-                    base_epoch_source_run_id
-                    if reconcile_reason == "default-branch-push"
-                    else ""
-                ),
-                base_epoch_base_sha=(
-                    base_epoch_base_sha
-                    if reconcile_reason == "default-branch-push"
-                    else ""
-                ),
-            )
-            (
-                _base_drifted,
-                evidence_not_before,
-                blockers_not_before,
-            ) = live_base_evidence_cutoffs(
-                statuses_for_identity(
-                    api, args.repository, pr_number, initial_identity
-                ),
-                context,
-                initial_identity,
-                status_app_id,
-            )
             if reconcile_reason == "review-event":
-                routed_event_name = os.environ.get(
-                    "HARNESS_REVIEW_EVENT_NAME", ""
-                )
+                routed_event_name = os.environ.get("HARNESS_REVIEW_EVENT_NAME", "")
                 routed_event_action = os.environ.get(
                     "HARNESS_REVIEW_EVENT_ACTION", ""
                 )
-                routed_event_time = os.environ.get(
-                    "HARNESS_REVIEW_EVENT_TIME", ""
-                )
+                routed_event_time = os.environ.get("HARNESS_REVIEW_EVENT_TIME", "")
                 routed_event_artifact_id = os.environ.get(
                     "HARNESS_REVIEW_EVENT_ARTIFACT_ID", ""
                 )
@@ -2532,13 +2561,10 @@ def main() -> int:
                     routed_event_artifact_id,
                     routed_event_parent_review_id,
                 )
-                if review_event_is_destructive(
-                    routed_event_name, routed_event_action
-                ):
-                    evidence_not_before = max(
-                        evidence_not_before, routed_event_cutoff
-                    )
-            if reconcile_reason == "heartbeat":
+                if not routed_event_cutoff:
+                    print("Ignoring a routed review writer whose lease was already consumed.")
+                    return 0
+            elif reconcile_reason == "heartbeat":
                 latest_status = latest_status_for_identity(
                     api,
                     args.repository,
@@ -2552,15 +2578,60 @@ def main() -> int:
                     else ("", "", "", "")
                 )
                 if all(stranded_lease):
+                    if not routed_event_lease_is_stranded(latest_status):
+                        print("A fresh routed review lease is still owned by its writer.")
+                        return 0
                     (
                         routed_event_time,
                         routed_event_source_run_id,
                         routed_event_artifact_id,
                         routed_event_parent_review_id,
                     ) = stranded_lease
-                    evidence_not_before = max(
-                        evidence_not_before, routed_event_time
-                    )
+
+            if reconcile_reason != "review-event" and not all(stranded_lease):
+                prepare_live_base_evidence_epoch(
+                    api,
+                    args.repository,
+                    pr_number,
+                    initial_identity,
+                    context,
+                    args.target_url,
+                    status_app_id,
+                    establish_missing_epoch=(
+                        reconcile_reason == "default-branch-push"
+                    ),
+                    base_epoch_time=(
+                        base_epoch_time
+                        if reconcile_reason == "default-branch-push"
+                        else ""
+                    ),
+                    base_epoch_source_run_id=(
+                        base_epoch_source_run_id
+                        if reconcile_reason == "default-branch-push"
+                        else ""
+                    ),
+                    base_epoch_base_sha=(
+                        base_epoch_base_sha
+                        if reconcile_reason == "default-branch-push"
+                        else ""
+                    ),
+                )
+            (
+                _base_drifted,
+                evidence_not_before,
+                blockers_not_before,
+            ) = live_base_evidence_cutoffs(
+                statuses_for_identity(
+                    api, args.repository, pr_number, initial_identity
+                ),
+                context,
+                initial_identity,
+                status_app_id,
+            )
+            if reconcile_reason == "review-event" or all(stranded_lease):
+                evidence_not_before = max(
+                    evidence_not_before, routed_event_time
+                )
             if is_evidence_event:
                 destructive_evidence_event = str(
                     event_payload.get("action") or ""
@@ -2605,6 +2676,12 @@ def main() -> int:
                 payload = live_payload(
                     api, args.repository, pr_number, initial_identity, contract
                 )
+        if reconcile_reason == "heartbeat" and all(stranded_lease):
+            routed_event_name, routed_event_action = recover_routed_review_event(
+                payload,
+                routed_event_artifact_id,
+                routed_event_parent_review_id,
+            )
         result = evaluate(
             payload,
             contract,

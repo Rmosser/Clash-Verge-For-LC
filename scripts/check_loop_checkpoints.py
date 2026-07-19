@@ -42,7 +42,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 CHECKER_ROOT = Path(__file__).resolve().parents[1]
 ROOT = Path(os.environ.get("HARNESS_REPO_ROOT", CHECKER_ROOT)).expanduser().resolve()
@@ -107,6 +107,15 @@ HARNESS_BOOTSTRAP_REQUIRED_PATHS = {
     "scripts/check_codex_review.py",
     "scripts/check_docs.py",
     "scripts/check_loop_checkpoints.py",
+}
+HARNESS_BOOTSTRAP_REPOSITORY_CHECKERS = {
+    "scripts/check_doc_sync.py",
+    "scripts/check_docs_ci.py",
+    "scripts/check_docs_paths.py",
+    "scripts/check_docs_project.py",
+    "scripts/check_docs_structure.py",
+    "scripts/check_knowledge_index.py",
+    "scripts/check_plan_required.py",
 }
 TRIVIAL_WITHOUT_PLAN_FILES = {
     "README.md",
@@ -1053,10 +1062,111 @@ def require_active_plan_ownership(plan: Path | None, changed: list[str]) -> None
         ])
 
 
+def bootstrap_manifest_path(value: str, label: str) -> str:
+    path = PurePosixPath(value)
+    if (
+        not value
+        or "\\" in value
+        or path.is_absolute()
+        or ".." in path.parts
+        or value != path.as_posix()
+        or "." in path.parts
+    ):
+        fail([f"{label} must be a normalized repository-relative path: {value!r}"])
+    return value
+
+
+def bootstrap_path_kind(
+    root: Path, relative: str, label: str, *, allow_missing_leaf: bool = False
+) -> str:
+    current = root
+    parts = PurePosixPath(relative).parts
+    for index, part in enumerate(parts):
+        current /= part
+        if current.is_symlink():
+            fail([f"{label} must not contain symlinks: {relative}"])
+        if index < len(parts) - 1 and not current.is_dir():
+            fail([f"{label} parent must be a real directory: {relative}"])
+    if current.is_file():
+        return "file"
+    if current.is_dir():
+        return "directory"
+    if allow_missing_leaf and not current.exists():
+        return "missing"
+    fail([f"{label} must be a regular file or real directory: {relative}"])
+    raise AssertionError("fail() exits")
+
+
+def trusted_bootstrap_manifest_paths() -> set[str]:
+    trusted = load_policy(TRUSTED_RULES_PATH, "trusted doc-sync-rules")
+    required = string_list_field(
+        trusted, "required_paths", "trusted doc-sync-rules"
+    )
+    required_set = {
+        bootstrap_manifest_path(path, "trusted required bootstrap path")
+        for path in required
+    }
+
+    checks = trusted.get("additional_required_checks", [])
+    if not isinstance(checks, list):
+        fail(["trusted doc-sync-rules additional_required_checks must be a list"])
+    additional_workflows: set[str] = set()
+    for index, spec in enumerate(checks):
+        label = f"trusted additional_required_checks[{index}]"
+        if not isinstance(spec, dict):
+            fail([f"{label} must be an object"])
+        workflow = spec.get("workflow")
+        if not isinstance(workflow, str):
+            fail([f"{label}.workflow must be a path"])
+        workflow = bootstrap_manifest_path(workflow, f"{label}.workflow")
+        if not workflow.startswith(".github/workflows/"):
+            fail([f"{label}.workflow must stay inside .github/workflows"])
+        if workflow not in required_set:
+            fail([f"{label}.workflow must also appear in trusted required_paths"])
+        additional_workflows.add(workflow)
+
+    trusted_index_paths = {
+        f"{TRUSTED_DOCS_ROOT_NAME}/index.md",
+        f"{TRUSTED_DOCS_ROOT_NAME}/INDEX.md",
+    }
+    trusted_directory_paths = {
+        f"{TRUSTED_DOCS_ROOT_NAME}/exec-plans/active",
+        f"{TRUSTED_DOCS_ROOT_NAME}/exec-plans/completed",
+    }
+    allowed_files: set[str] = set()
+    for relative in sorted(required_set):
+        kind = bootstrap_path_kind(
+            TRUSTED_ROOT,
+            relative,
+            "trusted required bootstrap path",
+            allow_missing_leaf=TRUSTED_ROOT == ROOT,
+        )
+        if kind == "directory":
+            if relative not in trusted_directory_paths:
+                fail([f"trusted bootstrap directory is not canonical: {relative}"])
+            continue
+        if (
+            relative in HARNESS_BOOTSTRAP_PATHS
+            or relative in trusted_index_paths
+            or relative in HARNESS_BOOTSTRAP_REPOSITORY_CHECKERS
+            or relative in additional_workflows
+        ):
+            allowed_files.add(relative)
+            continue
+        fail([f"trusted required path is not a canonical Harness bootstrap path: {relative}"])
+    return allowed_files
+
+
 def harness_bootstrap_allowlist(changed: list[str]) -> set[str]:
     changed_set = set(changed)
-    unexpected = sorted(changed_set - HARNESS_BOOTSTRAP_PATHS)
-    missing = sorted(HARNESS_BOOTSTRAP_REQUIRED_PATHS - changed_set)
+    manifest_paths = trusted_bootstrap_manifest_paths()
+    allowed = HARNESS_BOOTSTRAP_PATHS | manifest_paths
+    required = HARNESS_BOOTSTRAP_REQUIRED_PATHS | manifest_paths
+    for relative in sorted(changed_set & allowed):
+        if bootstrap_path_kind(ROOT, relative, "target bootstrap path") != "file":
+            fail([f"target bootstrap path must be a regular file: {relative}"])
+    unexpected = sorted(changed_set - allowed)
+    missing = sorted(required - changed_set)
     if unexpected or missing:
         fail([
             "first-push Harness bootstrap does not match the canonical template surface",

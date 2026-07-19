@@ -203,7 +203,7 @@ OUT_OF_REPO_SCOPE_RE = re.compile(
 )
 CURRENT_HEAD_REVIEW_HEADING = "## Current-Head Codex Review\n\n"
 CURRENT_HEAD_REVIEW_SHA256 = (
-    "17dce11e99537386a20651bf0b1b00f805a7392de2c7d870cc4a57f03b285177"
+    "1be6471edbf324e5b646dc5f56c745d74296447c2f1da1088fd8c4e15395d963"
 )
 TRUSTED_CONTROL_FILES = (
     f"{DOCS_ROOT.name}/doc-sync-rules.json",
@@ -2746,6 +2746,9 @@ def check_codex_review_workflows(
             'str(artifact.get("pull_request_review_id") or "")',
             "or parent_is_current",
             "routed_event_pending_metadata(latest_status, expected_identity)",
+            "routed_event_lease_is_stranded(latest_status)",
+            "recover_routed_review_event(",
+            "routed_event_pending_metadata(status, expected_identity) == exact_lease",
             "if any(observed_lease) and observed_lease != writer_lease:",
             "BASE_EPOCH_PENDING_RE",
             "base_epoch_time",
