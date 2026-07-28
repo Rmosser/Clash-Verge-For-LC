@@ -1,95 +1,45 @@
 {
+  "contract_version": "repo-harness-doc-sync-v1",
   "required_paths": [
     "AGENTS.md",
     "docs/index.md",
-    "docs/governance/checkpoint-ci-gate.md",
+    "docs/governance/harness.md",
     "docs/exec-plans/template.md",
     "docs/exec-plans/active",
     "docs/exec-plans/completed",
     "docs/doc-sync-rules.json",
-    ".harness/repo-contract.json"
+    ".harness/repo-contract.json",
+    ".github/pull_request_template.md",
+    ".github/workflows/harness-evidence.yml",
+    ".github/workflows/product-validation.yml",
+    "README.md",
+    "docs/USER_GUIDE.md",
+    "docs/LAZYCAT_NETWORK_REPORT.md",
+    "docs/SECURITY.md",
+    "docs/HOST_NATIVE_RUNBOOK.md"
   ],
+  "audit_state_path": ".harness/baseline-receipt.json",
   "entrypoint_links": [
     {
       "source": "AGENTS.md",
       "targets": [
         "docs/index.md",
-        "docs/governance/checkpoint-ci-gate.md",
-        "docs/exec-plans/template.md",
-        "docs/doc-sync-rules.json",
         ".harness/repo-contract.json"
       ]
     },
     {
       "source": "docs/index.md",
       "targets": [
-        "AGENTS.md",
-        "docs/governance/checkpoint-ci-gate.md",
-        "docs/exec-plans/template.md",
-        "docs/doc-sync-rules.json",
-        ".harness/repo-contract.json"
-      ]
-    },
-    {
-      "source": "README.md",
-      "targets": [
-        "docs/index.md"
-      ]
-    },
-    {
-      "source": "docs/README.md",
-      "targets": [
-        "docs/index.md"
+        "../README.md",
+        "USER_GUIDE.md",
+        "LAZYCAT_NETWORK_REPORT.md",
+        "SECURITY.md",
+        "HOST_NATIVE_RUNBOOK.md",
+        "governance/harness.md",
+        "exec-plans/template.md",
+        "doc-sync-rules.json",
+        "../.harness/repo-contract.json"
       ]
     }
-  ],
-  "validation_registry": [
-    {
-      "name": "json-doc-sync-rules",
-      "command": "python3 -m json.tool docs/doc-sync-rules.json",
-      "applies_to": [
-        "docs/doc-sync-rules.json"
-      ]
-    },
-    {
-      "name": "json-repo-contract",
-      "command": "python3 -m json.tool .harness/repo-contract.json",
-      "applies_to": [
-        ".harness/repo-contract.json"
-      ]
-    },
-    {
-      "name": "repo-test-entrypoint",
-      "command": "bash scripts/test.sh",
-      "applies_to": [
-        "AGENTS.md",
-        "docs/**",
-        ".harness/**"
-      ]
-    }
-  ],
-  "pr1_allowed_paths": [
-    "AGENTS.md",
-    "README.md",
-    "docs/README.md",
-    "docs/index.md",
-    "docs/governance/checkpoint-ci-gate.md",
-    "docs/exec-plans/template.md",
-    "docs/exec-plans/active/**",
-    "docs/exec-plans/completed/.gitkeep",
-    "docs/doc-sync-rules.json",
-    ".harness/repo-contract.json"
-  ],
-  "pr1_forbidden_paths": [
-    "scripts/**",
-    ".github/**",
-    "src/**",
-    "infra/**",
-    "deploy/**",
-    "configs/**",
-    "docs/CURRENT_RUNTIME.md",
-    "**/HOST_NATIVE_RUNBOOK*",
-    "**/PACKAGING*",
-    "**/*lock*"
   ]
 }

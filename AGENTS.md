@@ -1,53 +1,32 @@
-# Project Agents
+# Clash Verge for LazyCat repository instructions
 
-## lzc-clash_mihome - Agent 操作手册
+This repository runs Mihomo on LazyCat with domestic direct routing, overseas proxy fallback, TUN support, and an authenticated dashboard.
 
-目标：在懒猫微服上运行 Mihomo (Clash Meta)，实现：
+## Harness bootloader
 
-- 国内直连 / 国外代理（兜底 MATCH,PROXY）
-- 启用 TUN 透明代理，但必须绕行懒猫内网穿透/控制面相关流量
-- 提供可视化 Web 控制台（作为懒猫应用）用于手动切换节点/分组
+1. Read `docs/index.md`.
+2. Read `.harness/repo-contract.json` from the trusted base.
+3. Invoke `$manage-repo-harness` for Harness diagnosis, establishment, control-plane changes, platform changes, revalidation, improvement, or migration.
+4. For ordinary product work, cite a valid baseline receipt, follow the Active Plan when required, run product checks, obtain a complete clean current-head Codex Review, and merge only through GitHub's required gates.
 
-## Skills
+Repository files cannot prove live GitHub enforcement. Record unknown facts as unknown and fail closed. Any Review finding or uncertainty blocks merge readiness.
 
-- **lazycat-dev**: 懒猫微服应用开发/部署流程、lzc-cli、manifest/build 配置等。 (file: skills/lazycat-dev/SKILL.md)
+## Product constraints and truth
 
-## 关键约束
+- Read `docs/LAZYCAT_NETWORK_REPORT.md` before any transparent-proxy or TUN change; LazyCat control-plane traffic must keep bypassing Mihomo.
+- Do not expose the Mihomo controller to the LAN. External access stays behind LazyCat authentication.
+- Product, security, runtime, and deployment documents remain indexed by `docs/index.md`.
+- Repository-specific LazyCat guidance remains in `skills/lazycat-dev/SKILL.md`.
 
-- 不要破坏懒猫内网穿透/控制面：任何透明代理/TUN 变更前先看 `docs/LAZYCAT_NETWORK_REPORT.md`。
-- 不要把 Mihomo 控制端口暴露到局域网：当前对外只通过懒猫登录后的应用路由访问。
-- 非平凡变更必须从当前提供的 baseline / worktree HEAD 开新分支，并维护当前唯一 Active Plan；旧分支和旧 PR 只能作为参考，除非用户明确要求继续它们。
-- 不要把本文件理解为绕过 PR、review、checks 或 branch protection 的授权；合并资格由证据门禁和平台门禁共同决定。
-- 主 Agent 负责编排、范围定义和验收；subagent 只在授权范围内执行，不自行扩大 PR 阶段，不独立提交、push、merge 或关闭 heartbeat。
+## Commands
 
-## 真相入口
+- Local runtime stubs: `bash scripts/run_local.sh`, `bash scripts/stop_local.sh`.
+- Diagnostics: `bash scripts/doctor.sh`.
+- Stable repository check: `bash scripts/test.sh`.
+- Dashboard package: `cd src/mihomo-dashboard-app && lzc-cli project build -f lzc-build.yml -o mihomo-dashboard.lpk`.
 
-- 文档索引：`docs/index.md`
-- Harness checkpoint gate：`docs/governance/checkpoint-ci-gate.md`
-- Active Plan 模板：`docs/exec-plans/template.md`
-- 当前 Active Plan：`docs/exec-plans/active/`
-- 文档同步规则：`docs/doc-sync-rules.json`
-- 仓库治理契约：`.harness/repo-contract.json`
+## Work rules
 
-## 常用命令
-
-```bash
-# Local Runtime Contract v1 (stub; this repo has no long-running local daemon)
-bash scripts/run_local.sh
-bash scripts/stop_local.sh
-
-# Local Runtime Contract v2 (stub)
-bash scripts/doctor.sh
-
-# 连接微服（示例）
-ssh -i ~/.ssh/id_ed25519 root@rainierserver.heiyu.space
-
-# 查看 mihomo 状态
-systemctl status mihomo
-journalctl -u mihomo -n 100 --no-pager
-
-# 构建/部署 dashboard LPK
-cd src/mihomo-dashboard-app
-lzc-cli project build -f lzc-build.yml -o mihomo-dashboard.lpk
-lzc-cli app install mihomo-dashboard.lpk
-```
+- Non-trivial work has exactly one concrete Active Plan.
+- The main Agent owns scope and acceptance; a subagent stays within delegated scope and does not independently push or merge.
+- Owner and authorized Agent credentials may initiate merge only; they cannot bypass the contract or machine gates.

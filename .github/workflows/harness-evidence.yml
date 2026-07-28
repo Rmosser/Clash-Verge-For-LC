@@ -1,0 +1,224 @@
+name: harness/evidence
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review, edited]
+  workflow_dispatch:
+    inputs:
+      validated_commit_sha:
+        description: Exact live default-branch commit to validate for a receipt
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+  statuses: write
+
+concurrency:
+  group: harness-evidence-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    if: ${{ github.event_name == 'pull_request_target' }}
+    name: trusted-base verifier
+    runs-on: ubuntu-latest
+    steps:
+      - name: Bind the live pull request and mark the expected head pending
+        id: identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PULL_NUMBER: ${{ github.event.pull_request.number }}
+          EXPECTED_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          EXPECTED_BASE: ${{ github.event.pull_request.base.sha }}
+          EXPECTED_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          pull_json="$(gh api "repos/${REPOSITORY}/pulls/${PULL_NUMBER}")"
+          live_base="$(gh api "repos/${REPOSITORY}/git/ref/heads/${EXPECTED_BASE_REF}" --jq .object.sha)"
+          test "$(jq -r .state <<<"${pull_json}")" = open
+          test "$(jq -r .base.repo.full_name <<<"${pull_json}")" = "${REPOSITORY}"
+          test "$(jq -r .base.ref <<<"${pull_json}")" = "${EXPECTED_BASE_REF}"
+          test "$(jq -r .base.sha <<<"${pull_json}")" = "${EXPECTED_BASE}"
+          test "${live_base}" = "${EXPECTED_BASE}"
+          test "$(jq -r '.head.repo.full_name // empty' <<<"${pull_json}")" = "${EXPECTED_HEAD_REPOSITORY}"
+          test "$(jq -r .head.sha <<<"${pull_json}")" = "${EXPECTED_HEAD}"
+          gh api --method POST "repos/${REPOSITORY}/statuses/${EXPECTED_HEAD}" \
+            -f state=pending \
+            -f context="harness/evidence" \
+            -f description="trusted-base evidence is running"
+
+      - name: Checkout trusted base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          path: trusted
+          persist-credentials: false
+
+      - name: Checkout candidate as data
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          path: candidate
+          persist-credentials: false
+
+      - name: Verify with trusted code and policy
+        id: evidence
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git -C candidate rev-parse HEAD)" = "${HEAD_SHA}"
+          git -C trusted remote add candidate ../candidate
+          git -C trusted fetch --no-tags candidate HEAD
+          test "$(git -C trusted rev-parse FETCH_HEAD)" = "${HEAD_SHA}"
+          python3 -I -B trusted/scripts/check_harness.py \
+            --trusted-root trusted \
+            --target-root candidate \
+            --base-sha "${BASE_SHA}" \
+            --head-sha "${HEAD_SHA}" \
+            --expected-repository "${GITHUB_REPOSITORY}" \
+            --expected-default-branch "${GITHUB_BASE_REF}" \
+            --verify-live-evidence \
+            --git-dir trusted/.git
+
+      - name: Publish machine evidence for the still-bound head
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PULL_NUMBER: ${{ github.event.pull_request.number }}
+          EXPECTED_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          EXPECTED_BASE: ${{ github.event.pull_request.base.sha }}
+          EXPECTED_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          IDENTITY_OUTCOME: ${{ steps.identity.outcome }}
+          EVIDENCE_OUTCOME: ${{ steps.evidence.outcome }}
+        run: |
+          set -euo pipefail
+          pull_json="$(gh api "repos/${REPOSITORY}/pulls/${PULL_NUMBER}")" || pull_json=
+          live_base="$(gh api "repos/${REPOSITORY}/git/ref/heads/${EXPECTED_BASE_REF}" --jq .object.sha)" || live_base=
+          live_head="$(jq -r '.head.sha // empty' <<<"${pull_json}" 2>/dev/null || true)"
+          identity_matches=false
+          if test "$(jq -r '.state // empty' <<<"${pull_json}" 2>/dev/null || true)" = open \
+            && test "$(jq -r '.base.repo.full_name // empty' <<<"${pull_json}" 2>/dev/null || true)" = "${REPOSITORY}" \
+            && test "$(jq -r '.base.ref // empty' <<<"${pull_json}" 2>/dev/null || true)" = "${EXPECTED_BASE_REF}" \
+            && test "$(jq -r '.base.sha // empty' <<<"${pull_json}" 2>/dev/null || true)" = "${EXPECTED_BASE}" \
+            && test "${live_base}" = "${EXPECTED_BASE}" \
+            && test "$(jq -r '.head.repo.full_name // empty' <<<"${pull_json}" 2>/dev/null || true)" = "${EXPECTED_HEAD_REPOSITORY}" \
+            && test "${live_head}" = "${EXPECTED_HEAD}"; then
+            identity_matches=true
+          fi
+          if test -z "${live_head}"; then
+            gh api --method POST "repos/${REPOSITORY}/statuses/${EXPECTED_HEAD}" \
+              -f state=failure \
+              -f context="harness/evidence" \
+              -f description="live PR identity could not be read" || true
+            exit 1
+          fi
+          if test "${live_head}" != "${EXPECTED_HEAD}"; then
+            echo "PR head changed; refusing to write to the stale head" >&2
+            exit 1
+          fi
+          state=failure
+          description="trusted-base evidence rejected"
+          if test "${identity_matches}" = true \
+            && test "${IDENTITY_OUTCOME}" = success \
+            && test "${EVIDENCE_OUTCOME}" = success; then
+            state=success
+            description="trusted-base evidence passed"
+          fi
+          gh api --method POST "repos/${REPOSITORY}/statuses/${EXPECTED_HEAD}" \
+            -f state="${state}" \
+            -f context="harness/evidence" \
+            -f description="${description}"
+
+          post_pull_json="$(gh api "repos/${REPOSITORY}/pulls/${PULL_NUMBER}")" || post_pull_json=
+          post_live_base="$(gh api "repos/${REPOSITORY}/git/ref/heads/${EXPECTED_BASE_REF}" --jq .object.sha)" || post_live_base=
+          post_live_head="$(jq -r '.head.sha // empty' <<<"${post_pull_json}" 2>/dev/null || true)"
+          post_identity_matches=false
+          if test "$(jq -r '.state // empty' <<<"${post_pull_json}" 2>/dev/null || true)" = open \
+            && test "$(jq -r '.base.repo.full_name // empty' <<<"${post_pull_json}" 2>/dev/null || true)" = "${REPOSITORY}" \
+            && test "$(jq -r '.base.ref // empty' <<<"${post_pull_json}" 2>/dev/null || true)" = "${EXPECTED_BASE_REF}" \
+            && test "$(jq -r '.base.sha // empty' <<<"${post_pull_json}" 2>/dev/null || true)" = "${EXPECTED_BASE}" \
+            && test "${post_live_base}" = "${EXPECTED_BASE}" \
+            && test "$(jq -r '.head.repo.full_name // empty' <<<"${post_pull_json}" 2>/dev/null || true)" = "${EXPECTED_HEAD_REPOSITORY}" \
+            && test "${post_live_head}" = "${EXPECTED_HEAD}"; then
+            post_identity_matches=true
+          fi
+          if test "${post_identity_matches}" != true; then
+            if test "${post_live_head}" = "${EXPECTED_HEAD}"; then
+              gh api --method POST "repos/${REPOSITORY}/statuses/${EXPECTED_HEAD}" \
+                -f state=failure \
+                -f context="harness/evidence" \
+                -f description="PR identity changed after evidence write"
+            fi
+            exit 1
+          fi
+          test "${state}" = success
+
+  validate-baseline:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    name: baseline-validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Bind the requested commit to the live default branch
+        id: identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REQUESTED_SHA: ${{ inputs.validated_commit_sha }}
+        run: |
+          set -euo pipefail
+          test "${REQUESTED_SHA}" = "${REQUESTED_SHA,,}"
+          [[ "${REQUESTED_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          default_branch="$(gh api "repos/${REPOSITORY}" --jq .default_branch)"
+          live_sha="$(gh api "repos/${REPOSITORY}/git/ref/heads/${default_branch}" --jq .object.sha)"
+          test "${REQUESTED_SHA}" = "${live_sha}"
+          {
+            echo "default_branch=${default_branch}"
+            echo "validated_sha=${live_sha}"
+          } >>"${GITHUB_OUTPUT}"
+
+      - name: Checkout the bound default-branch commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.identity.outputs.validated_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run every declared revalidation group
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_DEFAULT_BRANCH: ${{ steps.identity.outputs.default_branch }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ steps.identity.outputs.validated_sha }}"
+          python3 -I -B scripts/check_harness.py \
+            --repo . \
+            --expected-repository "${EXPECTED_REPOSITORY}" \
+            --expected-default-branch "${EXPECTED_DEFAULT_BRANCH}" \
+            --run-revalidation
+
+      - name: Rebind after validation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ steps.identity.outputs.default_branch }}
+          VALIDATED_SHA: ${{ steps.identity.outputs.validated_sha }}
+        run: |
+          set -euo pipefail
+          live_sha="$(gh api "repos/${REPOSITORY}/git/ref/heads/${DEFAULT_BRANCH}" --jq .object.sha)"
+          test "${live_sha}" = "${VALIDATED_SHA}"
