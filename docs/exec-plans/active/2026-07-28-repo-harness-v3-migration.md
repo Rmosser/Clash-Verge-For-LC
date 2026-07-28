@@ -75,6 +75,7 @@ behavior or claiming platform readiness.
   sections/fields, and the explicit one-plan pending policy
 - Review rework round 2: the shared checker rejects dangling evaluation symlinks and off-layout manifests, Markdown-wrapped or comment-only placeholders, empty multiline fields, unchanged template sections, and delegation records without an explicit forbidden scope.
 - Review rework round 3: the shared checker validates only rendered plan prose, rejects placeholder-valued required fields, constrains active eval fixtures to distinct regular files inside their rule directory, and requires an explicit no-subagent fallback record.
+- Review rework round 4: upheld exact-head findings now require valid CommonMark closing fences, fail closed on raw HTML blocks, normalize inline HTML before placeholder detection, bind candidate verification to the exact git graph and complete base/head source trees including gitlink OIDs, enforce declared Active Plan sections, fields and tables, and allow receipt cleanup only when the receipt is newly added.
 - Current-head Review: pending; any finding, stale head, partial output,
   timeout, or author ambiguity blocks merge
 

@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -64,13 +65,64 @@ PLAN_SECTIONS = (
     "## Documentation Impact",
     "## Closeout",
 )
+COMMONMARK_BLOCK_TAGS = (
+    "address|article|aside|base|basefont|blockquote|body|caption|center|col|"
+    "colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|"
+    "footer|form|frame|frameset|h1|h2|h3|h4|h5|h6|head|header|hr|html|"
+    "iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|"
+    "option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|"
+    "title|tr|track|ul"
+)
+RAW_HTML_BLOCK_START_RE = re.compile(
+    rf"^[ \t]{{0,3}}(?:"
+    rf"</?(?:script|pre|style|textarea)(?=[ \t>/])|"
+    rf"</?(?:{COMMONMARK_BLOCK_TAGS})(?=[ \t>/])|"
+    r"<\?|<![A-Z]|<!\[CDATA\[|"
+    r"</?[A-Za-z][^<]*>[ \t]*$"
+    r")",
+    re.IGNORECASE,
+)
+
+
 class HarnessError(RuntimeError):
     pass
+
+
+class _VisibleInlineTextParser(HTMLParser):
+    """Collect the text a simple inline HTML wrapper contributes."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
 
 
 class DiffEntry(NamedTuple):
     status: str
     paths: tuple[str, ...]
+
+
+class GitTreeEntry(NamedTuple):
+    mode: str
+    object_type: str
+    object_id: str
+    path: bytes
+
+
+class FilesystemEntry(NamedTuple):
+    kind: str
+    mode: int
+    size: int
+    mtime_ns: int
+    device: int
+    inode: int
+
+
+class ActivePlanTableRequirement(NamedTuple):
+    header: tuple[str, ...]
+    min_rows: int
 
 
 def safe_relative_parts(relative: str) -> tuple[str, ...]:
@@ -315,6 +367,114 @@ def harness_check(contract: dict[str, Any]) -> dict[str, Any]:
     return matches[0]
 
 
+def active_plan_required_sections(contract: dict[str, Any]) -> tuple[str, ...]:
+    value = contract.get("active_plan_required_sections", [])
+    if not isinstance(value, list):
+        raise HarnessError("active_plan_required_sections must be a list")
+    sections: list[str] = []
+    for heading in value:
+        if (
+            not isinstance(heading, str)
+            or heading != heading.strip()
+            or re.fullmatch(r"## [^\r\n]+", heading) is None
+            or heading in PLAN_SECTIONS
+        ):
+            raise HarnessError(
+                "active_plan_required_sections entries must be additional "
+                "level-two Markdown headings"
+            )
+        sections.append(heading)
+    if len(sections) != len(set(sections)):
+        raise HarnessError("active_plan_required_sections must be unique")
+    return tuple(sections)
+
+
+def active_plan_required_fields(
+    contract: dict[str, Any],
+) -> dict[str, tuple[str, ...]]:
+    value = contract.get("active_plan_required_fields", {})
+    if not isinstance(value, dict):
+        raise HarnessError("active_plan_required_fields must be an object")
+    allowed_sections = set(PLAN_SECTIONS) | set(
+        active_plan_required_sections(contract)
+    )
+    requirements: dict[str, tuple[str, ...]] = {}
+    for section, labels in value.items():
+        if section not in allowed_sections:
+            raise HarnessError(
+                "active_plan_required_fields references an undeclared section"
+            )
+        if not isinstance(labels, list) or not labels:
+            raise HarnessError(
+                "active_plan_required_fields entries must be non-empty lists"
+            )
+        normalized: list[str] = []
+        for label in labels:
+            if (
+                not isinstance(label, str)
+                or re.fullmatch(r"[A-Za-z][A-Za-z0-9 _-]{0,80}", label) is None
+            ):
+                raise HarnessError(
+                    "active_plan_required_fields labels must be bounded field names"
+                )
+            normalized.append(label)
+        if len(normalized) != len(set(normalized)):
+            raise HarnessError("active_plan_required_fields labels must be unique")
+        requirements[section] = tuple(normalized)
+    return requirements
+
+
+def active_plan_required_tables(
+    contract: dict[str, Any],
+) -> dict[str, ActivePlanTableRequirement]:
+    value = contract.get("active_plan_required_tables", {})
+    if not isinstance(value, dict):
+        raise HarnessError("active_plan_required_tables must be an object")
+    allowed_sections = set(PLAN_SECTIONS) | set(
+        active_plan_required_sections(contract)
+    )
+    requirements: dict[str, ActivePlanTableRequirement] = {}
+    for section, rule in value.items():
+        if section not in allowed_sections:
+            raise HarnessError(
+                "active_plan_required_tables references an undeclared section"
+            )
+        if not isinstance(rule, dict) or set(rule) != {"header", "min_rows"}:
+            raise HarnessError(
+                "active_plan_required_tables entries require only header and min_rows"
+            )
+        header = rule["header"]
+        min_rows = rule["min_rows"]
+        if not isinstance(header, list) or not header:
+            raise HarnessError("active plan table header must be a non-empty list")
+        normalized: list[str] = []
+        for cell in header:
+            if (
+                not isinstance(cell, str)
+                or cell != cell.strip()
+                or not cell
+                or len(cell) > 80
+                or "|" in cell
+                or "\r" in cell
+                or "\n" in cell
+            ):
+                raise HarnessError("active plan table header contains an invalid cell")
+            normalized.append(cell)
+        if len(normalized) != len(set(normalized)):
+            raise HarnessError("active plan table header cells must be unique")
+        if (
+            not isinstance(min_rows, int)
+            or isinstance(min_rows, bool)
+            or min_rows < 1
+        ):
+            raise HarnessError("active plan table min_rows must be a positive integer")
+        requirements[section] = ActivePlanTableRequirement(
+            tuple(normalized),
+            min_rows,
+        )
+    return requirements
+
+
 def validate_contract(
     contract: dict[str, Any],
     root: Path,
@@ -381,6 +541,9 @@ def validate_contract(
             "execution_plan_policy must explicitly forbid nested/additional "
             "pending plans and ordinary product work before an active baseline"
         )
+    active_plan_required_sections(contract)
+    active_plan_required_fields(contract)
+    active_plan_required_tables(contract)
 
     control = normalize_specs(contract.get("control_plane_paths"), "control_plane_paths")
     audit = normalize_specs(contract.get("audit_state_paths"), "audit_state_paths")
@@ -682,6 +845,40 @@ def validate_candidate_contract_transition(
             raise HarnessError(f"candidate contract changes immutable {field}")
 
     require_superset(
+        list(active_plan_required_sections(trusted_contract)),
+        list(active_plan_required_sections(candidate_contract)),
+        "active_plan_required_sections",
+    )
+    trusted_fields = active_plan_required_fields(trusted_contract)
+    candidate_fields = active_plan_required_fields(candidate_contract)
+    for section, labels in trusted_fields.items():
+        if section not in candidate_fields:
+            raise HarnessError(
+                f"candidate contract removes trusted Active Plan fields: {section}"
+            )
+        require_superset(
+            list(labels),
+            list(candidate_fields[section]),
+            f"active_plan_required_fields.{section}",
+        )
+    trusted_tables = active_plan_required_tables(trusted_contract)
+    candidate_tables = active_plan_required_tables(candidate_contract)
+    for section, requirement in trusted_tables.items():
+        candidate_requirement = candidate_tables.get(section)
+        if candidate_requirement is None:
+            raise HarnessError(
+                f"candidate contract removes trusted Active Plan table: {section}"
+            )
+        if candidate_requirement.header != requirement.header:
+            raise HarnessError(
+                f"candidate contract changes trusted Active Plan table header: {section}"
+            )
+        if candidate_requirement.min_rows < requirement.min_rows:
+            raise HarnessError(
+                f"candidate contract weakens Active Plan table min_rows: {section}"
+            )
+
+    require_superset(
         trusted_contract["control_plane_paths"],
         candidate_contract["control_plane_paths"],
         "control_plane_paths",
@@ -854,8 +1051,12 @@ def rendered_plan_text(text: str) -> str:
     visible_lines: list[str] = []
     fence: tuple[str, int] | None = None
     for line in text.splitlines(keepends=True):
-        match = re.match(r"^[ \t]{0,3}(`{3,}|~{3,})", line)
+        content = line.rstrip("\r\n")
         if fence is not None:
+            match = re.fullmatch(
+                r"[ \t]{0,3}(`{3,}|~{3,})[ \t]*",
+                content,
+            )
             if (
                 match is not None
                 and match.group(1)[0] == fence[0]
@@ -864,10 +1065,14 @@ def rendered_plan_text(text: str) -> str:
                 fence = None
             visible_lines.append("\n" if line.endswith("\n") else "")
             continue
+        match = re.match(r"^[ \t]{0,3}(`{3,}|~{3,})([^\r\n]*)$", content)
         if match is not None:
-            fence = (match.group(1)[0], len(match.group(1)))
-            visible_lines.append("\n" if line.endswith("\n") else "")
-            continue
+            marker = match.group(1)
+            info = match.group(2)
+            if marker[0] != "`" or "`" not in info:
+                fence = (marker[0], len(marker))
+                visible_lines.append("\n" if line.endswith("\n") else "")
+                continue
         visible_lines.append(line)
 
     visible = "".join(visible_lines)
@@ -879,6 +1084,11 @@ def rendered_plan_text(text: str) -> str:
     )
     if "<!--" in visible or "-->" in visible:
         raise HarnessError("Active Plan contains a malformed HTML comment")
+    if any(
+        RAW_HTML_BLOCK_START_RE.match(line)
+        for line in visible.splitlines()
+    ):
+        raise HarnessError("Active Plan contains raw HTML block markup")
     return visible
 
 
@@ -948,7 +1158,83 @@ def is_placeholder_value(value: str) -> bool:
         if match is not None:
             normalized = match.group(1).strip()
             changed = True
-    return not normalized or PLACEHOLDER_VALUE_RE.fullmatch(normalized) is not None
+        parser = _VisibleInlineTextParser()
+        parser.feed(normalized)
+        parser.close()
+        rendered = "".join(parser.parts).strip()
+        if rendered != normalized:
+            normalized = rendered
+            changed = True
+    lowered = normalized.lower()
+    return (
+        not normalized
+        or lowered in {"...", "…"}
+        or lowered.startswith("replace with ")
+        or PLACEHOLDER_VALUE_RE.fullmatch(normalized) is not None
+    )
+
+
+def markdown_table_cells(line: str) -> tuple[str, ...] | None:
+    stripped = line.strip()
+    if not stripped.startswith("|") or not stripped.endswith("|"):
+        return None
+    return tuple(cell.strip() for cell in stripped.strip("|").split("|"))
+
+
+def validate_required_plan_table(
+    text: str,
+    heading: str,
+    requirement: ActivePlanTableRequirement,
+) -> None:
+    section = rendered_plan_text(plan_section(text, heading))
+    blocks: list[list[tuple[str, ...]]] = []
+    current: list[tuple[str, ...]] = []
+    for line in section.splitlines():
+        cells = markdown_table_cells(line)
+        if cells is None:
+            if current:
+                blocks.append(current)
+                current = []
+            continue
+        current.append(cells)
+    if current:
+        blocks.append(current)
+
+    matches = [
+        block
+        for block in blocks
+        if block and block[0] == requirement.header
+    ]
+    if len(matches) != 1:
+        raise HarnessError(
+            f"Active Plan must contain exactly one required table in {heading}"
+        )
+    table = matches[0]
+    if len(table) < 2:
+        raise HarnessError(f"Active Plan table has no separator in {heading}")
+    separator = table[1]
+    if (
+        len(separator) != len(requirement.header)
+        or any(
+            re.fullmatch(r":?-{3,}:?", cell) is None
+            for cell in separator
+        )
+    ):
+        raise HarnessError(f"Active Plan table has an invalid separator in {heading}")
+    rows = table[2:]
+    if len(rows) < requirement.min_rows:
+        raise HarnessError(
+            f"Active Plan table has fewer than {requirement.min_rows} rows in "
+            f"{heading}"
+        )
+    for row in rows:
+        if (
+            len(row) != len(requirement.header)
+            or any(is_placeholder_value(cell) for cell in row)
+        ):
+            raise HarnessError(
+                f"Active Plan table has an incomplete or placeholder row in {heading}"
+            )
 
 
 def require_concrete_section(text: str, heading: str) -> str:
@@ -990,6 +1276,7 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
         max_bytes=MAX_ACTIVE_PLAN_BYTES,
     )
     visible_text = rendered_plan_text(text)
+    additional_sections = active_plan_required_sections(contract)
     section_positions: list[int] = []
     for section in PLAN_SECTIONS:
         matches = list(
@@ -1006,6 +1293,18 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
         section_positions.append(matches[0].start())
     if section_positions != sorted(section_positions):
         raise HarnessError("Active Plan sections are out of order")
+    for section in additional_sections:
+        matches = list(
+            re.finditer(
+                rf"^{re.escape(section)}\s*$",
+                visible_text,
+                re.MULTILINE,
+            )
+        )
+        if not matches:
+            raise HarnessError(f"Active Plan is missing section: {section}")
+        if len(matches) != 1:
+            raise HarnessError(f"Active Plan has duplicate section: {section}")
     template_text = read_repo_regular_text(
         root,
         "docs/exec-plans/template.md",
@@ -1013,7 +1312,7 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
     )
     if text.strip() == template_text.strip():
         raise HarnessError("Active Plan must not be an unchanged template")
-    for heading in PLAN_SECTIONS:
+    for heading in PLAN_SECTIONS + additional_sections:
         if plan_section(text, heading).strip() == plan_section(
             template_text,
             heading,
@@ -1023,6 +1322,17 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
             )
         if heading != "## Delegation Audit":
             require_concrete_section(text, heading)
+
+    for heading, labels in active_plan_required_fields(contract).items():
+        section = plan_section(text, heading)
+        for label in labels:
+            value = plan_field(section, label)
+            if is_placeholder_value(value):
+                raise HarnessError(
+                    f"Active Plan has no concrete required field: {label}"
+                )
+    for heading, requirement in active_plan_required_tables(contract).items():
+        validate_required_plan_table(text, heading, requirement)
 
     required_fields = {
         "## Scope": ("In scope", "Out of scope"),
@@ -1428,8 +1738,20 @@ def git_result(git_dir: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def git_bytes_result(
+    git_dir: Path,
+    *args: str,
+) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        ["git", f"--git-dir={git_dir}", *args],
+        capture_output=True,
+        check=False,
+    )
+
+
 def git_commit_exists(git_dir: Path, sha: str) -> bool:
-    return git_result(git_dir, "cat-file", "-e", f"{sha}^{{commit}}").returncode == 0
+    completed = git_result(git_dir, "cat-file", "-t", sha)
+    return completed.returncode == 0 and completed.stdout.strip() == "commit"
 
 
 def git_is_ancestor(git_dir: Path, ancestor: str, descendant: str) -> bool:
@@ -1443,6 +1765,241 @@ def git_is_ancestor(git_dir: Path, ancestor: str, descendant: str) -> bool:
         ).returncode
         == 0
     )
+
+
+def display_git_path(path: bytes) -> str:
+    return path.decode("utf-8", errors="backslashreplace")
+
+
+def git_tree_entries(git_dir: Path, sha: str) -> dict[bytes, GitTreeEntry]:
+    completed = git_bytes_result(
+        git_dir,
+        "ls-tree",
+        "-r",
+        "-z",
+        "--full-tree",
+        sha,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise HarnessError(f"cannot read Git tree: {detail}")
+    entries: dict[bytes, GitTreeEntry] = {}
+    for record in completed.stdout.split(b"\0"):
+        if not record:
+            continue
+        try:
+            metadata, path = record.split(b"\t", 1)
+            mode_bytes, object_type_bytes, object_id_bytes = metadata.split(b" ", 2)
+            mode = mode_bytes.decode("ascii")
+            object_type = object_type_bytes.decode("ascii")
+            object_id = object_id_bytes.decode("ascii")
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise HarnessError("Git tree contains a malformed entry") from exc
+        parts = path.split(b"/")
+        if (
+            not path
+            or path.startswith(b"/")
+            or any(part in {b"", b".", b".."} for part in parts)
+        ):
+            raise HarnessError("Git tree contains an unsafe path")
+        if parts[0] == b".git":
+            raise HarnessError("Git tree contains reserved root .git metadata")
+        if path in entries:
+            raise HarnessError(
+                f"Git tree contains a duplicate path: {display_git_path(path)}"
+            )
+        if (mode, object_type) not in {
+            ("100644", "blob"),
+            ("100755", "blob"),
+            ("120000", "blob"),
+            ("160000", "commit"),
+        }:
+            raise HarnessError(
+                f"Git tree contains unsupported mode/type at "
+                f"{display_git_path(path)}"
+            )
+        entries[path] = GitTreeEntry(mode, object_type, object_id, path)
+    return entries
+
+
+def filesystem_snapshot(root: Path) -> dict[bytes, FilesystemEntry]:
+    resolved = root.resolve(strict=True)
+    root_bytes = os.fsencode(resolved)
+    snapshot: dict[bytes, FilesystemEntry] = {}
+
+    def visit(directory: bytes, prefix: bytes) -> None:
+        try:
+            with os.scandir(directory) as iterator:
+                children = sorted(iterator, key=lambda item: item.name)
+        except OSError as exc:
+            raise HarnessError(f"cannot inspect source snapshot: {exc}") from exc
+        for child in children:
+            name = child.name
+            if not isinstance(name, bytes):
+                raise HarnessError("filesystem did not preserve source path bytes")
+            if not prefix and name == b".git":
+                continue
+            relative = name if not prefix else prefix + b"/" + name
+            try:
+                info = child.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise HarnessError(
+                    f"cannot inspect source path {display_git_path(relative)}: {exc}"
+                ) from exc
+            if stat.S_ISDIR(info.st_mode):
+                kind = "tree"
+            elif stat.S_ISREG(info.st_mode):
+                kind = "blob"
+            elif stat.S_ISLNK(info.st_mode):
+                kind = "symlink"
+            else:
+                raise HarnessError(
+                    f"source snapshot contains a special file: "
+                    f"{display_git_path(relative)}"
+                )
+            snapshot[relative] = FilesystemEntry(
+                kind,
+                info.st_mode,
+                info.st_size,
+                info.st_mtime_ns,
+                info.st_dev,
+                info.st_ino,
+            )
+            if kind == "tree":
+                visit(os.path.join(directory, name), relative)
+
+    visit(root_bytes, b"")
+    return snapshot
+
+
+def git_blob_id(data: bytes, algorithm: str) -> str:
+    try:
+        digest = hashlib.new(algorithm)
+    except ValueError as exc:
+        raise HarnessError(f"unsupported Git object format: {algorithm}") from exc
+    digest.update(f"blob {len(data)}\0".encode("ascii"))
+    digest.update(data)
+    return digest.hexdigest()
+
+
+def read_snapshot_symlink(root: Path, relative: bytes) -> bytes:
+    absolute = os.path.join(os.fsencode(root.resolve(strict=True)), relative)
+    try:
+        before = os.lstat(absolute)
+        target = os.readlink(absolute)
+        after = os.lstat(absolute)
+    except OSError as exc:
+        raise HarnessError(
+            f"cannot read source symlink {display_git_path(relative)}: {exc}"
+        ) from exc
+    if (
+        not stat.S_ISLNK(before.st_mode)
+        or (before.st_dev, before.st_ino, before.st_mtime_ns)
+        != (after.st_dev, after.st_ino, after.st_mtime_ns)
+    ):
+        raise HarnessError(
+            f"source symlink changed during validation: {display_git_path(relative)}"
+        )
+    if not isinstance(target, bytes):
+        raise HarnessError("filesystem did not preserve symlink target bytes")
+    return target
+
+
+def validate_source_snapshot(
+    git_dir: Path,
+    sha: str,
+    root: Path,
+    *,
+    label: str,
+) -> None:
+    tree = git_tree_entries(git_dir, sha)
+    required_kinds: dict[bytes, str] = {}
+    optional_kinds: dict[bytes, str] = {}
+    for path, entry in tree.items():
+        parts = path.split(b"/")
+        if entry.mode == "160000":
+            for index in range(1, len(parts)):
+                optional_kinds.setdefault(b"/".join(parts[:index]), "tree")
+            optional_kinds[path] = "tree"
+            continue
+        for index in range(1, len(parts)):
+            required_kinds.setdefault(b"/".join(parts[:index]), "tree")
+        required_kinds[path] = "symlink" if entry.mode == "120000" else "blob"
+
+    for path in required_kinds:
+        optional_kinds.pop(path, None)
+    allowed_kinds = {**optional_kinds, **required_kinds}
+
+    before = filesystem_snapshot(root)
+    extra_paths = set(before) - set(allowed_kinds)
+    missing_paths = set(required_kinds) - set(before)
+    if extra_paths or missing_paths:
+        deepest_first = lambda path: (-path.count(b"/"), path)
+        extra = sorted(
+            extra_paths,
+            key=deepest_first,
+        )
+        missing = sorted(
+            missing_paths,
+            key=deepest_first,
+        )
+        details: list[str] = []
+        if missing:
+            details.append("missing=" + display_git_path(missing[0]))
+        if extra:
+            details.append("extra=" + display_git_path(extra[0]))
+        raise HarnessError(
+            f"{label} root does not match Git {sha} source snapshot "
+            f"({'; '.join(details)})"
+        )
+    for path, expected_kind in allowed_kinds.items():
+        if path not in before:
+            continue
+        actual = before[path]
+        if actual.kind != expected_kind:
+            raise HarnessError(
+                f"{label} root path kind differs from Git: "
+                f"{display_git_path(path)}"
+            )
+        if expected_kind == "tree":
+            continue
+        entry = tree[path]
+        if expected_kind == "blob":
+            expected_executable = entry.mode == "100755"
+            actual_executable = bool(actual.mode & 0o111)
+            if actual_executable != expected_executable:
+                raise HarnessError(
+                    f"{label} root file mode differs from Git: "
+                    f"{display_git_path(path)}"
+                )
+
+    object_format = git_result(
+        git_dir,
+        "rev-parse",
+        "--show-object-format",
+    )
+    if object_format.returncode != 0:
+        raise HarnessError("cannot determine Git object format")
+    algorithm = object_format.stdout.strip()
+    for path, entry in tree.items():
+        if entry.mode == "160000":
+            continue
+        if entry.mode == "120000":
+            data = read_snapshot_symlink(root, path)
+        else:
+            data = read_repo_regular_bytes(
+                root,
+                os.fsdecode(path),
+                max_bytes=MAX_REQUIRED_FILE_BYTES,
+            )
+        if git_blob_id(data, algorithm) != entry.object_id:
+            raise HarnessError(
+                f"{label} root bytes differ from Git: {display_git_path(path)}"
+            )
+
+    after = filesystem_snapshot(root)
+    if before != after:
+        raise HarnessError(f"{label} source snapshot changed during validation")
 
 
 def load_contract_at_commit(git_dir: Path, sha: str, root: Path) -> dict[str, Any]:
@@ -1575,7 +2132,7 @@ def is_receipt_cleanup(entries: list[DiffEntry]) -> bool:
     receipt_entries = [
         entry
         for entry in entries
-        if entry.paths == (RECEIPT_PATH,) and entry.status in {"A", "M"}
+        if entry.paths == (RECEIPT_PATH,) and entry.status == "A"
     ]
     plan_entries = [
         entry
@@ -1610,8 +2167,41 @@ def verify_candidate(
     git_dir: Path | None,
     base_sha: str | None,
     head_sha: str | None,
+    *,
+    expected_repository: str | None = None,
+    expected_repository_id: int | None = None,
+    expected_default_branch: str | None = None,
 ) -> None:
-    trusted_contract = load_repo_json(trusted_root, CONTRACT_PATH)
+    if git_dir is None or base_sha is None or head_sha is None:
+        raise HarnessError(
+            "candidate mode requires --git-dir, --base-sha, and --head-sha"
+        )
+    if not SHA_RE.fullmatch(base_sha) or not SHA_RE.fullmatch(head_sha):
+        raise HarnessError("base and head must be full lowercase SHAs")
+    if not git_commit_exists(git_dir, base_sha):
+        raise HarnessError("candidate base commit does not exist in --git-dir")
+    if not git_commit_exists(git_dir, head_sha):
+        raise HarnessError("candidate head commit does not exist in --git-dir")
+    if not git_is_ancestor(git_dir, base_sha, head_sha):
+        raise HarnessError("candidate base is not an ancestor of head")
+
+    validate_source_snapshot(
+        git_dir,
+        base_sha,
+        trusted_root,
+        label="trusted",
+    )
+    validate_source_snapshot(
+        git_dir,
+        head_sha,
+        target_root,
+        label="target",
+    )
+
+    trusted_contract = load_contract_at_commit(git_dir, base_sha, trusted_root)
+    trusted_root_contract = load_repo_json(trusted_root, CONTRACT_PATH)
+    if trusted_root_contract != trusted_contract:
+        raise HarnessError("trusted root contract does not match base contract")
     validate_contract(trusted_contract, trusted_root)
 
     for relative in trusted_contract["required_files"]:
@@ -1630,7 +2220,16 @@ def verify_candidate(
             )
 
     candidate_contract = load_repo_json(target_root, CONTRACT_PATH)
+    head_contract = load_contract_at_commit(git_dir, head_sha, target_root)
+    if candidate_contract != head_contract:
+        raise HarnessError("target root contract does not match head contract")
     validate_contract(candidate_contract, target_root)
+    validate_expected_identity(
+        candidate_contract,
+        expected_repository=expected_repository,
+        expected_repository_id=expected_repository_id,
+        expected_default_branch=expected_default_branch,
+    )
     validate_candidate_contract_transition(
         trusted_contract,
         candidate_contract,
@@ -1638,6 +2237,15 @@ def verify_candidate(
         target_root,
     )
     validate_active_plan(target_root, trusted_contract)
+    if (
+        active_plan_required_sections(candidate_contract)
+        != active_plan_required_sections(trusted_contract)
+        or active_plan_required_fields(candidate_contract)
+        != active_plan_required_fields(trusted_contract)
+        or active_plan_required_tables(candidate_contract)
+        != active_plan_required_tables(trusted_contract)
+    ):
+        validate_active_plan(target_root, candidate_contract)
     validate_eval_rules(target_root)
     trusted_state = trusted_contract["platform_gate"]["state"]
     candidate_state = candidate_contract["platform_gate"]["state"]
@@ -1645,10 +2253,6 @@ def verify_candidate(
         raise HarnessError(EXTERNAL_AUTHORITY_REQUIRED)
     validate_pending_establishment(target_root, candidate_contract)
 
-    if git_dir is None:
-        return
-    if not base_sha or not head_sha or not SHA_RE.fullmatch(base_sha) or not SHA_RE.fullmatch(head_sha):
-        raise HarnessError("base and head must be full lowercase SHAs")
     entries = git_diff_entries(git_dir, base_sha, head_sha)
     paths = sorted(changed_paths(entries))
     audit = normalize_specs(trusted_contract["audit_state_paths"], "audit_state_paths")
@@ -1704,19 +2308,16 @@ def main() -> int:
                 )
             if args.trusted_root is None or args.target_root is None:
                 raise HarnessError("--repo or both --trusted-root and --target-root are required")
+            if args.git_dir is None or args.base_sha is None or args.head_sha is None:
+                raise HarnessError(
+                    "candidate mode requires --git-dir, --base-sha, and --head-sha"
+                )
             verify_candidate(
                 args.trusted_root.resolve(),
                 args.target_root.resolve(),
-                args.git_dir.resolve() if args.git_dir else None,
+                args.git_dir.resolve(),
                 args.base_sha,
                 args.head_sha,
-            )
-            candidate_contract = load_repo_json(
-                args.target_root.resolve(),
-                CONTRACT_PATH,
-            )
-            validate_expected_identity(
-                candidate_contract,
                 expected_repository=args.expected_repository,
                 expected_repository_id=args.expected_repository_id,
                 expected_default_branch=args.expected_default_branch,
