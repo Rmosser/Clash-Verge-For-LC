@@ -5,7 +5,7 @@
   "default_branch": "main",
   "verifier": {
     "release": "repo-harness-verifier-v3.1",
-    "sha256": "5d17198f51fd18edbf1b6859fbd0b9ceecd3c65e4d212cd81ce7feb27535c74f",
+    "sha256": "ed77718ae28f85e6b5b58e2e3f6ba8bfc60f735139d697f686c2db0bf4aa9615",
     "authority": "source_isolated_publisher_bundle"
   },
   "task_record_policy": {
@@ -32,6 +32,14 @@
       "fast"
     ],
     "unknown_allowed": true
+  },
+  "execution_plan_policy": {
+    "active_plan_directory": "docs/exec-plans/active",
+    "pending_establishment": {
+      "required_active_plan_count": 1,
+      "nested_active_plans": "forbidden",
+      "ordinary_product_work": "forbidden_until_active_baseline"
+    }
   },
   "control_plane_paths": [
     {

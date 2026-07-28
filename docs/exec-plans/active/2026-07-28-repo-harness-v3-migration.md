@@ -56,7 +56,8 @@ behavior or claiming platform readiness.
 - Delegated scope: repository inventory, bounded v3.1 migration, PR
   publication, platform read-only audit, and independent diff review
 - Subagent result: completed within scope and returned with local validation
-  evidence and concrete findings for main-agent disposition
+  evidence; current-head Review exposed unsafe candidate read ordering, and
+  the shared authoritative checker plus this parity copy were hardened
 - Main agent review: accepted
 - Rework requested: completed
 - Final accepted diff: accepted
@@ -69,6 +70,12 @@ behavior or claiming platform readiness.
 - Positive tests: rerun after final checker/hash parity is installed
 - Negative tests: shared v3.1 pending-only, path, symlink, inventory, and
   authority-stub regression suite
+- Review rework: candidate required files are preflighted before plan/eval
+  parsing; contract, template, plans, and manifests are opened without
+  following symlinks, bounded by size, and rejected on identity drift
+- Evidence rework: shared tests now cover required/template symlinks,
+  oversized plans, recursively discovered nested/additional plans, placeholder
+  sections/fields, and the explicit one-plan pending policy
 - Current-head Review: pending; any finding, stale head, partial output,
   timeout, or author ambiguity blocks merge
 

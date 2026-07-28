@@ -7,7 +7,9 @@ import argparse
 import fnmatch
 import hashlib
 import json
+import os
 import re
+import stat
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -33,6 +35,24 @@ REPOSITORY_RE = re.compile(
     r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$"
 )
 EXTERNAL_STATUS_SYSTEM_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+MAX_CONTRACT_BYTES = 1024 * 1024
+MAX_VERIFIER_BYTES = 4 * 1024 * 1024
+MAX_ACTIVE_PLAN_BYTES = 1024 * 1024
+MAX_EVAL_MANIFEST_BYTES = 1024 * 1024
+MAX_REQUIRED_FILE_BYTES = 16 * 1024 * 1024
+EXECUTION_PLAN_POLICY = {
+    "active_plan_directory": "docs/exec-plans/active",
+    "pending_establishment": {
+        "required_active_plan_count": 1,
+        "nested_active_plans": "forbidden",
+        "ordinary_product_work": "forbidden_until_active_baseline",
+    },
+}
+PLACEHOLDER_VALUE_RE = re.compile(
+    r"^(?:tbd|todo|pending|unknown|n/?a|none|not[_ -]?applicable|"
+    r"placeholder|fill(?: me)? in|<[^>]*>|\{\{[^}]*\}\})[.!]?$",
+    re.IGNORECASE,
+)
 PLAN_SECTIONS = (
     "## Metadata",
     "## Goal",
@@ -53,42 +73,204 @@ class DiffEntry(NamedTuple):
     paths: tuple[str, ...]
 
 
-def is_repo_regular_file(root: Path, relative: str) -> bool:
-    root = root.resolve()
+def safe_relative_parts(relative: str) -> tuple[str, ...]:
     relative_path = Path(relative)
     if (
         not relative
         or relative_path.is_absolute()
         or ".." in relative_path.parts
     ):
-        return False
-    path = root / relative_path
-    try:
-        if not path.is_file() or path.is_symlink():
-            return False
-        current = path
-        while current != root:
-            if current.parent == current:
-                return False
-            if current.is_symlink():
-                return False
-            current = current.parent
-        return path.resolve().is_relative_to(root)
-    except OSError:
-        return False
+        raise HarnessError(f"unsafe repository-relative path: {relative}")
+    return relative_path.parts
 
 
-def load_json(path: Path) -> dict[str, Any]:
+def open_repo_regular_file(
+    root: Path,
+    relative: str,
+    *,
+    max_bytes: int = MAX_REQUIRED_FILE_BYTES,
+) -> tuple[int, os.stat_result]:
+    """Open a bounded regular file without following any repository symlink."""
+    if max_bytes <= 0:
+        raise HarnessError("file size limit must be positive")
+    parts = safe_relative_parts(relative)
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise HarnessError(f"cannot read valid JSON: {path}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise HarnessError(f"JSON root must be an object: {path}")
+        resolved_root = root.resolve(strict=True)
+    except OSError as exc:
+        raise HarnessError(f"cannot resolve repository root: {root}: {exc}") from exc
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory_flag is None:
+        raise HarnessError("platform lacks fail-closed no-follow file primitives")
+    base_flags = os.O_RDONLY | nofollow | getattr(os, "O_CLOEXEC", 0)
+    directory_flags = base_flags | directory_flag
+    directory_fd = -1
+    try:
+        directory_fd = os.open(resolved_root, directory_flags)
+        for component in parts[:-1]:
+            before = os.stat(
+                component,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+            if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
+                raise HarnessError(
+                    f"repository path component is not a real directory: {relative}"
+                )
+            next_fd = os.open(component, directory_flags, dir_fd=directory_fd)
+            after = os.fstat(next_fd)
+            if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+                os.close(next_fd)
+                raise HarnessError(
+                    f"repository path changed during validation: {relative}"
+                )
+            os.close(directory_fd)
+            directory_fd = next_fd
+
+        before = os.stat(
+            parts[-1],
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            raise HarnessError(
+                f"repository file is not a regular no-symlink file: {relative}"
+            )
+        if before.st_size > max_bytes:
+            raise HarnessError(
+                f"repository file exceeds {max_bytes} byte limit: {relative}"
+            )
+        file_fd = os.open(parts[-1], base_flags, dir_fd=directory_fd)
+        after = os.fstat(file_fd)
+        if (
+            not stat.S_ISREG(after.st_mode)
+            or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+            or after.st_size > max_bytes
+        ):
+            os.close(file_fd)
+            raise HarnessError(
+                f"repository file changed during validation: {relative}"
+            )
+        return file_fd, after
+    except (OSError, ValueError) as exc:
+        raise HarnessError(f"cannot safely open repository file {relative}: {exc}") from exc
+    finally:
+        if directory_fd >= 0:
+            os.close(directory_fd)
+
+
+def read_repo_regular_bytes(
+    root: Path,
+    relative: str,
+    *,
+    max_bytes: int = MAX_REQUIRED_FILE_BYTES,
+) -> bytes:
+    file_fd, before = open_repo_regular_file(
+        root,
+        relative,
+        max_bytes=max_bytes,
+    )
+    chunks: list[bytes] = []
+    remaining = max_bytes + 1
+    try:
+        while remaining:
+            chunk = os.read(file_fd, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        after = os.fstat(file_fd)
+    except OSError as exc:
+        raise HarnessError(f"cannot safely read repository file {relative}: {exc}") from exc
+    finally:
+        os.close(file_fd)
+    if len(data) > max_bytes:
+        raise HarnessError(
+            f"repository file exceeds {max_bytes} byte limit: {relative}"
+        )
+    if (
+        (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+        != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        or len(data) != after.st_size
+    ):
+        raise HarnessError(f"repository file changed while reading: {relative}")
     return data
 
 
-def sha256_file(path: Path) -> str:
+def read_repo_regular_text(
+    root: Path,
+    relative: str,
+    *,
+    max_bytes: int = MAX_REQUIRED_FILE_BYTES,
+) -> str:
+    try:
+        return read_repo_regular_bytes(
+            root,
+            relative,
+            max_bytes=max_bytes,
+        ).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HarnessError(
+            f"repository file is not valid UTF-8: {relative}: {exc}"
+        ) from exc
+
+
+def is_repo_regular_file(
+    root: Path,
+    relative: str,
+    *,
+    max_bytes: int = MAX_REQUIRED_FILE_BYTES,
+) -> bool:
+    try:
+        file_fd, _ = open_repo_regular_file(
+            root,
+            relative,
+            max_bytes=max_bytes,
+        )
+        os.close(file_fd)
+        return True
+    except HarnessError:
+        return False
+
+
+def load_repo_json(
+    root: Path,
+    relative: str,
+    *,
+    max_bytes: int = MAX_CONTRACT_BYTES,
+) -> dict[str, Any]:
+    try:
+        data = json.loads(
+            read_repo_regular_text(
+                root,
+                relative,
+                max_bytes=max_bytes,
+            )
+        )
+    except json.JSONDecodeError as exc:
+        raise HarnessError(f"cannot read valid JSON: {relative}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise HarnessError(f"JSON root must be an object: {relative}")
+    return data
+
+
+def sha256_repo_file(
+    root: Path,
+    relative: str,
+    *,
+    max_bytes: int = MAX_VERIFIER_BYTES,
+) -> str:
+    return hashlib.sha256(
+        read_repo_regular_bytes(
+            root,
+            relative,
+            max_bytes=max_bytes,
+        )
+    ).hexdigest()
+
+
+def sha256_external_file(path: Path) -> str:
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError as exc:
@@ -177,14 +359,28 @@ def validate_contract(
     if verifier.get("authority") != "source_isolated_publisher_bundle":
         raise HarnessError("verifier authority must be source isolated")
     if check_files:
-        if not is_repo_regular_file(root, VERIFIER_PATH):
+        if not is_repo_regular_file(
+            root,
+            VERIFIER_PATH,
+            max_bytes=MAX_VERIFIER_BYTES,
+        ):
             raise HarnessError("repository verifier copy is missing or not regular")
-        if sha256_file(root / VERIFIER_PATH) != verifier_sha:
+        if sha256_repo_file(root, VERIFIER_PATH) != verifier_sha:
             raise HarnessError("repository verifier copy does not match its declared hash")
-        if release == VERIFIER_RELEASE and sha256_file(Path(__file__).resolve()) != verifier_sha:
+        if (
+            release == VERIFIER_RELEASE
+            and sha256_external_file(Path(__file__).resolve()) != verifier_sha
+        ):
             raise HarnessError(
                 "repository verifier copy does not match the executing publisher/Skill bundle"
             )
+
+    execution_plan_policy = contract.get("execution_plan_policy")
+    if execution_plan_policy != EXECUTION_PLAN_POLICY:
+        raise HarnessError(
+            "execution_plan_policy must explicitly forbid nested/additional "
+            "pending plans and ordinary product work before an active baseline"
+        )
 
     control = normalize_specs(contract.get("control_plane_paths"), "control_plane_paths")
     audit = normalize_specs(contract.get("audit_state_paths"), "audit_state_paths")
@@ -477,6 +673,7 @@ def validate_candidate_contract_transition(
             raise HarnessError(f"candidate contract changes immutable {field}")
     for field in (
         "task_record_policy",
+        "execution_plan_policy",
         "review",
         "github_policy",
         "baseline_receipt",
@@ -598,17 +795,58 @@ def validate_live_platform(contract: dict[str, Any]) -> None:
 
 
 def active_plans(root: Path) -> list[Path]:
-    directory = root / "docs/exec-plans/active"
-    if not directory.exists():
+    root = root.resolve()
+    directory_relative = EXECUTION_PLAN_POLICY["active_plan_directory"]
+    directory = root / directory_relative
+    current = root
+    try:
+        for component in safe_relative_parts(directory_relative):
+            current /= component
+            info = os.lstat(current)
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                raise HarnessError("Active Plan directory must be a real directory")
+    except FileNotFoundError:
         return []
-    if directory.is_symlink() or not directory.is_dir():
-        raise HarnessError("Active Plan directory must be a real directory")
-    plans = sorted(path for path in directory.glob("*.md"))
-    for path in plans:
-        relative = path.relative_to(root).as_posix()
-        if not is_repo_regular_file(root, relative):
-            raise HarnessError(f"Active Plan must be a regular file: {relative}")
-    return plans
+    except OSError as exc:
+        raise HarnessError(f"cannot inspect Active Plan directory: {exc}") from exc
+
+    plans: list[Path] = []
+    for current_directory, directory_names, file_names in os.walk(
+        directory,
+        topdown=True,
+        followlinks=False,
+    ):
+        current_path = Path(current_directory)
+        for name in directory_names:
+            nested = current_path / name
+            try:
+                info = os.lstat(nested)
+            except OSError as exc:
+                raise HarnessError(
+                    f"cannot inspect Active Plan path: {nested}: {exc}"
+                ) from exc
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                raise HarnessError(
+                    f"Active Plan path is not a real directory: "
+                    f"{nested.relative_to(root).as_posix()}"
+                )
+        for name in file_names:
+            path = current_path / name
+            relative = path.relative_to(root).as_posix()
+            if not is_repo_regular_file(
+                root,
+                relative,
+                max_bytes=MAX_ACTIVE_PLAN_BYTES,
+            ):
+                raise HarnessError(
+                    f"Active Plan path must be a bounded regular file: {relative}"
+                )
+            if path.suffix != ".md":
+                continue
+            if path.parent != directory:
+                raise HarnessError(f"nested Active Plans are forbidden: {relative}")
+            plans.append(path)
+    return sorted(plans)
 
 
 def plan_section(text: str, heading: str) -> str:
@@ -641,13 +879,45 @@ def plan_field(section: str, key: str) -> str:
     return matches[0].group(1).strip()
 
 
+def is_placeholder_value(value: str) -> bool:
+    normalized = value.strip()
+    return not normalized or PLACEHOLDER_VALUE_RE.fullmatch(normalized) is not None
+
+
+def require_concrete_section(text: str, heading: str) -> str:
+    section = plan_section(text, heading)
+    candidates: list[str] = []
+    for raw_line in section.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("<!--"):
+            continue
+        line = re.sub(r"^(?:[-*+]|\d+[.)])\s*", "", line).strip()
+        if ":" in line:
+            _, line = line.split(":", 1)
+            line = line.strip()
+        candidates.append(line)
+    if not candidates or all(is_placeholder_value(value) for value in candidates):
+        raise HarnessError(
+            f"Active Plan section has no concrete non-placeholder body: {heading}"
+        )
+    return section
+
+
 def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
     plans = active_plans(root)
-    if len(plans) > 1:
+    expected_count = contract["execution_plan_policy"]["pending_establishment"][
+        "required_active_plan_count"
+    ]
+    if len(plans) > expected_count:
         raise HarnessError("multiple Active Plans are forbidden")
     if not plans:
         return
-    text = plans[0].read_text(encoding="utf-8")
+    plan_relative = plans[0].relative_to(root.resolve()).as_posix()
+    text = read_repo_regular_text(
+        root,
+        plan_relative,
+        max_bytes=MAX_ACTIVE_PLAN_BYTES,
+    )
     section_positions: list[int] = []
     for section in PLAN_SECTIONS:
         matches = list(
@@ -664,11 +934,17 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
         section_positions.append(matches[0].start())
     if section_positions != sorted(section_positions):
         raise HarnessError("Active Plan sections are out of order")
-    if text.strip() == (root / "docs/exec-plans/template.md").read_text(
-        encoding="utf-8"
-    ).strip():
+    template_text = read_repo_regular_text(
+        root,
+        "docs/exec-plans/template.md",
+        max_bytes=MAX_ACTIVE_PLAN_BYTES,
+    )
+    if text.strip() == template_text.strip():
         raise HarnessError("Active Plan must not be an unchanged template")
-    metadata = plan_section(text, "## Metadata")
+    for heading in PLAN_SECTIONS:
+        require_concrete_section(text, heading)
+
+    metadata = require_concrete_section(text, "## Metadata")
     values: dict[str, str] = {}
     for key in (
         "Status",
@@ -682,10 +958,18 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
         values[key] = plan_field(metadata, key)
     if values["Status"] != "active":
         raise HarnessError("Active Plan status must be active")
+    if is_placeholder_value(values["Owner"]):
+        raise HarnessError("Active Plan has no concrete Owner")
     task_policy = contract["task_record_policy"]
+    unknown_allowed = task_policy.get("unknown_allowed") is True
+    if (
+        is_placeholder_value(values["Model"])
+        and not (values["Model"] == "unknown" and unknown_allowed)
+    ):
+        raise HarnessError("Active Plan has no concrete Model")
     if values["Task class"] not in task_policy["task_class_values"]:
         raise HarnessError("Active Plan has an invalid task class")
-    unknown = {"unknown"} if task_policy.get("unknown_allowed") is True else set()
+    unknown = {"unknown"} if unknown_allowed else set()
     if values["Reasoning effort"] not in set(task_policy["reasoning_effort_values"]) | unknown:
         raise HarnessError("Active Plan has an invalid reasoning effort")
     if values["Speed"] not in set(task_policy["speed_values"]) | unknown:
@@ -694,7 +978,7 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
     if route not in {"single_agent", "main_plus_subagent", "multi_stage"}:
         raise HarnessError("Active Plan has an invalid delegation route")
 
-    audit_text = plan_section(text, "## Delegation Audit")
+    audit_text = require_concrete_section(text, "## Delegation Audit")
     audit_values: dict[str, str] = {}
     for key in (
         "Delegated scope",
@@ -710,9 +994,9 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
                 "single-agent plan delegation audit must be not_applicable"
             )
     else:
-        if audit_values["Delegated scope"] in {"pending", "not_applicable"}:
+        if is_placeholder_value(audit_values["Delegated scope"]):
             raise HarnessError("delegated plan needs a concrete delegated scope")
-        if audit_values["Subagent result"] in {"pending", "not_applicable"}:
+        if is_placeholder_value(audit_values["Subagent result"]):
             raise HarnessError("delegated plan needs a concrete subagent result")
         main_review = audit_values["Main agent review"]
         rework = audit_values["Rework requested"]
@@ -736,15 +1020,12 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
                 "or fully accepted"
             )
 
-    impact_text = plan_section(text, "## Documentation Impact")
+    impact_text = require_concrete_section(text, "## Documentation Impact")
     impact_result = plan_field(impact_text, "Result")
     if impact_result not in {"updated", "not_applicable"}:
         raise HarnessError("Active Plan has no valid Documentation Impact result")
     impact_evidence = plan_field(impact_text, "Evidence")
-    if impact_evidence in {
-        "pending",
-        "not_applicable",
-    }:
+    if is_placeholder_value(impact_evidence):
         raise HarnessError("Documentation Impact needs concrete evidence")
 
 
@@ -759,9 +1040,13 @@ def validate_pending_establishment(
         raise HarnessError(
             "pending establishment must not contain a baseline receipt"
         )
-    if len(active_plans(root)) != 1:
+    expected_count = contract["execution_plan_policy"]["pending_establishment"][
+        "required_active_plan_count"
+    ]
+    if len(active_plans(root)) != expected_count:
+        count_label = "one" if expected_count == 1 else str(expected_count)
         raise HarnessError(
-            "pending establishment requires exactly one Active Plan"
+            f"pending establishment requires exactly {count_label} Active Plan"
         )
 
 
@@ -805,7 +1090,11 @@ def validate_eval_rules(root: Path) -> None:
             raise HarnessError(
                 f"evaluation manifest must be a regular file: {relative_manifest}"
             )
-        manifest = load_json(manifest_path)
+        manifest = load_repo_json(
+            root,
+            relative_manifest,
+            max_bytes=MAX_EVAL_MANIFEST_BYTES,
+        )
         state = manifest.get("state")
         if state not in {"candidate", "shadow", "active", "monitored", "deprecated"}:
             raise HarnessError(f"invalid evaluation state: {manifest_path}")
@@ -1108,18 +1397,25 @@ def verify_candidate(
     base_sha: str | None,
     head_sha: str | None,
 ) -> None:
-    trusted_contract = load_json(trusted_root / CONTRACT_PATH)
+    trusted_contract = load_repo_json(trusted_root, CONTRACT_PATH)
     validate_contract(trusted_contract, trusted_root)
-    validate_active_plan(target_root, trusted_contract)
-    validate_eval_rules(target_root)
 
     for relative in trusted_contract["required_files"]:
-        if not is_repo_regular_file(target_root, relative):
+        max_bytes = (
+            MAX_VERIFIER_BYTES
+            if relative == VERIFIER_PATH
+            else MAX_REQUIRED_FILE_BYTES
+        )
+        if not is_repo_regular_file(
+            target_root,
+            relative,
+            max_bytes=max_bytes,
+        ):
             raise HarnessError(
                 f"candidate deletes or replaces required file: {relative}"
             )
 
-    candidate_contract = load_json(target_root / CONTRACT_PATH)
+    candidate_contract = load_repo_json(target_root, CONTRACT_PATH)
     validate_contract(candidate_contract, target_root)
     validate_candidate_contract_transition(
         trusted_contract,
@@ -1127,6 +1423,8 @@ def verify_candidate(
         trusted_root,
         target_root,
     )
+    validate_active_plan(target_root, trusted_contract)
+    validate_eval_rules(target_root)
     trusted_state = trusted_contract["platform_gate"]["state"]
     candidate_state = candidate_contract["platform_gate"]["state"]
     if trusted_state == "active" or candidate_state == "active":
@@ -1170,7 +1468,7 @@ def main() -> int:
     try:
         if args.repo:
             root = args.repo.resolve()
-            contract = load_json(root / CONTRACT_PATH)
+            contract = load_repo_json(root, CONTRACT_PATH)
             validate_contract(contract, root)
             validate_expected_identity(
                 contract,
@@ -1199,8 +1497,9 @@ def main() -> int:
                 args.base_sha,
                 args.head_sha,
             )
-            candidate_contract = load_json(
-                args.target_root.resolve() / CONTRACT_PATH
+            candidate_contract = load_repo_json(
+                args.target_root.resolve(),
+                CONTRACT_PATH,
             )
             validate_expected_identity(
                 candidate_contract,
