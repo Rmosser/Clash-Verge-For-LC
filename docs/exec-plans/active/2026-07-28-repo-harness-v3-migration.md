@@ -20,8 +20,12 @@ behavior or claiming platform readiness.
 
 - In scope: contract, hash-bound diagnostic checker, governance entrypoints,
   PR template, Active Plan lifecycle, declared product-check inventory, and
-  removal of the repository-owned `harness/evidence` workflow.
-- Out of scope: runtime/product behavior, GitHub platform mutation, push or merge, fabricated Actions evidence, baseline receipt, and cleanup while GitHub Actions is unavailable.
+  removal of the repository-owned `harness/evidence` workflow, plus the
+  Owner-authorized bounded outage merge with exact platform snapshot and
+  restoration.
+- Out of scope: runtime/product behavior, fabricated Actions or
+  `harness/evidence`, activation, baseline receipt, cleanup, and any readiness
+  claim.
 
 ## Baseline
 
@@ -47,6 +51,16 @@ behavior or claiming platform readiness.
    baseline validation, and receipt cleanup as a separately versioned future
    delivery.
 
+## Delegation Audit
+
+- Delegated scope: repository inventory, bounded v3.1 migration, PR
+  publication, platform read-only audit, and independent diff review
+- Subagent result: completed within scope and returned with local validation
+  evidence and concrete findings for main-agent disposition
+- Main agent review: accepted
+- Rework requested: completed
+- Final accepted diff: accepted
+
 ## Validation
 
 - Required files: every path in `.harness/repo-contract.json`
@@ -57,6 +71,18 @@ behavior or claiming platform readiness.
   authority-stub regression suite
 - Current-head Review: pending; any finding, stale head, partial output,
   timeout, or author ambiguity blocks merge
+
+## Documentation Impact
+
+- Result: updated
+- Evidence: entrypoint, contract, governance, plan, and PR documentation were
+  synchronized with the pending v3.1 boundary and repository-specific checks
+
+## Outage Merge Protocol
+
+- Local evidence: after the candidate commit, a reviewed manifest binds the live numeric repository ID, PR number, exact 40-character head SHA, validated base SHA, commands, exit results, and durable log digests. The canonical inventory and manifest digests are recorded in the audit.
+- Atomic freshness: the executor must prove an effective strict platform rule. When strict would otherwise have no live required context and existing classic protection is available, it may publish one unique run-specific `outage/local-validation/<manifest-digest-prefix>` procedural Commit Status and require it with `strict=true`. This status never impersonates an unavailable Actions context or `harness/evidence` and cannot support readiness.
+- Recovery: a repository-scoped lock and durable pre-mutation snapshot protect the whole operation. The executor rereads the exact head/base, official Review and preserved contexts, uses expected-head merge, and restores the exact snapshot or the separately approved post-merge context set.
 
 ## Closeout
 

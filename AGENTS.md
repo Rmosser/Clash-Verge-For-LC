@@ -39,10 +39,8 @@ it cannot authorize activation, a later pending recovery, baseline-receipt
 cleanup, or repository/platform readiness. While
 `platform_gate.state=pending`, ordinary product work is fail closed.
 
-GitHub Actions is unavailable for this rollout. Local product checks and a
-clean exact-current-head Codex Review support only the bounded establishment
-merge; they never substitute for a live required check. The Active Plan stays
-open and `.harness/baseline-receipt.json` stays absent until separately
-versioned source-isolated publisher, platform attestor, sandbox profile, active
+The Active Plan stays open and `.harness/baseline-receipt.json` stays absent
+until the separately versioned source-isolated publisher, platform attestor,
+sandbox profile, active
 verifier, product contexts, platform negative tests, and receipt accepter are
 delivered.

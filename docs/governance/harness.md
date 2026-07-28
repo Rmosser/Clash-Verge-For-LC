@@ -27,3 +27,9 @@ disposable environment.
 ## Execution-plan boundary
 
 The generic machine checker requires exactly one Active Plan for a Harness control-plane change and at most one valid Active Plan otherwise. Task complexity is a semantic judgment: the trusted Agent requires a PR-scoped plan for standard and critical product work, while a trivial task may omit one. An ordinary product plan is closed within the same product PR and never changes the Harness receipt. A Harness control-plane plan survives the Harness merge and is archived only by the exact receipt cleanup PR.
+
+A delegated plan records a concrete delegated scope and subagent result. Its
+handoff starts with main-agent review, rework, and final acceptance all
+`pending`; an accepted diff requires an accepted main-agent review and either
+no rework or completed rework. Every plan also closes documentation impact with
+an `updated` or `not_applicable` result plus concrete evidence.

@@ -39,7 +39,9 @@ PLAN_SECTIONS = (
     "## Scope",
     "## Baseline",
     "## Implementation",
+    "## Delegation Audit",
     "## Validation",
+    "## Documentation Impact",
     "## Closeout",
 )
 class HarnessError(RuntimeError):
@@ -609,6 +611,36 @@ def active_plans(root: Path) -> list[Path]:
     return plans
 
 
+def plan_section(text: str, heading: str) -> str:
+    matches = list(
+        re.finditer(
+        rf"^{re.escape(heading)}\s*$\n(?P<body>.*?)(?=^## |\Z)",
+        text,
+        re.MULTILINE | re.DOTALL,
+        )
+    )
+    if not matches:
+        raise HarnessError(f"Active Plan is missing section: {heading}")
+    if len(matches) != 1:
+        raise HarnessError(f"Active Plan has duplicate section: {heading}")
+    return matches[0].group("body")
+
+
+def plan_field(section: str, key: str) -> str:
+    matches = list(
+        re.finditer(
+            rf"^- {re.escape(key)}:\s*(\S.*)$",
+            section,
+            re.MULTILINE,
+        )
+    )
+    if not matches:
+        raise HarnessError(f"Active Plan has no concrete {key}")
+    if len(matches) != 1:
+        raise HarnessError(f"Active Plan has duplicate {key}")
+    return matches[0].group(1).strip()
+
+
 def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
     plans = active_plans(root)
     if len(plans) > 1:
@@ -616,14 +648,27 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
     if not plans:
         return
     text = plans[0].read_text(encoding="utf-8")
-    missing = [section for section in PLAN_SECTIONS if section not in text]
-    if missing:
-        raise HarnessError(f"Active Plan is missing sections: {', '.join(missing)}")
+    section_positions: list[int] = []
+    for section in PLAN_SECTIONS:
+        matches = list(
+            re.finditer(
+                rf"^{re.escape(section)}\s*$",
+                text,
+                re.MULTILINE,
+            )
+        )
+        if not matches:
+            raise HarnessError(f"Active Plan is missing section: {section}")
+        if len(matches) != 1:
+            raise HarnessError(f"Active Plan has duplicate section: {section}")
+        section_positions.append(matches[0].start())
+    if section_positions != sorted(section_positions):
+        raise HarnessError("Active Plan sections are out of order")
     if text.strip() == (root / "docs/exec-plans/template.md").read_text(
         encoding="utf-8"
     ).strip():
         raise HarnessError("Active Plan must not be an unchanged template")
-    metadata = text.split("## Goal", 1)[0]
+    metadata = plan_section(text, "## Metadata")
     values: dict[str, str] = {}
     for key in (
         "Status",
@@ -634,10 +679,7 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
         "Delegation route",
         "Owner",
     ):
-        match = re.search(rf"^- {re.escape(key)}:\s*(\S.*)$", metadata, re.MULTILINE)
-        if match is None:
-            raise HarnessError(f"Active Plan has no concrete {key}")
-        values[key] = match.group(1).strip()
+        values[key] = plan_field(metadata, key)
     if values["Status"] != "active":
         raise HarnessError("Active Plan status must be active")
     task_policy = contract["task_record_policy"]
@@ -648,6 +690,107 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
         raise HarnessError("Active Plan has an invalid reasoning effort")
     if values["Speed"] not in set(task_policy["speed_values"]) | unknown:
         raise HarnessError("Active Plan has an invalid speed")
+    route = values["Delegation route"]
+    if route not in {"single_agent", "main_plus_subagent", "multi_stage"}:
+        raise HarnessError("Active Plan has an invalid delegation route")
+
+    audit_text = plan_section(text, "## Delegation Audit")
+    audit_values: dict[str, str] = {}
+    for key in (
+        "Delegated scope",
+        "Subagent result",
+        "Main agent review",
+        "Rework requested",
+        "Final accepted diff",
+    ):
+        audit_values[key] = plan_field(audit_text, key)
+    if route == "single_agent":
+        if any(value != "not_applicable" for value in audit_values.values()):
+            raise HarnessError(
+                "single-agent plan delegation audit must be not_applicable"
+            )
+    else:
+        if audit_values["Delegated scope"] in {"pending", "not_applicable"}:
+            raise HarnessError("delegated plan needs a concrete delegated scope")
+        if audit_values["Subagent result"] in {"pending", "not_applicable"}:
+            raise HarnessError("delegated plan needs a concrete subagent result")
+        main_review = audit_values["Main agent review"]
+        rework = audit_values["Rework requested"]
+        accepted = audit_values["Final accepted diff"]
+        if main_review not in {"pending", "rework_requested", "accepted"}:
+            raise HarnessError("invalid Main agent review state")
+        if rework not in {"pending", "none", "completed"}:
+            raise HarnessError("invalid Rework requested state")
+        if accepted not in {"pending", "accepted"}:
+            raise HarnessError("invalid Final accepted diff state")
+        state = (main_review, rework, accepted)
+        allowed_states = {
+            ("pending", "pending", "pending"),
+            ("rework_requested", "pending", "pending"),
+            ("accepted", "none", "accepted"),
+            ("accepted", "completed", "accepted"),
+        }
+        if state not in allowed_states:
+            raise HarnessError(
+                "delegation handoff must be fully pending, rework-requested, "
+                "or fully accepted"
+            )
+
+    impact_text = plan_section(text, "## Documentation Impact")
+    impact_result = plan_field(impact_text, "Result")
+    if impact_result not in {"updated", "not_applicable"}:
+        raise HarnessError("Active Plan has no valid Documentation Impact result")
+    impact_evidence = plan_field(impact_text, "Evidence")
+    if impact_evidence in {
+        "pending",
+        "not_applicable",
+    }:
+        raise HarnessError("Documentation Impact needs concrete evidence")
+
+
+def validate_pending_establishment(
+    root: Path,
+    contract: dict[str, Any],
+) -> None:
+    if contract["platform_gate"]["state"] != "pending":
+        return
+    receipt_path = root / RECEIPT_PATH
+    if receipt_path.exists() or receipt_path.is_symlink():
+        raise HarnessError(
+            "pending establishment must not contain a baseline receipt"
+        )
+    if len(active_plans(root)) != 1:
+        raise HarnessError(
+            "pending establishment requires exactly one Active Plan"
+        )
+
+
+def validate_expected_identity(
+    contract: dict[str, Any],
+    *,
+    expected_repository: str | None,
+    expected_repository_id: int | None,
+    expected_default_branch: str | None,
+) -> None:
+    if (
+        expected_repository is not None
+        and contract["repository"] != expected_repository
+    ):
+        raise HarnessError("contract repository does not match runtime identity")
+    if (
+        expected_repository_id is not None
+        and contract["repository_id"] != expected_repository_id
+    ):
+        raise HarnessError(
+            "contract repository_id does not match runtime identity"
+        )
+    if (
+        expected_default_branch is not None
+        and contract["default_branch"] != expected_default_branch
+    ):
+        raise HarnessError(
+            "contract default branch does not match runtime identity"
+        )
 
 
 def validate_eval_rules(root: Path) -> None:
@@ -988,6 +1131,7 @@ def verify_candidate(
     candidate_state = candidate_contract["platform_gate"]["state"]
     if trusted_state == "active" or candidate_state == "active":
         raise HarnessError(EXTERNAL_AUTHORITY_REQUIRED)
+    validate_pending_establishment(target_root, candidate_contract)
 
     if git_dir is None:
         return
@@ -1028,37 +1172,15 @@ def main() -> int:
             root = args.repo.resolve()
             contract = load_json(root / CONTRACT_PATH)
             validate_contract(contract, root)
-            if (
-                args.expected_repository is not None
-                and contract["repository"] != args.expected_repository
-            ):
-                raise HarnessError("contract repository does not match runtime identity")
-            if (
-                args.expected_repository_id is not None
-                and contract["repository_id"] != args.expected_repository_id
-            ):
-                raise HarnessError(
-                    "contract repository_id does not match runtime identity"
-                )
-            if (
-                args.expected_default_branch is not None
-                and contract["default_branch"] != args.expected_default_branch
-            ):
-                raise HarnessError(
-                    "contract default branch does not match runtime identity"
-                )
+            validate_expected_identity(
+                contract,
+                expected_repository=args.expected_repository,
+                expected_repository_id=args.expected_repository_id,
+                expected_default_branch=args.expected_default_branch,
+            )
             validate_active_plan(root, contract)
             validate_eval_rules(root)
-            if contract["platform_gate"]["state"] == "pending":
-                receipt_path = root / RECEIPT_PATH
-                if receipt_path.exists() or receipt_path.is_symlink():
-                    raise HarnessError(
-                        "pending establishment must not contain a baseline receipt"
-                    )
-                if len(active_plans(root)) != 1:
-                    raise HarnessError(
-                        "pending establishment requires exactly one Active Plan"
-                    )
+            validate_pending_establishment(root, contract)
             if args.check_platform:
                 validate_live_platform(contract)
             if contract["platform_gate"]["state"] == "active":
@@ -1077,22 +1199,15 @@ def main() -> int:
                 args.base_sha,
                 args.head_sha,
             )
-            trusted_contract = load_json(
-                args.trusted_root.resolve() / CONTRACT_PATH
+            candidate_contract = load_json(
+                args.target_root.resolve() / CONTRACT_PATH
             )
-            if (
-                args.expected_repository is not None
-                and trusted_contract["repository"] != args.expected_repository
-            ):
-                raise HarnessError("contract repository does not match runtime identity")
-            if (
-                args.expected_default_branch is not None
-                and trusted_contract["default_branch"]
-                != args.expected_default_branch
-            ):
-                raise HarnessError(
-                    "contract default branch does not match runtime identity"
-                )
+            validate_expected_identity(
+                candidate_contract,
+                expected_repository=args.expected_repository,
+                expected_repository_id=args.expected_repository_id,
+                expected_default_branch=args.expected_default_branch,
+            )
     except HarnessError as exc:
         print(f"harness check failed: {exc}", file=sys.stderr)
         return 1

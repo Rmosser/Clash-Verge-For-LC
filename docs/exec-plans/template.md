@@ -30,6 +30,14 @@ State the observable completed outcome.
 
 Describe ordered, reviewable work units and rollback boundaries.
 
+## Delegation Audit
+
+- Delegated scope:
+- Subagent result:
+- Main agent review: pending
+- Rework requested: pending
+- Final accepted diff: pending
+
 ## Validation
 
 - Required files:
@@ -37,6 +45,11 @@ Describe ordered, reviewable work units and rollback boundaries.
 - Positive tests:
 - Negative tests:
 - Current-head Review:
+
+## Documentation Impact
+
+- Result:
+- Evidence:
 
 ## Closeout
 
