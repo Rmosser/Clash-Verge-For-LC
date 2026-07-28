@@ -1,6 +1,9 @@
 ## Scope
 
 - Task class:
+- Model:
+- Reasoning effort:
+- Speed:
 - Execution Plan or trivial/no-plan reason:
 - Plan lifecycle: `product-same-PR` | `harness-post-merge-cleanup`
 - In scope:

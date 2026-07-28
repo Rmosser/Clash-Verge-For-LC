@@ -49,9 +49,9 @@ behavior or claiming platform readiness.
 
 ## Delegation Audit
 
-- Delegated scope: repository inventory, bounded v3.1 migration, PR
-  publication, platform read-only audit, and independent diff review
+- Delegated scope: repository inventory, bounded v3.1 migration, platform read-only audit, and independent diff review
 - Forbidden scope: product behavior, credentials, platform mutations, merge initiation, and work outside the delegated repository scope
+- No-subagent fallback reason: not_applicable
 - Subagent result: completed within scope and returned with local validation
   evidence; current-head Review exposed unsafe candidate read ordering, and
   the shared authoritative checker plus this parity copy were hardened
@@ -74,6 +74,7 @@ behavior or claiming platform readiness.
   oversized plans, recursively discovered nested/additional plans, placeholder
   sections/fields, and the explicit one-plan pending policy
 - Review rework round 2: the shared checker rejects dangling evaluation symlinks and off-layout manifests, Markdown-wrapped or comment-only placeholders, empty multiline fields, unchanged template sections, and delegation records without an explicit forbidden scope.
+- Review rework round 3: the shared checker validates only rendered plan prose, rejects placeholder-valued required fields, constrains active eval fixtures to distinct regular files inside their rule directory, and requires an explicit no-subagent fallback record.
 - Current-head Review: pending; any finding, stale head, partial output,
   timeout, or author ambiguity blocks merge
 

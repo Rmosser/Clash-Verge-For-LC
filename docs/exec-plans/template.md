@@ -34,6 +34,7 @@ Describe ordered, reviewable work units and rollback boundaries.
 
 - Delegated scope:
 - Forbidden scope:
+- No-subagent fallback reason:
 - Subagent result:
 - Main agent review: pending
 - Rework requested: pending

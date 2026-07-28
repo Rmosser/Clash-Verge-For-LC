@@ -849,7 +849,41 @@ def active_plans(root: Path) -> list[Path]:
     return sorted(plans)
 
 
+def rendered_plan_text(text: str) -> str:
+    """Remove Markdown regions that do not render as plan prose."""
+    visible_lines: list[str] = []
+    fence: tuple[str, int] | None = None
+    for line in text.splitlines(keepends=True):
+        match = re.match(r"^[ \t]{0,3}(`{3,}|~{3,})", line)
+        if fence is not None:
+            if (
+                match is not None
+                and match.group(1)[0] == fence[0]
+                and len(match.group(1)) >= fence[1]
+            ):
+                fence = None
+            visible_lines.append("\n" if line.endswith("\n") else "")
+            continue
+        if match is not None:
+            fence = (match.group(1)[0], len(match.group(1)))
+            visible_lines.append("\n" if line.endswith("\n") else "")
+            continue
+        visible_lines.append(line)
+
+    visible = "".join(visible_lines)
+    visible = re.sub(
+        r"<!--.*?-->",
+        lambda match: "\n" * match.group(0).count("\n"),
+        visible,
+        flags=re.DOTALL,
+    )
+    if "<!--" in visible or "-->" in visible:
+        raise HarnessError("Active Plan contains a malformed HTML comment")
+    return visible
+
+
 def plan_section(text: str, heading: str) -> str:
+    text = rendered_plan_text(text)
     matches = list(
         re.finditer(
         rf"^{re.escape(heading)}\s*$\n(?P<body>.*?)(?=^## |\Z)",
@@ -865,6 +899,7 @@ def plan_section(text: str, heading: str) -> str:
 
 
 def plan_field(section: str, key: str) -> str:
+    section = rendered_plan_text(section)
     matches = list(
         re.finditer(
             rf"^- {re.escape(key)}:[ \t]*(\S[^\r\n]*)[ \t]*$",
@@ -899,21 +934,38 @@ def is_placeholder_value(value: str) -> bool:
         if match is not None:
             normalized = match.group(2).strip()
             changed = True
+        match = re.fullmatch(
+            r"!?\[([^\]\r\n]*)\]\([^)\r\n]*\)",
+            normalized,
+        )
+        if match is not None:
+            normalized = match.group(1).strip()
+            changed = True
+        match = re.fullmatch(
+            r"!?\[([^\]\r\n]*)\]\[[^\]\r\n]*\]",
+            normalized,
+        )
+        if match is not None:
+            normalized = match.group(1).strip()
+            changed = True
     return not normalized or PLACEHOLDER_VALUE_RE.fullmatch(normalized) is not None
 
 
 def require_concrete_section(text: str, heading: str) -> str:
     section = plan_section(text, heading)
     candidates: list[str] = []
-    visible_section = re.sub(r"<!--.*?-->", "", section, flags=re.DOTALL)
+    visible_section = rendered_plan_text(section)
     for raw_line in visible_section.splitlines():
         line = raw_line.strip()
         if not line:
             continue
         line = re.sub(r"^(?:[-*+]|\d+[.)])\s*", "", line).strip()
-        if ":" in line:
-            _, line = line.split(":", 1)
-            line = line.strip()
+        field_match = re.fullmatch(
+            r"[A-Za-z][A-Za-z0-9 _-]{0,80}:[ \t]*(.*)",
+            line,
+        )
+        if field_match is not None:
+            line = field_match.group(1).strip()
         candidates.append(line)
     if not candidates or all(is_placeholder_value(value) for value in candidates):
         raise HarnessError(
@@ -937,12 +989,13 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
         plan_relative,
         max_bytes=MAX_ACTIVE_PLAN_BYTES,
     )
+    visible_text = rendered_plan_text(text)
     section_positions: list[int] = []
     for section in PLAN_SECTIONS:
         matches = list(
             re.finditer(
                 rf"^{re.escape(section)}\s*$",
-                text,
+                visible_text,
                 re.MULTILINE,
             )
         )
@@ -989,7 +1042,9 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
     for heading, keys in required_fields.items():
         section = plan_section(text, heading)
         for key in keys:
-            plan_field(section, key)
+            value = plan_field(section, key)
+            if is_placeholder_value(value):
+                raise HarnessError(f"Active Plan has no concrete {key}")
 
     metadata = require_concrete_section(text, "## Metadata")
     values: dict[str, str] = {}
@@ -1030,6 +1085,7 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
     for key in (
         "Delegated scope",
         "Forbidden scope",
+        "No-subagent fallback reason",
         "Subagent result",
         "Main agent review",
         "Rework requested",
@@ -1037,11 +1093,32 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
     ):
         audit_values[key] = plan_field(audit_text, key)
     if route == "single_agent":
-        if any(value != "not_applicable" for value in audit_values.values()):
+        delegated_fields = {
+            key: value
+            for key, value in audit_values.items()
+            if key != "No-subagent fallback reason"
+        }
+        if any(value != "not_applicable" for value in delegated_fields.values()):
             raise HarnessError(
                 "single-agent plan delegation audit must be not_applicable"
             )
+        fallback_reason = audit_values["No-subagent fallback reason"]
+        if (
+            values["Task class"] in {"standard", "critical"}
+            and (
+                fallback_reason == "not_applicable"
+                or is_placeholder_value(fallback_reason)
+            )
+        ):
+            raise HarnessError(
+                "nontrivial single-agent plan needs a concrete "
+                "No-subagent fallback reason"
+            )
     else:
+        if audit_values["No-subagent fallback reason"] != "not_applicable":
+            raise HarnessError(
+                "delegated plan No-subagent fallback reason must be not_applicable"
+            )
         if is_placeholder_value(audit_values["Delegated scope"]):
             raise HarnessError("delegated plan needs a concrete delegated scope")
         if is_placeholder_value(audit_values["Forbidden scope"]):
@@ -1129,15 +1206,23 @@ def validate_expected_identity(
 
 
 def validate_eval_rules(root: Path) -> None:
-    eval_root = root / "evals/harness"
-    if not os.path.lexists(eval_root):
-        return
+    root = root.resolve()
+    current = root
     try:
-        root_info = os.lstat(eval_root)
+        for component in safe_relative_parts("evals/harness"):
+            current /= component
+            root_info = os.lstat(current)
+            if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(
+                root_info.st_mode
+            ):
+                raise HarnessError(
+                    "evals/harness and its ancestors must be real directories"
+                )
+    except FileNotFoundError:
+        return
     except OSError as exc:
         raise HarnessError(f"cannot inspect evals/harness: {exc}") from exc
-    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
-        raise HarnessError("evals/harness must be a real directory")
+    eval_root = current
 
     immediate_rule_directories: set[Path] = set()
     manifests: list[Path] = []
@@ -1210,19 +1295,43 @@ def validate_eval_rules(root: Path) -> None:
             "safe_counterexample",
             "unrelated_control",
         )
+        example_paths: dict[str, Path] = {}
+        example_identities: dict[str, tuple[int, int]] = {}
         for field in required_files:
             relative = manifest.get(field)
             if not isinstance(relative, str) or not relative:
                 raise HarnessError(f"{manifest_path}: missing {field}")
-            example_path = manifest_path.parent / relative
             try:
-                example_relative = example_path.relative_to(root).as_posix()
+                relative_parts = safe_relative_parts(relative)
+            except HarnessError as exc:
+                raise HarnessError(
+                    f"{manifest_path}: unsafe file for {field}"
+                ) from exc
+            example_path = manifest_path.parent.joinpath(*relative_parts)
+            try:
+                example_path.relative_to(manifest_path.parent)
             except ValueError as exc:
                 raise HarnessError(
                     f"{manifest_path}: unsafe file for {field}"
                 ) from exc
+            example_relative = example_path.relative_to(root).as_posix()
+            if example_path == manifest_path:
+                raise HarnessError(
+                    f"{manifest_path}: example for {field} cannot be the manifest"
+                )
             if not is_repo_regular_file(root, example_relative):
                 raise HarnessError(f"{manifest_path}: missing file for {field}")
+            info = os.stat(example_path, follow_symlinks=False)
+            example_paths[field] = example_path
+            example_identities[field] = (info.st_dev, info.st_ino)
+        if len(set(example_paths.values())) != len(required_files):
+            raise HarnessError(
+                f"{manifest_path}: active rule examples must use distinct paths"
+            )
+        if len(set(example_identities.values())) != len(required_files):
+            raise HarnessError(
+                f"{manifest_path}: active rule examples must be distinct files"
+            )
         regression = manifest.get("regression")
         if not isinstance(regression, dict) or regression.get("result") != "passed":
             raise HarnessError(f"{manifest_path}: active rule needs a passed regression")

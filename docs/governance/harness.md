@@ -35,9 +35,11 @@ product work possible, task complexity remains a semantic judgment: standard
 and critical work uses a PR-scoped plan, while a trivial task may omit one.
 
 A delegated plan records concrete delegated and forbidden scopes plus the
-subagent result. Its handoff starts with main-agent review, rework, and final
-acceptance all `pending`; an accepted diff requires an accepted main-agent
-review and either no rework or completed rework. Every plan also closes
+subagent result, while its no-subagent fallback reason is `not_applicable`.
+Its handoff starts with main-agent review, rework, and final acceptance all
+`pending`; an accepted diff requires an accepted main-agent review and either
+no rework or completed rework. A standard or critical `single_agent` plan must
+instead record a concrete no-subagent fallback reason. Every plan also closes
 documentation impact with an `updated` or `not_applicable` result plus concrete
 evidence.
 
