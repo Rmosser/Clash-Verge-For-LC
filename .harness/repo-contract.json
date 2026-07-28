@@ -1,7 +1,13 @@
 {
   "contract_version": "repo-harness-v3",
   "repository": "Rmosser/Clash-Verge-For-LC",
+  "repository_id": null,
   "default_branch": "main",
+  "verifier": {
+    "release": "repo-harness-verifier-v3.1",
+    "sha256": "d2ae78a38263db8e111bd17fe8cb18e4715c9b325837c792bf4dd2d6b63e5e43",
+    "authority": "source_isolated_publisher_bundle"
+  },
   "task_record_policy": {
     "task_class_values": [
       "trivial",
@@ -79,7 +85,6 @@
     "AGENTS.md",
     ".harness/repo-contract.json",
     ".github/pull_request_template.md",
-    ".github/workflows/harness-evidence.yml",
     ".github/workflows/product-validation.yml",
     "scripts/check_harness.py",
     "docs/index.md",
@@ -91,14 +96,31 @@
     {
       "context": "harness/evidence",
       "kind": "machine",
-      "publisher": "github-actions[bot]"
+      "publisher": {
+        "model": "source_isolated_github_app",
+        "app_id": null,
+        "app_slug": null
+      }
     },
     {
       "context": "product/validation",
       "kind": "machine",
-      "publisher": "github-actions[bot]"
+      "publisher": {
+        "model": "github_actions_shared",
+        "app_id": null,
+        "app_slug": "github-actions"
+      }
     }
   ],
+  "platform_gate": {
+    "state": "pending",
+    "pending_reason": "actions_outage_and_publisher_not_installed"
+  },
+  "publisher_validation": {
+    "model": "external_sandbox_profile",
+    "profile_id": null,
+    "profile_sha256": null
+  },
   "revalidation_groups": {
     "entrypoint": {
       "paths": [
@@ -165,6 +187,7 @@
     "pr_only": true,
     "strict_base_freshness": true,
     "no_bypass": true,
+    "same_repository_prs_only": true,
     "force_push_allowed": false,
     "branch_deletion_allowed": false,
     "expected_head_required": true,
@@ -173,6 +196,8 @@
   "baseline_receipt": {
     "path": ".harness/baseline-receipt.json",
     "schema_version": "repo-harness-baseline-receipt-v1",
+    "evidence_kind": "github_app_check_run",
+    "check_name": "harness/baseline",
     "allowed_validators": [
       "Rmosser"
     ]

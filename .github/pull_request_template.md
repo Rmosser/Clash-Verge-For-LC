@@ -1,7 +1,8 @@
 ## Scope
 
 - Task class:
-- Active Plan:
+- Execution Plan or trivial/no-plan reason:
+- Plan lifecycle: `product-same-PR` | `harness-post-merge-cleanup`
 - In scope:
 - Out of scope:
 
@@ -16,6 +17,8 @@
 
 - Required files:
 - Required checks:
+- Platform gate state:
+- Source-isolated publisher App id:
 - Commands and results:
 - Negative-test evidence when trust controls changed:
 

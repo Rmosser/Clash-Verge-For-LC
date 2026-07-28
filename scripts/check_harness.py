@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import json
 import re
 import subprocess
@@ -17,11 +18,21 @@ CONTRACT_PATH = ".harness/repo-contract.json"
 RECEIPT_PATH = ".harness/baseline-receipt.json"
 CONTRACT_VERSION = "repo-harness-v3"
 RECEIPT_VERSION = "repo-harness-baseline-receipt-v1"
+VERIFIER_RELEASE = "repo-harness-verifier-v3.1"
+VERIFIER_PATH = "scripts/check_harness.py"
+SUPPORTED_VERIFIER_RELEASES = frozenset({VERIFIER_RELEASE})
+EXTERNAL_AUTHORITY_REQUIRED = (
+    "repo-harness-verifier-v3.1 is a pending-establishment diagnostic only; "
+    "active gate, pending recovery, and receipt acceptance require the "
+    "separately versioned source-isolated publisher and platform attestor"
+)
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 RFC3339_UTC_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 REPOSITORY_RE = re.compile(
     r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$"
 )
+EXTERNAL_STATUS_SYSTEM_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 PLAN_SECTIONS = (
     "## Metadata",
     "## Goal",
@@ -31,12 +42,6 @@ PLAN_SECTIONS = (
     "## Validation",
     "## Closeout",
 )
-IMMUTABLE_TRUST_ROOTS = (
-    ".github/workflows/harness-evidence.yml",
-    "scripts/check_harness.py",
-)
-
-
 class HarnessError(RuntimeError):
     pass
 
@@ -81,6 +86,13 @@ def load_json(path: Path) -> dict[str, Any]:
     return data
 
 
+def sha256_file(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise HarnessError(f"cannot hash verifier file: {path}: {exc}") from exc
+
+
 def normalize_specs(value: Any, field: str) -> list[dict[str, str]]:
     if not isinstance(value, list) or not value:
         raise HarnessError(f"{field} must be a non-empty list")
@@ -108,6 +120,17 @@ def matches_any(path: str, specs: list[dict[str, str]]) -> bool:
     return any(matches(path, spec) for spec in specs)
 
 
+def harness_check(contract: dict[str, Any]) -> dict[str, Any]:
+    matches = [
+        check
+        for check in contract.get("required_checks", [])
+        if isinstance(check, dict) and check.get("context") == "harness/evidence"
+    ]
+    if len(matches) != 1:
+        raise HarnessError("exactly one harness/evidence check is required")
+    return matches[0]
+
+
 def validate_contract(
     contract: dict[str, Any],
     root: Path,
@@ -121,6 +144,13 @@ def validate_contract(
     repository = contract.get("repository")
     if not isinstance(repository, str) or not REPOSITORY_RE.fullmatch(repository):
         raise HarnessError("repository must be OWNER/REPOSITORY")
+    repository_id = contract.get("repository_id")
+    if repository_id is not None and (
+        not isinstance(repository_id, int)
+        or isinstance(repository_id, bool)
+        or repository_id <= 0
+    ):
+        raise HarnessError("repository_id must be null or a positive integer")
     default_branch = contract.get("default_branch")
     if (
         not isinstance(default_branch, str)
@@ -132,6 +162,27 @@ def validate_contract(
         or any(character.isspace() or ord(character) < 32 for character in default_branch)
     ):
         raise HarnessError("default_branch is required")
+
+    verifier = contract.get("verifier")
+    if not isinstance(verifier, dict):
+        raise HarnessError("verifier policy is required")
+    release = verifier.get("release")
+    verifier_sha = verifier.get("sha256")
+    if release not in SUPPORTED_VERIFIER_RELEASES:
+        raise HarnessError("unsupported verifier release")
+    if not isinstance(verifier_sha, str) or not SHA256_RE.fullmatch(verifier_sha):
+        raise HarnessError("verifier sha256 must be a lowercase SHA-256")
+    if verifier.get("authority") != "source_isolated_publisher_bundle":
+        raise HarnessError("verifier authority must be source isolated")
+    if check_files:
+        if not is_repo_regular_file(root, VERIFIER_PATH):
+            raise HarnessError("repository verifier copy is missing or not regular")
+        if sha256_file(root / VERIFIER_PATH) != verifier_sha:
+            raise HarnessError("repository verifier copy does not match its declared hash")
+        if release == VERIFIER_RELEASE and sha256_file(Path(__file__).resolve()) != verifier_sha:
+            raise HarnessError(
+                "repository verifier copy does not match the executing publisher/Skill bundle"
+            )
 
     control = normalize_specs(contract.get("control_plane_paths"), "control_plane_paths")
     audit = normalize_specs(contract.get("audit_state_paths"), "audit_state_paths")
@@ -209,6 +260,7 @@ def validate_contract(
     if not isinstance(checks, list) or not checks:
         raise HarnessError("required_checks must be a non-empty list")
     contexts: set[str] = set()
+    harness_checks: list[dict[str, Any]] = []
     for check in checks:
         if not isinstance(check, dict):
             raise HarnessError("required_checks entries must be objects")
@@ -217,16 +269,105 @@ def validate_contract(
             raise HarnessError("required check context is required")
         if check.get("kind") != "machine":
             raise HarnessError("required checks may represent machine gates only")
-        if not isinstance(check.get("publisher"), str) or not check["publisher"]:
-            raise HarnessError("required check publisher is required")
+        publisher = check.get("publisher")
+        if not isinstance(publisher, dict):
+            raise HarnessError("required check publisher must be an object")
+        model = publisher.get("model")
+        if context == "harness/evidence":
+            if model != "source_isolated_github_app":
+                raise HarnessError(
+                    "harness/evidence publisher must be a source-isolated GitHub App"
+                )
+            harness_checks.append(check)
+        elif model == "github_actions_shared":
+            if publisher.get("app_id") is not None or publisher.get("app_slug") not in {
+                None,
+                "github-actions",
+            }:
+                raise HarnessError("shared Actions publisher identity is resolved live")
+        elif model == "github_app":
+            app_id = publisher.get("app_id")
+            app_slug = publisher.get("app_slug")
+            if (
+                not isinstance(app_id, int)
+                or isinstance(app_id, bool)
+                or app_id <= 0
+                or not isinstance(app_slug, str)
+                or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", app_slug)
+            ):
+                raise HarnessError("product GitHub App publisher identity is incomplete")
+        elif model == "external_commit_status":
+            system = publisher.get("system")
+            if set(publisher) != {"model", "system"}:
+                raise HarnessError(
+                    "external Commit Status publisher must contain only model and system"
+                )
+            if (
+                not isinstance(system, str)
+                or len(system) > 64
+                or not EXTERNAL_STATUS_SYSTEM_RE.fullmatch(system)
+            ):
+                raise HarnessError(
+                    "external Commit Status system must be a lowercase hyphenated slug"
+                )
+        else:
+            raise HarnessError("unsupported required check publisher model")
         contexts.add(context)
-    if "harness/evidence" not in contexts:
-        raise HarnessError("harness/evidence must be required")
-    harness_check = next(
-        check for check in checks if check.get("context") == "harness/evidence"
-    )
-    if harness_check.get("publisher") != "github-actions[bot]":
-        raise HarnessError("harness/evidence must use the expected publisher")
+    if len(harness_checks) != 1:
+        raise HarnessError("exactly one harness/evidence check is required")
+    if len(contexts) != len(checks):
+        raise HarnessError("required check contexts must be unique")
+    harness_check = harness_checks[0]
+
+    platform_gate = contract.get("platform_gate")
+    if not isinstance(platform_gate, dict):
+        raise HarnessError("platform_gate policy is required")
+    platform_state = platform_gate.get("state")
+    if platform_state not in {"pending", "active"}:
+        raise HarnessError("platform_gate state must be pending or active")
+    publisher = harness_check["publisher"]
+    app_id = publisher.get("app_id")
+    app_slug = publisher.get("app_slug")
+    if platform_state == "pending":
+        reason = platform_gate.get("pending_reason")
+        if not isinstance(reason, str) or not reason:
+            raise HarnessError("pending platform gate needs a concrete reason")
+        if app_id is not None or app_slug is not None:
+            raise HarnessError("pending platform gate must not claim a publisher identity")
+    else:
+        if platform_gate.get("pending_reason") not in {None, ""}:
+            raise HarnessError("active platform gate must not retain a pending reason")
+        if not isinstance(app_id, int) or isinstance(app_id, bool) or app_id <= 0:
+            raise HarnessError("active platform gate needs a positive GitHub App id")
+        if (
+            not isinstance(app_slug, str)
+            or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", app_slug)
+        ):
+            raise HarnessError("active platform gate needs a valid GitHub App slug")
+        if app_slug == "github-actions":
+            raise HarnessError(
+                "the shared GitHub Actions App cannot publish harness/evidence"
+            )
+        if repository_id is None:
+            raise HarnessError("active platform gate needs the immutable repository_id")
+
+    publisher_validation = contract.get("publisher_validation")
+    if not isinstance(publisher_validation, dict):
+        raise HarnessError("publisher_validation policy is required")
+    if publisher_validation.get("model") != "external_sandbox_profile":
+        raise HarnessError("publisher must use an external sandbox profile")
+    profile_id = publisher_validation.get("profile_id")
+    profile_sha = publisher_validation.get("profile_sha256")
+    if platform_state == "pending":
+        if profile_id is not None or profile_sha is not None:
+            raise HarnessError("pending platform gate must not claim a validation profile")
+    elif (
+        not isinstance(profile_id, str)
+        or not re.fullmatch(r"[A-Za-z0-9._/-]+", profile_id)
+        or not isinstance(profile_sha, str)
+        or not SHA256_RE.fullmatch(profile_sha)
+    ):
+        raise HarnessError("active platform gate needs a bound sandbox profile")
 
     task_policy = contract.get("task_record_policy")
     if not isinstance(task_policy, dict):
@@ -282,6 +423,7 @@ def validate_contract(
         "pr_only",
         "strict_base_freshness",
         "no_bypass",
+        "same_repository_prs_only",
         "expected_head_required",
     )
     if not isinstance(github, dict) or any(github.get(key) is not True for key in required_true):
@@ -301,6 +443,10 @@ def validate_contract(
         raise HarnessError("baseline_receipt policy is required")
     if baseline.get("path") != RECEIPT_PATH or baseline.get("schema_version") != RECEIPT_VERSION:
         raise HarnessError("unexpected baseline receipt policy")
+    if baseline.get("evidence_kind") != "github_app_check_run":
+        raise HarnessError("baseline evidence must be a GitHub App check run")
+    if baseline.get("check_name") != "harness/baseline":
+        raise HarnessError("unexpected baseline check name")
     allowed_validators = baseline.get("allowed_validators")
     if not isinstance(allowed_validators, list) or not allowed_validators or not all(
         isinstance(actor, str) and actor for actor in allowed_validators
@@ -348,11 +494,57 @@ def validate_candidate_contract_transition(
         candidate_contract["required_files"],
         "required_files",
     )
-    require_superset(
-        trusted_contract["required_checks"],
-        candidate_contract["required_checks"],
-        "required_checks",
-    )
+    trusted_checks = {
+        check["context"]: check for check in trusted_contract["required_checks"]
+    }
+    candidate_checks = {
+        check["context"]: check for check in candidate_contract["required_checks"]
+    }
+    missing_checks = sorted(set(trusted_checks) - set(candidate_checks))
+    if missing_checks:
+        raise HarnessError(f"candidate removes required checks: {missing_checks!r}")
+    trusted_check = trusted_checks["harness/evidence"]
+    candidate_check = candidate_checks["harness/evidence"]
+    if candidate_check.get("kind") != trusted_check.get("kind"):
+        raise HarnessError("candidate changes harness/evidence kind")
+    trusted_publisher = trusted_check["publisher"]
+    candidate_publisher = candidate_check["publisher"]
+    if candidate_publisher.get("model") != trusted_publisher.get("model"):
+        raise HarnessError("candidate changes required check publisher model")
+
+    trusted_state = trusted_contract["platform_gate"]["state"]
+    candidate_state = candidate_contract["platform_gate"]["state"]
+    if trusted_state == "active":
+        if candidate_contract.get("repository_id") != trusted_contract.get("repository_id"):
+            raise HarnessError("candidate changes immutable repository_id")
+        if candidate_state != "active":
+            raise HarnessError("candidate deactivates the platform machine gate")
+        if candidate_publisher != trusted_publisher:
+            raise HarnessError("candidate changes the active publisher identity")
+        if (
+            candidate_contract["publisher_validation"]
+            != trusted_contract["publisher_validation"]
+        ):
+            raise HarnessError("candidate changes the active validation profile")
+    elif candidate_state == "pending":
+        if candidate_contract.get("repository_id") != trusted_contract.get("repository_id"):
+            raise HarnessError("pending candidate changes repository_id")
+        if candidate_publisher != trusted_publisher:
+            raise HarnessError("pending candidate changes an unbound publisher identity")
+        if (
+            candidate_contract["publisher_validation"]
+            != trusted_contract["publisher_validation"]
+        ):
+            raise HarnessError("pending candidate changes validation profile")
+    elif candidate_state != "active":
+        raise HarnessError("invalid platform gate transition")
+    for context, trusted_product_check in trusted_checks.items():
+        if context == "harness/evidence":
+            continue
+        if candidate_checks[context] != trusted_product_check:
+            raise HarnessError(
+                f"candidate changes trusted product check definition: {context}"
+            )
 
     trusted_groups = trusted_contract["revalidation_groups"]
     candidate_groups = candidate_contract["revalidation_groups"]
@@ -371,33 +563,11 @@ def validate_candidate_contract_transition(
             f"revalidation_groups.{name}.commands",
         )
 
-    for relative in IMMUTABLE_TRUST_ROOTS:
-        if not is_repo_regular_file(trusted_root, relative):
-            raise HarnessError(f"trusted root-of-trust file is invalid: {relative}")
-        if not is_repo_regular_file(target_root, relative):
-            raise HarnessError(f"candidate root-of-trust file is invalid: {relative}")
-        if (trusted_root / relative).read_bytes() != (target_root / relative).read_bytes():
-            raise HarnessError(
-                f"candidate changes immutable root-of-trust file: {relative}"
-            )
-
-
-def gh_api_json(endpoint: str) -> Any:
-    completed = subprocess.run(
-        ["gh", "api", endpoint],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if completed.returncode != 0:
+    if candidate_contract["verifier"] != trusted_contract["verifier"]:
         raise HarnessError(
-            f"cannot inspect live GitHub policy at {endpoint}: "
-            f"{completed.stderr.strip()}"
+            "repo-harness-v3 verifier identity is immutable; use a new contract "
+            "version and an external publisher handoff"
         )
-    try:
-        return json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        raise HarnessError(f"GitHub returned invalid JSON for {endpoint}") from exc
 
 
 def validate_receipt_evidence_run(
@@ -405,163 +575,24 @@ def validate_receipt_evidence_run(
     receipt: dict[str, Any],
     contract: dict[str, Any],
 ) -> None:
-    pattern = re.compile(
-        rf"^https://github\.com/{re.escape(contract['repository'])}"
-        r"/actions/runs/([1-9][0-9]*)$"
-    )
-    match = pattern.fullmatch(pointer)
-    if match is None:
-        raise HarnessError("receipt evidence must be an exact workflow-run URL")
-    run_id = int(match.group(1))
-    run = gh_api_json(
-        f"repos/{contract['repository']}/actions/runs/{run_id}"
-    )
-    if not isinstance(run, dict):
-        raise HarnessError("receipt evidence workflow run is not an object")
-    expected = {
-        "id": run_id,
-        "html_url": pointer,
-        "name": "harness/evidence",
-        "event": "workflow_dispatch",
-        "head_branch": contract["default_branch"],
-        "head_sha": receipt["validated_commit_sha"],
-        "status": "completed",
-        "conclusion": "success",
-    }
-    mismatches = [
-        field for field, value in expected.items() if run.get(field) != value
-    ]
-    if mismatches:
-        raise HarnessError(
-            "receipt evidence run does not bind the validated baseline: "
-            + ", ".join(mismatches)
-        )
-    repository = run.get("repository")
-    if (
-        not isinstance(repository, dict)
-        or repository.get("full_name") != contract["repository"]
-    ):
-        raise HarnessError("receipt evidence run belongs to another repository")
-    actor = run.get("actor")
-    if (
-        not isinstance(actor, dict)
-        or actor.get("login") != receipt["validated_by"]
-    ):
-        raise HarnessError("receipt evidence actor does not match validated_by")
-    path = run.get("path")
-    if (
-        not isinstance(path, str)
-        or not path.startswith(".github/workflows/harness-evidence.yml")
-    ):
-        raise HarnessError("receipt evidence came from another workflow")
+    del pointer, receipt, contract
+    raise HarnessError(EXTERNAL_AUTHORITY_REQUIRED)
 
 
 def run_revalidation_commands(
     root: Path,
     contract: dict[str, Any],
 ) -> None:
-    for name, group in contract["revalidation_groups"].items():
-        for command in group["commands"]:
-            print(f"revalidation[{name}]: {command}", flush=True)
-            completed = subprocess.run(
-                ["bash", "-lc", command],
-                cwd=root,
-                check=False,
-            )
-            if completed.returncode != 0:
-                raise HarnessError(
-                    f"revalidation command failed for {name}: {command}"
-                )
+    del root, contract
+    raise HarnessError(
+        "contract command strings are audit instructions, not trusted "
+        "executables; run them only in an operator-selected disposable sandbox"
+    )
 
 
 def validate_live_platform(contract: dict[str, Any]) -> None:
-    repository = contract["repository"]
-    rulesets = gh_api_json(f"repos/{repository}/rulesets")
-    if not isinstance(rulesets, list):
-        raise HarnessError("GitHub ruleset list is not an array")
-    matches = [
-        item
-        for item in rulesets
-        if isinstance(item, dict)
-        and item.get("name") == "main-platform-gate"
-        and item.get("enforcement") == "active"
-    ]
-    if len(matches) != 1 or not isinstance(matches[0].get("id"), int):
-        raise HarnessError("expected exactly one active main-platform-gate ruleset")
-    detail = gh_api_json(f"repos/{repository}/rulesets/{matches[0]['id']}")
-    if not isinstance(detail, dict):
-        raise HarnessError("GitHub ruleset detail is not an object")
-    if detail.get("bypass_actors") != []:
-        raise HarnessError("main-platform-gate must have no bypass actors")
-    conditions = detail.get("conditions")
-    ref_name = conditions.get("ref_name") if isinstance(conditions, dict) else None
-    includes = ref_name.get("include") if isinstance(ref_name, dict) else None
-    excludes = ref_name.get("exclude") if isinstance(ref_name, dict) else None
-    accepted_targets = {
-        "~DEFAULT_BRANCH",
-        f"refs/heads/{contract['default_branch']}",
-    }
-    if not isinstance(includes, list) or not accepted_targets.intersection(includes):
-        raise HarnessError("main-platform-gate does not target the default branch")
-    if excludes != []:
-        raise HarnessError("main-platform-gate excludes the default branch")
-    rules = detail.get("rules")
-    if not isinstance(rules, list):
-        raise HarnessError("main-platform-gate has no rules")
-    rule_types = {
-        rule.get("type") for rule in rules if isinstance(rule, dict)
-    }
-    required_types = {
-        "pull_request",
-        "required_status_checks",
-        "deletion",
-        "non_fast_forward",
-    }
-    if not required_types.issubset(rule_types):
-        raise HarnessError("main-platform-gate omits an atomic machine rule")
-    status_rules = [
-        rule
-        for rule in rules
-        if isinstance(rule, dict) and rule.get("type") == "required_status_checks"
-    ]
-    if len(status_rules) != 1:
-        raise HarnessError("main-platform-gate must have one status-check rule")
-    parameters = status_rules[0].get("parameters")
-    if (
-        not isinstance(parameters, dict)
-        or parameters.get("strict_required_status_checks_policy") is not True
-    ):
-        raise HarnessError("required checks must enforce strict base freshness")
-    configured_checks = parameters.get("required_status_checks")
-    if not isinstance(configured_checks, list):
-        raise HarnessError("ruleset required checks are missing")
-    configured_by_context = {
-        item.get("context"): item
-        for item in configured_checks
-        if isinstance(item, dict) and isinstance(item.get("context"), str)
-    }
-    expected_contexts = {
-        item["context"] for item in contract["required_checks"]
-    }
-    if not expected_contexts.issubset(configured_by_context):
-        raise HarnessError("ruleset omits a contract-required check")
-    github_actions_app = gh_api_json("apps/github-actions")
-    github_actions_id = (
-        github_actions_app.get("id")
-        if isinstance(github_actions_app, dict)
-        else None
-    )
-    if not isinstance(github_actions_id, int):
-        raise HarnessError("cannot resolve the GitHub Actions publisher identity")
-    for check in contract["required_checks"]:
-        if (
-            check["publisher"] == "github-actions[bot]"
-            and configured_by_context[check["context"]].get("integration_id")
-            != github_actions_id
-        ):
-            raise HarnessError(
-                f"required check publisher is not pinned: {check['context']}"
-            )
+    del contract
+    raise HarnessError(EXTERNAL_AUTHORITY_REQUIRED)
 
 
 def active_plans(root: Path) -> list[Path]:
@@ -578,7 +609,7 @@ def active_plans(root: Path) -> list[Path]:
     return plans
 
 
-def validate_active_plan(root: Path) -> None:
+def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
     plans = active_plans(root)
     if len(plans) > 1:
         raise HarnessError("multiple Active Plans are forbidden")
@@ -593,7 +624,9 @@ def validate_active_plan(root: Path) -> None:
     ).strip():
         raise HarnessError("Active Plan must not be an unchanged template")
     metadata = text.split("## Goal", 1)[0]
+    values: dict[str, str] = {}
     for key in (
+        "Status",
         "Task class",
         "Model",
         "Reasoning effort",
@@ -604,6 +637,17 @@ def validate_active_plan(root: Path) -> None:
         match = re.search(rf"^- {re.escape(key)}:\s*(\S.*)$", metadata, re.MULTILINE)
         if match is None:
             raise HarnessError(f"Active Plan has no concrete {key}")
+        values[key] = match.group(1).strip()
+    if values["Status"] != "active":
+        raise HarnessError("Active Plan status must be active")
+    task_policy = contract["task_record_policy"]
+    if values["Task class"] not in task_policy["task_class_values"]:
+        raise HarnessError("Active Plan has an invalid task class")
+    unknown = {"unknown"} if task_policy.get("unknown_allowed") is True else set()
+    if values["Reasoning effort"] not in set(task_policy["reasoning_effort_values"]) | unknown:
+        raise HarnessError("Active Plan has an invalid reasoning effort")
+    if values["Speed"] not in set(task_policy["speed_values"]) | unknown:
+        raise HarnessError("Active Plan has an invalid speed")
 
 
 def validate_eval_rules(root: Path) -> None:
@@ -649,13 +693,14 @@ def validate_eval_rules(root: Path) -> None:
             raise HarnessError(f"{manifest_path}: active rule needs Owner confirmation")
 
 
-def validate_receipt(
+def validate_receipt_structure(
     receipt: dict[str, Any],
     contract: dict[str, Any],
     expected_sha: str | None = None,
-    *,
-    verify_live_evidence: bool = False,
 ) -> None:
+    """Validate JSON shape only; this function never establishes readiness."""
+    if contract["platform_gate"]["state"] != "active":
+        raise HarnessError("pending platform gate cannot have a baseline receipt")
     if receipt.get("schema_version") != RECEIPT_VERSION:
         raise HarnessError("unsupported receipt schema")
     if receipt.get("repository") != contract.get("repository"):
@@ -697,27 +742,35 @@ def validate_receipt(
         raise HarnessError("full validation must include every revalidation group")
     if not isinstance(results, dict):
         raise HarnessError("receipt has no group results")
-    for group in groups:
+    if set(results) != known_groups:
+        missing = sorted(known_groups - set(results))
+        extra = sorted(set(results) - known_groups)
+        detail = []
+        if missing:
+            detail.append("missing=" + ",".join(missing))
+        if extra:
+            detail.append("extra=" + ",".join(extra))
+        raise HarnessError(
+            "receipt results must contain exactly every current revalidation "
+            "group (" + "; ".join(detail) + ")"
+        )
+    for group in sorted(known_groups):
         result = results.get(group)
         if not isinstance(result, dict) or result.get("result") != "passed":
             raise HarnessError(f"receipt group did not pass: {group}")
         pointer = result.get("evidence")
         if not isinstance(pointer, str) or not pointer:
             raise HarnessError(f"receipt group has no evidence pointer: {group}")
-        actions_prefix = (
-            f"https://github.com/{contract['repository']}/actions/runs/"
-        )
-        run_id = pointer.removeprefix(actions_prefix)
+        check_run_prefix = f"https://github.com/{contract['repository']}/runs/"
+        run_id = pointer.removeprefix(check_run_prefix)
         if (
-            not pointer.startswith(actions_prefix)
+            not pointer.startswith(check_run_prefix)
             or not run_id.isdigit()
             or run_id == "0"
         ):
             raise HarnessError(
-                f"receipt group evidence must identify a GitHub Actions run: {group}"
+                f"receipt group evidence must identify a GitHub App check run: {group}"
             )
-        if verify_live_evidence:
-            validate_receipt_evidence_run(pointer, receipt, contract)
 
 
 def git_result(git_dir: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -767,21 +820,29 @@ def git_diff_entries(git_dir: Path, base_sha: str, head_sha: str) -> list[DiffEn
         git_dir,
         "diff",
         "--name-status",
+        "-z",
         "-M",
         base_sha,
         head_sha,
     )
     if completed.returncode != 0:
         raise HarnessError(f"cannot classify Git diff: {completed.stderr.strip()}")
+    fields = completed.stdout.split("\0")
+    if fields and fields[-1] == "":
+        fields.pop()
     entries: list[DiffEntry] = []
-    for line in completed.stdout.splitlines():
-        fields = line.split("\t")
-        if not fields:
-            continue
-        if fields[0].startswith(("R", "C")) and len(fields) >= 3:
-            entries.append(DiffEntry(fields[0], (fields[1], fields[2])))
-        elif len(fields) >= 2:
-            entries.append(DiffEntry(fields[0], (fields[1],)))
+    index = 0
+    while index < len(fields):
+        status = fields[index]
+        index += 1
+        path_count = 2 if status.startswith(("R", "C")) else 1
+        if not status or index + path_count > len(fields):
+            raise HarnessError("git returned a malformed NUL-delimited diff")
+        paths = tuple(fields[index : index + path_count])
+        if any(not path for path in paths):
+            raise HarnessError("git returned an empty changed path")
+        entries.append(DiffEntry(status, paths))
+        index += path_count
     return entries
 
 
@@ -857,40 +918,9 @@ def validate_trusted_baseline(
     trusted_contract: dict[str, Any],
     git_dir: Path,
     base_sha: str,
-    *,
-    verify_live_evidence: bool = False,
 ) -> None:
-    if not is_repo_regular_file(trusted_root, RECEIPT_PATH):
-        raise HarnessError("trusted-base baseline receipt is missing or not regular")
-    receipt = load_json(trusted_root / RECEIPT_PATH)
-    validate_receipt(
-        receipt,
-        trusted_contract,
-        verify_live_evidence=verify_live_evidence,
-    )
-    validate_all_group_evidence(receipt, trusted_contract)
-    validated_sha = receipt["validated_commit_sha"]
-    if not git_commit_exists(git_dir, validated_sha):
-        raise HarnessError("receipt validated commit does not exist")
-    if not git_is_ancestor(git_dir, validated_sha, base_sha):
-        raise HarnessError("receipt validated commit is not an ancestor of the PR base")
-    baseline_contract = load_contract_at_commit(
-        git_dir,
-        validated_sha,
-        trusted_root,
-    )
-    if baseline_contract.get("repository") != trusted_contract.get("repository"):
-        raise HarnessError("validated contract repository does not match trusted base")
-    drift = git_diff_entries(git_dir, validated_sha, base_sha)
-    control_specs = control_specs_for(baseline_contract, trusted_contract)
-    control_drift = sorted(
-        path for path in changed_paths(drift) if matches_any(path, control_specs)
-    )
-    if control_drift:
-        raise HarnessError(
-            "trusted-base baseline is stale after control-plane drift: "
-            + ", ".join(control_drift)
-        )
+    del trusted_root, trusted_contract, git_dir, base_sha
+    raise HarnessError(EXTERNAL_AUTHORITY_REQUIRED)
 
 
 def is_receipt_cleanup(entries: list[DiffEntry]) -> bool:
@@ -923,78 +953,9 @@ def validate_receipt_cleanup(
     git_dir: Path,
     base_sha: str,
     entries: list[DiffEntry],
-    *,
-    verify_live_evidence: bool = False,
 ) -> None:
-    if not is_receipt_cleanup(entries):
-        raise HarnessError("audit-state changes are allowed only in the cleanup PR")
-    trusted_plans = active_plans(trusted_root)
-    if len(trusted_plans) != 1:
-        raise HarnessError("cleanup PR base must contain exactly one Active Plan")
-    plan_entry = next(
-        entry
-        for entry in entries
-        if entry.status == "R100"
-        and entry.paths[0].startswith("docs/exec-plans/active/")
-    )
-    trusted_plan_relative = trusted_plans[0].relative_to(trusted_root).as_posix()
-    if plan_entry.paths[0] != trusted_plan_relative:
-        raise HarnessError("cleanup PR does not archive the trusted Active Plan")
-    if active_plans(target_root):
-        raise HarnessError("cleanup PR must archive the Active Plan")
-    if not is_repo_regular_file(target_root, RECEIPT_PATH):
-        raise HarnessError("cleanup receipt must be a regular in-repository file")
-    receipt = load_json(target_root / RECEIPT_PATH)
-    validate_receipt(
-        receipt,
-        trusted_contract,
-        expected_sha=base_sha,
-        verify_live_evidence=verify_live_evidence,
-    )
-    validate_all_group_evidence(receipt, trusted_contract)
-
-    trusted_receipt_path = trusted_root / RECEIPT_PATH
-    prior_receipt_usable = False
-    required_groups: set[str] = set(trusted_contract["revalidation_groups"])
-    if is_repo_regular_file(trusted_root, RECEIPT_PATH):
-        prior_receipt = load_json(trusted_receipt_path)
-        validate_receipt(
-            prior_receipt,
-            trusted_contract,
-            verify_live_evidence=verify_live_evidence,
-        )
-        prior_sha = prior_receipt["validated_commit_sha"]
-        if not git_commit_exists(git_dir, prior_sha):
-            raise HarnessError("prior receipt validated commit does not exist")
-        if not git_is_ancestor(git_dir, prior_sha, base_sha):
-            raise HarnessError("prior receipt is not an ancestor of the cleanup base")
-        prior_contract = load_contract_at_commit(
-            git_dir,
-            prior_sha,
-            trusted_root,
-        )
-        drift = git_diff_entries(git_dir, prior_sha, base_sha)
-        required_groups = affected_groups(
-            drift,
-            prior_contract,
-            trusted_contract,
-        )
-        prior_receipt_usable = True
-
-    if not prior_receipt_usable:
-        if receipt.get("validation_type") != "full":
-            raise HarnessError("initial or recovery cleanup requires full validation")
-        required_groups = set(trusted_contract["revalidation_groups"])
-    elif not required_groups:
-        raise HarnessError("receipt cleanup has no preceding control-plane change")
-
-    validated_groups = set(receipt.get("validated_groups", []))
-    if not required_groups.issubset(validated_groups):
-        missing = sorted(required_groups - validated_groups)
-        raise HarnessError(
-            "cleanup receipt omits affected revalidation groups: "
-            + ", ".join(missing)
-        )
+    del trusted_root, target_root, trusted_contract, git_dir, base_sha, entries
+    raise HarnessError(EXTERNAL_AUTHORITY_REQUIRED)
 
 
 def verify_candidate(
@@ -1003,12 +964,10 @@ def verify_candidate(
     git_dir: Path | None,
     base_sha: str | None,
     head_sha: str | None,
-    *,
-    verify_live_evidence: bool = False,
 ) -> None:
     trusted_contract = load_json(trusted_root / CONTRACT_PATH)
     validate_contract(trusted_contract, trusted_root)
-    validate_active_plan(target_root)
+    validate_active_plan(target_root, trusted_contract)
     validate_eval_rules(target_root)
 
     for relative in trusted_contract["required_files"]:
@@ -1025,6 +984,10 @@ def verify_candidate(
         trusted_root,
         target_root,
     )
+    trusted_state = trusted_contract["platform_gate"]["state"]
+    candidate_state = candidate_contract["platform_gate"]["state"]
+    if trusted_state == "active" or candidate_state == "active":
+        raise HarnessError(EXTERNAL_AUTHORITY_REQUIRED)
 
     if git_dir is None:
         return
@@ -1034,27 +997,13 @@ def verify_candidate(
     paths = sorted(changed_paths(entries))
     audit = normalize_specs(trusted_contract["audit_state_paths"], "audit_state_paths")
     if any(matches_any(path, audit) for path in paths):
-        validate_receipt_cleanup(
-            trusted_root,
-            target_root,
-            trusted_contract,
-            git_dir,
-            base_sha,
-            entries,
-            verify_live_evidence=verify_live_evidence,
-        )
-        return
+        raise HarnessError(EXTERNAL_AUTHORITY_REQUIRED)
 
-    validate_trusted_baseline(
-        trusted_root,
-        trusted_contract,
-        git_dir,
-        base_sha,
-        verify_live_evidence=verify_live_evidence,
-    )
     control = normalize_specs(trusted_contract["control_plane_paths"], "control_plane_paths")
-    if any(matches_any(path, control) for path in paths) and not active_plans(target_root):
-        raise HarnessError("control-plane change requires exactly one Active Plan")
+    control_changed = any(matches_any(path, control) for path in paths)
+    plans = active_plans(target_root)
+    del control_changed, plans
+    raise HarnessError(EXTERNAL_AUTHORITY_REQUIRED)
 
 
 def parse_args() -> argparse.Namespace:
@@ -1066,10 +1015,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-sha")
     parser.add_argument("--head-sha")
     parser.add_argument("--expected-repository")
+    parser.add_argument("--expected-repository-id", type=int)
     parser.add_argument("--expected-default-branch")
     parser.add_argument("--check-platform", action="store_true")
-    parser.add_argument("--run-revalidation", action="store_true")
-    parser.add_argument("--verify-live-evidence", action="store_true")
     return parser.parse_args()
 
 
@@ -1086,22 +1034,39 @@ def main() -> int:
             ):
                 raise HarnessError("contract repository does not match runtime identity")
             if (
+                args.expected_repository_id is not None
+                and contract["repository_id"] != args.expected_repository_id
+            ):
+                raise HarnessError(
+                    "contract repository_id does not match runtime identity"
+                )
+            if (
                 args.expected_default_branch is not None
                 and contract["default_branch"] != args.expected_default_branch
             ):
                 raise HarnessError(
                     "contract default branch does not match runtime identity"
                 )
-            validate_active_plan(root)
+            validate_active_plan(root, contract)
             validate_eval_rules(root)
+            if contract["platform_gate"]["state"] == "pending":
+                receipt_path = root / RECEIPT_PATH
+                if receipt_path.exists() or receipt_path.is_symlink():
+                    raise HarnessError(
+                        "pending establishment must not contain a baseline receipt"
+                    )
+                if len(active_plans(root)) != 1:
+                    raise HarnessError(
+                        "pending establishment requires exactly one Active Plan"
+                    )
             if args.check_platform:
                 validate_live_platform(contract)
-            if args.run_revalidation:
-                run_revalidation_commands(root, contract)
+            if contract["platform_gate"]["state"] == "active":
+                raise HarnessError(EXTERNAL_AUTHORITY_REQUIRED)
         else:
-            if args.check_platform or args.run_revalidation:
+            if args.check_platform:
                 raise HarnessError(
-                    "--check-platform and --run-revalidation require --repo"
+                    "--check-platform requires --repo"
                 )
             if args.trusted_root is None or args.target_root is None:
                 raise HarnessError("--repo or both --trusted-root and --target-root are required")
@@ -1111,7 +1076,6 @@ def main() -> int:
                 args.git_dir.resolve() if args.git_dir else None,
                 args.base_sha,
                 args.head_sha,
-                verify_live_evidence=args.verify_live_evidence,
             )
             trusted_contract = load_json(
                 args.trusted_root.resolve() / CONTRACT_PATH
@@ -1132,7 +1096,7 @@ def main() -> int:
     except HarnessError as exc:
         print(f"harness check failed: {exc}", file=sys.stderr)
         return 1
-    print("harness check passed")
+    print("harness diagnostic structure check passed; readiness is not established")
     return 0
 
 

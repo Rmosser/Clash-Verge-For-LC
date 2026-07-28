@@ -10,7 +10,6 @@
     "docs/doc-sync-rules.json",
     ".harness/repo-contract.json",
     ".github/pull_request_template.md",
-    ".github/workflows/harness-evidence.yml",
     ".github/workflows/product-validation.yml",
     "README.md",
     "docs/USER_GUIDE.md",

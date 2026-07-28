@@ -43,3 +43,8 @@ Describe ordered, reviewable work units and rollback boundaries.
 - Final evidence:
 - Merge receipt:
 - Archive destination:
+
+For ordinary product work, close and archive this plan in the same product PR;
+the GitHub PR/task record carries the merge receipt. For Harness control-plane
+work, leave the plan active through the Harness merge and archive it only in the
+immediately following baseline-receipt cleanup PR.
