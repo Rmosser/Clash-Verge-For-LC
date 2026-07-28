@@ -68,12 +68,24 @@ class DocumentationContractTest(unittest.TestCase):
             "`[documentation](docs/index.md)`\n",
             "    [documentation](docs/index.md)\n",
             "![documentation](docs/index.md)\n",
+            "\\[documentation](docs/index.md)\n",
             "```\n[documentation](docs/index.md)\n```\n",
         ):
             with self.subTest(text=text):
                 source.write_text(text, encoding="utf-8")
                 with self.assertRaisesRegex(checker.DocsError, "does not link"):
                     checker.validate(self.rules, self.root)
+
+    def test_commonmark_escape_parity_and_inline_html_links_pass(self) -> None:
+        source = self.root / "AGENTS.md"
+        for text in (
+            "\\\\[documentation](docs/index.md)\n",
+            "\\![documentation](docs/index.md)\n",
+            "<code>[documentation](docs/index.md)</code>\n",
+        ):
+            with self.subTest(text=text):
+                source.write_text(text, encoding="utf-8")
+                checker.validate(self.rules, self.root)
 
     def test_unterminated_fence_fails_closed(self) -> None:
         (self.root / "AGENTS.md").write_text(

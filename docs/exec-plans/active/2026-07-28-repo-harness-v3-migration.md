@@ -85,6 +85,11 @@ behavior or claiming platform readiness.
   its missing-required-path and missing-entrypoint-link regressions as required
   control files and revalidation commands.
 - Review rework round 5: upheld rollout findings now accept as Active Plan evidence only visible rendered Markdown, with container-aware CommonMark fence, indentation, list, task, heading, reference, HTML, autolink, and Unicode semantics; Markdown links and images are replaced by visible prose plus autolinks. Strict JSON rejects duplicate keys and non-standard constants. Initial migration recognizes only minimum legacy structural profiles and rejects malformed identity, contractless legacy runtime, partial v3 scaffolds, or legacy/v3 dual stacks. A rollout finding against the shared verifier concerning gitlinks was disputed: the exact commit-tree OID remains binding, while materialization permits only an absent or empty real directory.
+- Review rework round 6: partially upheld the exact-head docs finding.
+  Backslash-escaped Markdown links are now rejected with odd/even escape
+  regression coverage. The inline HTML code-wrapper claim was disputed because
+  GitHub Flavored Markdown still renders its nested anchor as a clickable link;
+  the positive control remains covered by tests.
 - Current-head Review: pending; any finding, stale head, partial output,
   timeout, or author ambiguity blocks merge
 

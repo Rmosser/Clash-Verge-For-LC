@@ -15,7 +15,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 RULES_PATH = "docs/doc-sync-rules.json"
-LINK_RE = re.compile(r"(?<!!)\[[^\]]*\]\(\s*(?:<([^>\r\n]+)>|([^\s)]+))")
+LINK_RE = re.compile(r"\[[^\]]*\]\(\s*(?:<([^>\r\n]+)>|([^\s)]+))")
 INLINE_CODE_RE = re.compile(r"(?P<ticks>`+)[^\r\n]*?(?P=ticks)")
 COMMONMARK_BLOCK_TAGS = (
     "address|article|aside|base|basefont|blockquote|body|caption|center|col|"
@@ -86,6 +86,15 @@ def visible_markdown(text: str) -> str:
     return visible
 
 
+def markdown_character_is_escaped(text: str, index: int) -> bool:
+    backslashes = 0
+    cursor = index - 1
+    while cursor >= 0 and text[cursor] == "\\":
+        backslashes += 1
+        cursor -= 1
+    return backslashes % 2 == 1
+
+
 def canonical_relative(
     value: Any,
     label: str,
@@ -138,10 +147,18 @@ def link_targets(source: Path, root: Path) -> set[Path]:
         text = visible_markdown(source.read_text(encoding="utf-8"))
     except (OSError, UnicodeError) as exc:
         fail(f"cannot read {source.relative_to(root).as_posix()}: {exc}")
-    raw_targets = [
-        (match.group(1) or match.group(2) or "").strip()
-        for match in LINK_RE.finditer(text)
-    ]
+    raw_targets: list[str] = []
+    for match in LINK_RE.finditer(text):
+        opening_bracket = match.start()
+        if markdown_character_is_escaped(text, opening_bracket):
+            continue
+        if (
+            opening_bracket > 0
+            and text[opening_bracket - 1] == "!"
+            and not markdown_character_is_escaped(text, opening_bracket - 1)
+        ):
+            continue
+        raw_targets.append((match.group(1) or match.group(2) or "").strip())
     targets: set[Path] = set()
     for raw in raw_targets:
         if raw.startswith(("http://", "https://", "mailto:", "#")):
