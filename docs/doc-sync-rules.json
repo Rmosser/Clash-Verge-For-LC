@@ -14,6 +14,7 @@
     ".github/pull_request_template.md",
     ".github/workflows/product-validation.yml",
     "README.md",
+    "docs/CURRENT_RUNTIME.md",
     "docs/USER_GUIDE.md",
     "docs/LAZYCAT_NETWORK_REPORT.md",
     "docs/SECURITY.md",
@@ -32,6 +33,7 @@
       "source": "docs/index.md",
       "targets": [
         "../README.md",
+        "CURRENT_RUNTIME.md",
         "USER_GUIDE.md",
         "LAZYCAT_NETWORK_REPORT.md",
         "SECURITY.md",

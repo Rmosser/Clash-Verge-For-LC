@@ -129,11 +129,11 @@ V3_ARTIFACT_MARKERS = {
     ),
     "docs/index.md": (
         ".harness/repo-contract.json",
-        "docs/governance/harness.md",
+        "governance/harness.md",
     ),
     "docs/INDEX.md": (
         ".harness/repo-contract.json",
-        "docs/governance/harness.md",
+        "governance/harness.md",
     ),
     ".github/pull_request_template.md": (
         "Plan lifecycle: `product-same-PR` | `harness-post-merge-cleanup`",
@@ -1112,6 +1112,16 @@ def validate_contract(
     platform_state = platform_gate.get("state")
     if platform_state not in {"pending", "active"}:
         raise HarnessError("platform_gate state must be pending or active")
+    expected_platform_keys = (
+        {"state", "pending_reason"}
+        if platform_state == "pending"
+        else {"state"}
+    )
+    if set(platform_gate) != expected_platform_keys:
+        raise HarnessError(
+            f"{platform_state} platform_gate schema must contain exactly "
+            f"{sorted(expected_platform_keys)!r}"
+        )
     publisher = harness_check["publisher"]
     app_id = publisher.get("app_id")
     app_slug = publisher.get("app_slug")
@@ -1159,6 +1169,12 @@ def validate_contract(
     task_policy = contract.get("task_record_policy")
     if not isinstance(task_policy, dict):
         raise HarnessError("task_record_policy is required")
+    if task_policy.get("task_class_values") != [
+        "trivial",
+        "standard",
+        "critical",
+    ]:
+        raise HarnessError("unexpected task-class values")
     if task_policy.get("record_actual") != ["model", "reasoning_effort", "speed"]:
         raise HarnessError("task records must capture actual model, effort, and speed")
     if task_policy.get("model_policy") != "record_selector_value_verbatim":

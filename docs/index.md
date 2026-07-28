@@ -3,6 +3,7 @@
 ## Product and operations
 
 - [README.md](../README.md): project entrypoint and quick start.
+- [CURRENT_RUNTIME.md](CURRENT_RUNTIME.md): current runtime contract and source of truth.
 - [USER_GUIDE.md](USER_GUIDE.md): subscription import, Docker proxy, and user operations.
 - [LAZYCAT_NETWORK_REPORT.md](LAZYCAT_NETWORK_REPORT.md): TUN and control-plane bypass risks.
 - [SECURITY.md](SECURITY.md): controller isolation and secret handling.

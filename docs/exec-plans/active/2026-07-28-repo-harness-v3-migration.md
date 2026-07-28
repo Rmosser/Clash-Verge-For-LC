@@ -92,6 +92,20 @@ behavior or claiming platform readiness.
   the positive control remains covered by tests.
 - Review rework round 6 shared-verifier: upheld exact-head findings now recognize customized partial-v3 entrypoints using exact repository path case, including supported uppercase index and PR-template variants. Required Active Plan values remain placeholders when a placeholder token is followed by Unicode punctuation; legitimate longer names remain valid.
 - Review rework round 7 shared-verifier: upheld delegation-audit and rendered-evidence boundary findings. Single-agent audit fields are semantically not_applicable except for the task-class-aware fallback; delegated routes require concrete scopes and a result. Non-void self-closing HTML fails closed, while inline code remains visible literal evidence rather than being parsed as raw HTML.
+- Review adjudication round 8: upheld the current-runtime inventory finding.
+  `docs/CURRENT_RUNTIME.md`, which README declares as the current runtime
+  contract and source of truth, is now both a required path and a navigable
+  `docs/index.md` target, with a repository-policy regression test. The same
+  parser audit excludes container code blocks and single- or multiline code
+  spans from navigation evidence.
+- Review rework round 9: upheld the reference-link follow-up. Entrypoint
+  validation now recognizes full, collapsed, and shortcut references while
+  preserving escape parity and reserving escaped-reference and reference-image
+  spans against shortcut reinterpretation. Every extracted local inline or
+  reference target is existence-checked; exact regressions cover all three
+  reference forms, both pseudo-link forms, even escape parity, and dangling
+  local targets.
+- Review rework round 8 shared-verifier: upheld three fail-open schema and migration-signature findings. Pending and active platform gates now use exact state-specific schemas; documentation-index partial-v3 signatures recognize canonical index-relative governance links; and task classes are fixed to trivial, standard, and critical so contract vocabulary cannot disable delegation fallback rules.
 - Current-head Review: pending; any finding, stale head, partial output,
   timeout, or author ambiguity blocks merge
 

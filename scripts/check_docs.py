@@ -15,8 +15,23 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 RULES_PATH = "docs/doc-sync-rules.json"
-LINK_RE = re.compile(r"\[[^\]]*\]\(\s*(?:<([^>\r\n]+)>|([^\s)]+))")
-INLINE_CODE_RE = re.compile(r"(?P<ticks>`+)[^\r\n]*?(?P=ticks)")
+LINK_RE = re.compile(
+    r"(?P<image>!)?\[[^\]\n]*\]\(\s*"
+    r"(?P<destination><[^>\n]+>|[^)\s]+)"
+    r"(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?\s*\)"
+)
+REFERENCE_DEFINITION_RE = re.compile(
+    r"^[ ]{0,3}\[(?P<label>[^\]\n]+)\]:[ \t]*"
+    r"(?P<destination><[^>\n]+>|[^ \t\n]+)"
+    r"(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?[ \t]*$"
+)
+REFERENCE_DEFINITION_PREFIX_RE = re.compile(r"^[ ]{0,3}\[[^\]\n]+\]:")
+FULL_REFERENCE_LINK_RE = re.compile(
+    r"(?P<image>!)?\[(?P<text>[^\]\n]*)\]\[(?P<label>[^\]\n]*)\]"
+)
+SHORTCUT_REFERENCE_LINK_RE = re.compile(
+    r"(?P<image>!)?\[(?P<label>[^\]\n]+)\](?![\[(])"
+)
 COMMONMARK_BLOCK_TAGS = (
     "address|article|aside|base|basefont|blockquote|body|caption|center|col|"
     "colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|"
@@ -44,11 +59,91 @@ def fail(message: str) -> None:
     raise DocsError(message)
 
 
+def indentation_columns(line: str) -> int:
+    columns = 0
+    for character in line:
+        if character == " ":
+            columns += 1
+        elif character == "\t":
+            columns += 4 - (columns % 4)
+        else:
+            break
+    return columns
+
+
+def strip_commonmark_container_prefixes(line: str) -> tuple[str, bool]:
+    normalized = line
+    changed = False
+    while True:
+        previous = normalized
+        normalized = re.sub(r"^[ \t]{0,3}>[ \t]?", "", normalized, count=1)
+        normalized = re.sub(
+            r"^[ \t]{0,3}(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$)",
+            "",
+            normalized,
+            count=1,
+        )
+        if normalized == previous:
+            return normalized, changed
+        changed = True
+
+
+def strip_code_spans(text: str) -> str:
+    output: list[str] = []
+    cursor = 0
+    while cursor < len(text):
+        if text[cursor] != "`":
+            output.append(text[cursor])
+            cursor += 1
+            continue
+        run_end = cursor
+        while run_end < len(text) and text[run_end] == "`":
+            run_end += 1
+        delimiter = text[cursor:run_end]
+        search = run_end
+        closing = -1
+        while True:
+            candidate = text.find(delimiter, search)
+            if candidate < 0:
+                break
+            before_is_tick = candidate > 0 and text[candidate - 1] == "`"
+            after = candidate + len(delimiter)
+            after_is_tick = after < len(text) and text[after] == "`"
+            if not before_is_tick and not after_is_tick:
+                closing = candidate
+                break
+            search = candidate + 1
+        if closing < 0:
+            output.append(delimiter)
+            cursor = run_end
+            continue
+        span_end = closing + len(delimiter)
+        output.append(
+            "".join(
+                character if character in {"\n", "\r"} else " "
+                for character in text[cursor:span_end]
+            )
+        )
+        cursor = span_end
+    return "".join(output)
+
+
 def visible_markdown(text: str) -> str:
     lines: list[str] = []
     fence: tuple[str, int] | None = None
     for line in text.splitlines(keepends=True):
         content = line.rstrip("\r\n")
+        container_content, has_container = strip_commonmark_container_prefixes(
+            content
+        )
+        if has_container and (
+            re.match(r"^[ \t]{0,3}(`{3,}|~{3,})", container_content)
+            or (
+                container_content.strip()
+                and indentation_columns(container_content) >= 4
+            )
+        ):
+            fail("documentation contains code inside a Markdown container")
         if fence is not None:
             marker = re.fullmatch(r"[ \t]{0,3}(`{3,}|~{3,})[ \t]*", content)
             if (
@@ -70,7 +165,7 @@ def visible_markdown(text: str) -> str:
         if line.startswith(("\t", "    ")):
             lines.append("\n" if line.endswith("\n") else "")
             continue
-        lines.append(INLINE_CODE_RE.sub("", line))
+        lines.append(line)
     if fence is not None:
         fail("documentation contains an unterminated fenced code block")
     visible = re.sub(
@@ -81,6 +176,7 @@ def visible_markdown(text: str) -> str:
     )
     if "<!--" in visible or "-->" in visible:
         fail("documentation contains a malformed HTML comment")
+    visible = strip_code_spans(visible)
     if any(RAW_HTML_BLOCK_START_RE.match(line) for line in visible.splitlines()):
         fail("documentation contains raw HTML block markup")
     return visible
@@ -93,6 +189,74 @@ def markdown_character_is_escaped(text: str, index: int) -> bool:
         backslashes += 1
         cursor -= 1
     return backslashes % 2 == 1
+
+
+def normalized_reference_label(label: str) -> str:
+    return " ".join(label.split()).casefold()
+
+
+def raw_link_targets(text: str) -> list[str]:
+    visible = visible_markdown(text)
+    definitions: dict[str, str] = {}
+    content_lines: list[str] = []
+    for line in visible.splitlines():
+        definition = REFERENCE_DEFINITION_RE.fullmatch(line)
+        if definition:
+            label = normalized_reference_label(definition.group("label"))
+            if not label or label in definitions:
+                fail("documentation has an empty or duplicate reference label")
+            definitions[label] = definition.group("destination")
+            content_lines.append("")
+            continue
+        if REFERENCE_DEFINITION_PREFIX_RE.match(line):
+            fail("documentation has an unsupported reference definition")
+        content_lines.append(line)
+    content = "\n".join(content_lines)
+
+    raw_targets: list[str] = []
+    occupied_spans: list[tuple[int, int]] = []
+    for match in LINK_RE.finditer(content):
+        bracket = match.start() + (1 if match.group("image") else 0)
+        image = bool(
+            match.group("image")
+            and not markdown_character_is_escaped(content, match.start())
+        )
+        occupied_spans.append(match.span())
+        if image or markdown_character_is_escaped(content, bracket):
+            continue
+        raw_targets.append(match.group("destination").strip())
+    for match in FULL_REFERENCE_LINK_RE.finditer(content):
+        bracket = match.start() + (1 if match.group("image") else 0)
+        image = bool(
+            match.group("image")
+            and not markdown_character_is_escaped(content, match.start())
+        )
+        occupied_spans.append(match.span())
+        if image or markdown_character_is_escaped(content, bracket):
+            continue
+        label = match.group("label") or match.group("text")
+        destination = definitions.get(normalized_reference_label(label))
+        if destination is not None:
+            raw_targets.append(destination.strip())
+    for match in SHORTCUT_REFERENCE_LINK_RE.finditer(content):
+        bracket = match.start() + (1 if match.group("image") else 0)
+        image = bool(
+            match.group("image")
+            and not markdown_character_is_escaped(content, match.start())
+        )
+        if any(
+            start <= match.start() and match.end() <= end
+            for start, end in occupied_spans
+        ):
+            continue
+        if image or markdown_character_is_escaped(content, bracket):
+            continue
+        destination = definitions.get(
+            normalized_reference_label(match.group("label"))
+        )
+        if destination is not None:
+            raw_targets.append(destination.strip())
+    return raw_targets
 
 
 def canonical_relative(
@@ -144,23 +308,13 @@ def bounded_path(
 
 def link_targets(source: Path, root: Path) -> set[Path]:
     try:
-        text = visible_markdown(source.read_text(encoding="utf-8"))
+        raw_targets = raw_link_targets(source.read_text(encoding="utf-8"))
     except (OSError, UnicodeError) as exc:
         fail(f"cannot read {source.relative_to(root).as_posix()}: {exc}")
-    raw_targets: list[str] = []
-    for match in LINK_RE.finditer(text):
-        opening_bracket = match.start()
-        if markdown_character_is_escaped(text, opening_bracket):
-            continue
-        if (
-            opening_bracket > 0
-            and text[opening_bracket - 1] == "!"
-            and not markdown_character_is_escaped(text, opening_bracket - 1)
-        ):
-            continue
-        raw_targets.append((match.group(1) or match.group(2) or "").strip())
     targets: set[Path] = set()
     for raw in raw_targets:
+        if raw.startswith("<") and raw.endswith(">"):
+            raw = raw[1:-1].strip()
         if raw.startswith(("http://", "https://", "mailto:", "#")):
             continue
         raw = raw.split("#", 1)[0]
@@ -169,12 +323,19 @@ def link_targets(source: Path, root: Path) -> set[Path]:
         target = canonical_relative(raw, "Markdown link", allow_parent=True)
         resolved = (source.parent / Path(*target.parts)).resolve(strict=False)
         try:
-            resolved.relative_to(root.resolve())
+            relative_to_root = PurePosixPath(
+                resolved.relative_to(root.resolve()).as_posix()
+            )
         except ValueError:
             fail(
                 f"Markdown link escapes the repository in "
                 f"{source.relative_to(root).as_posix()}: {raw}"
             )
+        bounded_path(
+            root,
+            relative_to_root,
+            f"Markdown link target from {source.relative_to(root).as_posix()}",
+        )
         targets.add(resolved)
     return targets
 
@@ -279,6 +440,23 @@ def self_test(value: dict[str, Any]) -> None:
         except DocsError:
             continue
         fail(f"negative self-test unexpectedly passed: {label}")
+    for label, hidden in (
+        (
+            "container fence",
+            "> ```\n> [hidden](docs/index.md)\n> ```\n",
+        ),
+        (
+            "multiline code span",
+            "`start\n[hidden](docs/index.md)\nend`\n",
+        ),
+    ):
+        try:
+            visible = visible_markdown(hidden)
+        except DocsError:
+            continue
+        if LINK_RE.search(visible) is None:
+            continue
+        fail(f"negative self-test exposed a link inside {label}")
 
 
 def main(argv: list[str] | None = None) -> int:

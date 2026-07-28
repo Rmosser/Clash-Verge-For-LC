@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -52,6 +53,19 @@ class DocumentationContractTest(unittest.TestCase):
     def test_complete_contract_passes(self) -> None:
         checker.validate(self.rules, self.root)
 
+    def test_repository_inventory_includes_current_runtime_contract(self) -> None:
+        rules = json.loads(
+            (REPOSITORY / "docs/doc-sync-rules.json").read_text(encoding="utf-8")
+        )
+        self.assertIn("docs/CURRENT_RUNTIME.md", rules["required_paths"])
+        index_entry = next(
+            entry
+            for entry in rules["entrypoint_links"]
+            if entry["source"] == "docs/index.md"
+        )
+        self.assertIn("CURRENT_RUNTIME.md", index_entry["targets"])
+        checker.validate(rules, REPOSITORY)
+
     def test_missing_required_path_fails(self) -> None:
         self.rules["required_paths"].append("docs/missing.md")
         with self.assertRaisesRegex(checker.DocsError, "is missing"):
@@ -86,6 +100,44 @@ class DocumentationContractTest(unittest.TestCase):
             with self.subTest(text=text):
                 source.write_text(text, encoding="utf-8")
                 checker.validate(self.rules, self.root)
+
+    def test_full_collapsed_and_shortcut_references_pass(self) -> None:
+        source = self.root / "AGENTS.md"
+        for text in (
+            "[documentation][index]\n[index]: docs/index.md\n",
+            "[index][]\n[index]: docs/index.md\n",
+            "[index]\n[index]: docs/index.md\n",
+            "\\\\[documentation][index]\n[index]: docs/index.md\n",
+            "\\![documentation][index]\n[index]: docs/index.md\n",
+        ):
+            with self.subTest(text=text):
+                source.write_text(text, encoding="utf-8")
+                checker.validate(self.rules, self.root)
+
+    def test_escaped_full_reference_and_reference_image_do_not_link(self) -> None:
+        source = self.root / "AGENTS.md"
+        for text in (
+            "\\[documentation][index]\n[index]: docs/index.md\n",
+            "![documentation][index]\n[index]: docs/index.md\n",
+        ):
+            with self.subTest(text=text):
+                source.write_text(text, encoding="utf-8")
+                with self.assertRaisesRegex(checker.DocsError, "does not link"):
+                    checker.validate(self.rules, self.root)
+
+    def test_every_extracted_local_target_must_exist(self) -> None:
+        source = self.root / "AGENTS.md"
+        for dangling in (
+            "[missing](docs/missing.md)\n",
+            "[missing][dangling]\n[dangling]: docs/missing.md\n",
+        ):
+            with self.subTest(dangling=dangling):
+                source.write_text(
+                    "[documentation](docs/index.md)\n" + dangling,
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(checker.DocsError, "is missing"):
+                    checker.validate(self.rules, self.root)
 
     def test_unterminated_fence_fails_closed(self) -> None:
         (self.root / "AGENTS.md").write_text(
