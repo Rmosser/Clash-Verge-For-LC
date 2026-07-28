@@ -20,9 +20,7 @@ behavior or claiming platform readiness.
 
 - In scope: contract, hash-bound diagnostic checker, governance entrypoints,
   PR template, Active Plan lifecycle, declared product-check inventory, and
-  removal of the repository-owned `harness/evidence` workflow, plus the
-  Owner-authorized bounded outage merge with exact platform snapshot and
-  restoration.
+  removal of the repository-owned `harness/evidence` workflow.
 - Out of scope: runtime/product behavior, fabricated Actions or
   `harness/evidence`, activation, baseline receipt, cleanup, and any readiness
   claim.
@@ -42,9 +40,7 @@ behavior or claiming platform readiness.
    remove the same-repository `harness/evidence` workflow.
 3. Run the Skill-bundled verifier, repository-owned checks, path/parity checks,
    and fail-closed negative fixtures against the final candidate.
-4. During the authorized Actions outage, merge only this initial
-   repository-side establishment after a clean exact-current-head official
-   Codex Review, live base/head rechecks, and expected-head merge.
+4. Keep merge authority external to this repository contract; local evidence and Review do not create platform readiness or authorize a merge.
 5. Leave this plan active, leave the receipt absent, and report all Harness and
    platform readiness fields false.
 6. Treat publisher, attestor, sandbox, activation, platform negative tests,
@@ -55,6 +51,7 @@ behavior or claiming platform readiness.
 
 - Delegated scope: repository inventory, bounded v3.1 migration, PR
   publication, platform read-only audit, and independent diff review
+- Forbidden scope: product behavior, credentials, platform mutations, merge initiation, and work outside the delegated repository scope
 - Subagent result: completed within scope and returned with local validation
   evidence; current-head Review exposed unsafe candidate read ordering, and
   the shared authoritative checker plus this parity copy were hardened
@@ -76,6 +73,7 @@ behavior or claiming platform readiness.
 - Evidence rework: shared tests now cover required/template symlinks,
   oversized plans, recursively discovered nested/additional plans, placeholder
   sections/fields, and the explicit one-plan pending policy
+- Review rework round 2: the shared checker rejects dangling evaluation symlinks and off-layout manifests, Markdown-wrapped or comment-only placeholders, empty multiline fields, unchanged template sections, and delegation records without an explicit forbidden scope.
 - Current-head Review: pending; any finding, stale head, partial output,
   timeout, or author ambiguity blocks merge
 
@@ -84,12 +82,6 @@ behavior or claiming platform readiness.
 - Result: updated
 - Evidence: entrypoint, contract, governance, plan, and PR documentation were
   synchronized with the pending v3.1 boundary and repository-specific checks
-
-## Outage Merge Protocol
-
-- Local evidence: after the candidate commit, a reviewed manifest binds the live numeric repository ID, PR number, exact 40-character head SHA, validated base SHA, commands, exit results, and durable log digests. The canonical inventory and manifest digests are recorded in the audit.
-- Atomic freshness: the executor must prove an effective strict platform rule. When strict would otherwise have no live required context and existing classic protection is available, it may publish one unique run-specific `outage/local-validation/<manifest-digest-prefix>` procedural Commit Status and require it with `strict=true`. This status never impersonates an unavailable Actions context or `harness/evidence` and cannot support readiness.
-- Recovery: a repository-scoped lock and durable pre-mutation snapshot protect the whole operation. The executor rereads the exact head/base, official Review and preserved contexts, uses expected-head merge, and restores the exact snapshot or the separately approved post-merge context set.
 
 ## Closeout
 

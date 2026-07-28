@@ -34,11 +34,12 @@ the exact receipt cleanup PR. Once a future authority release makes ordinary
 product work possible, task complexity remains a semantic judgment: standard
 and critical work uses a PR-scoped plan, while a trivial task may omit one.
 
-A delegated plan records a concrete delegated scope and subagent result. Its
-handoff starts with main-agent review, rework, and final acceptance all
-`pending`; an accepted diff requires an accepted main-agent review and either
-no rework or completed rework. Every plan also closes documentation impact with
-an `updated` or `not_applicable` result plus concrete evidence.
+A delegated plan records concrete delegated and forbidden scopes plus the
+subagent result. Its handoff starts with main-agent review, rework, and final
+acceptance all `pending`; an accepted diff requires an accepted main-agent
+review and either no rework or completed rework. Every plan also closes
+documentation impact with an `updated` or `not_applicable` result plus concrete
+evidence.
 
 Before parsing any candidate contract, template, plan, or evaluation manifest,
 the verifier traverses repository-relative components without following

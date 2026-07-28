@@ -867,7 +867,7 @@ def plan_section(text: str, heading: str) -> str:
 def plan_field(section: str, key: str) -> str:
     matches = list(
         re.finditer(
-            rf"^- {re.escape(key)}:\s*(\S.*)$",
+            rf"^- {re.escape(key)}:[ \t]*(\S[^\r\n]*)[ \t]*$",
             section,
             re.MULTILINE,
         )
@@ -881,15 +881,34 @@ def plan_field(section: str, key: str) -> str:
 
 def is_placeholder_value(value: str) -> bool:
     normalized = value.strip()
+    normalized = re.sub(r"^(?:>\s*)+", "", normalized)
+    normalized = re.sub(r"^#{1,6}[ \t]+", "", normalized)
+    wrappers = (("**", "**"), ("__", "__"), ("~~", "~~"), ("*", "*"), ("_", "_"))
+    changed = True
+    while changed:
+        changed = False
+        for opening, closing in wrappers:
+            if (
+                normalized.startswith(opening)
+                and normalized.endswith(closing)
+                and len(normalized) > len(opening) + len(closing)
+            ):
+                normalized = normalized[len(opening) : -len(closing)].strip()
+                changed = True
+        match = re.fullmatch(r"(`+)(.*?)\1", normalized, re.DOTALL)
+        if match is not None:
+            normalized = match.group(2).strip()
+            changed = True
     return not normalized or PLACEHOLDER_VALUE_RE.fullmatch(normalized) is not None
 
 
 def require_concrete_section(text: str, heading: str) -> str:
     section = plan_section(text, heading)
     candidates: list[str] = []
-    for raw_line in section.splitlines():
+    visible_section = re.sub(r"<!--.*?-->", "", section, flags=re.DOTALL)
+    for raw_line in visible_section.splitlines():
         line = raw_line.strip()
-        if not line or line.startswith("<!--"):
+        if not line:
             continue
         line = re.sub(r"^(?:[-*+]|\d+[.)])\s*", "", line).strip()
         if ":" in line:
@@ -942,7 +961,35 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
     if text.strip() == template_text.strip():
         raise HarnessError("Active Plan must not be an unchanged template")
     for heading in PLAN_SECTIONS:
-        require_concrete_section(text, heading)
+        if plan_section(text, heading).strip() == plan_section(
+            template_text,
+            heading,
+        ).strip():
+            raise HarnessError(
+                f"Active Plan section must not remain unchanged from template: {heading}"
+            )
+        if heading != "## Delegation Audit":
+            require_concrete_section(text, heading)
+
+    required_fields = {
+        "## Scope": ("In scope", "Out of scope"),
+        "## Validation": (
+            "Required files",
+            "Required checks",
+            "Positive tests",
+            "Negative tests",
+            "Current-head Review",
+        ),
+        "## Closeout": (
+            "Final evidence",
+            "Merge receipt",
+            "Archive destination",
+        ),
+    }
+    for heading, keys in required_fields.items():
+        section = plan_section(text, heading)
+        for key in keys:
+            plan_field(section, key)
 
     metadata = require_concrete_section(text, "## Metadata")
     values: dict[str, str] = {}
@@ -978,10 +1025,11 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
     if route not in {"single_agent", "main_plus_subagent", "multi_stage"}:
         raise HarnessError("Active Plan has an invalid delegation route")
 
-    audit_text = require_concrete_section(text, "## Delegation Audit")
+    audit_text = plan_section(text, "## Delegation Audit")
     audit_values: dict[str, str] = {}
     for key in (
         "Delegated scope",
+        "Forbidden scope",
         "Subagent result",
         "Main agent review",
         "Rework requested",
@@ -996,6 +1044,8 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
     else:
         if is_placeholder_value(audit_values["Delegated scope"]):
             raise HarnessError("delegated plan needs a concrete delegated scope")
+        if is_placeholder_value(audit_values["Forbidden scope"]):
+            raise HarnessError("delegated plan needs a concrete forbidden scope")
         if is_placeholder_value(audit_values["Subagent result"]):
             raise HarnessError("delegated plan needs a concrete subagent result")
         main_review = audit_values["Main agent review"]
@@ -1080,11 +1130,66 @@ def validate_expected_identity(
 
 def validate_eval_rules(root: Path) -> None:
     eval_root = root / "evals/harness"
-    if not eval_root.exists():
+    if not os.path.lexists(eval_root):
         return
-    if eval_root.is_symlink() or not eval_root.is_dir():
+    try:
+        root_info = os.lstat(eval_root)
+    except OSError as exc:
+        raise HarnessError(f"cannot inspect evals/harness: {exc}") from exc
+    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
         raise HarnessError("evals/harness must be a real directory")
-    for manifest_path in sorted(eval_root.glob("*/manifest.json")):
+
+    immediate_rule_directories: set[Path] = set()
+    manifests: list[Path] = []
+    for current_directory, directory_names, file_names in os.walk(
+        eval_root,
+        topdown=True,
+        followlinks=False,
+    ):
+        current = Path(current_directory)
+        for name in directory_names:
+            path = current / name
+            try:
+                info = os.lstat(path)
+            except OSError as exc:
+                raise HarnessError(f"cannot inspect evaluation path {path}: {exc}") from exc
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                raise HarnessError(
+                    f"evaluation path must be a real directory: "
+                    f"{path.relative_to(root).as_posix()}"
+                )
+            if current == eval_root:
+                immediate_rule_directories.add(path)
+        for name in file_names:
+            path = current / name
+            relative = path.relative_to(root).as_posix()
+            if not is_repo_regular_file(
+                root,
+                relative,
+                max_bytes=MAX_REQUIRED_FILE_BYTES,
+            ):
+                raise HarnessError(
+                    f"evaluation asset must be a bounded regular file: {relative}"
+                )
+            if current == eval_root:
+                raise HarnessError(
+                    f"evaluation files must live inside one rule directory: {relative}"
+                )
+            if name == "manifest.json":
+                if current.parent != eval_root:
+                    raise HarnessError(
+                        f"evaluation manifest must be exactly one rule directory "
+                        f"below evals/harness: {relative}"
+                    )
+                manifests.append(path)
+
+    manifest_parents = {path.parent for path in manifests}
+    missing = sorted(immediate_rule_directories - manifest_parents)
+    if missing:
+        relative = missing[0].relative_to(root).as_posix()
+        raise HarnessError(f"evaluation rule directory has no manifest.json: {relative}")
+
+    for manifest_path in sorted(manifests):
         relative_manifest = manifest_path.relative_to(root).as_posix()
         if not is_repo_regular_file(root, relative_manifest):
             raise HarnessError(

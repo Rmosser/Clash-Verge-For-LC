@@ -33,6 +33,7 @@ Describe ordered, reviewable work units and rollback boundaries.
 ## Delegation Audit
 
 - Delegated scope:
+- Forbidden scope:
 - Subagent result:
 - Main agent review: pending
 - Rework requested: pending
