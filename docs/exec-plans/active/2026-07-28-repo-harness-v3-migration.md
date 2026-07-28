@@ -91,6 +91,7 @@ behavior or claiming platform readiness.
   GitHub Flavored Markdown still renders its nested anchor as a clickable link;
   the positive control remains covered by tests.
 - Review rework round 6 shared-verifier: upheld exact-head findings now recognize customized partial-v3 entrypoints using exact repository path case, including supported uppercase index and PR-template variants. Required Active Plan values remain placeholders when a placeholder token is followed by Unicode punctuation; legitimate longer names remain valid.
+- Review rework round 7 shared-verifier: upheld delegation-audit and rendered-evidence boundary findings. Single-agent audit fields are semantically not_applicable except for the task-class-aware fallback; delegated routes require concrete scopes and a result. Non-void self-closing HTML fails closed, while inline code remains visible literal evidence rather than being parsed as raw HTML.
 - Current-head Review: pending; any finding, stale head, partial output,
   timeout, or author ambiguity blocks merge
 

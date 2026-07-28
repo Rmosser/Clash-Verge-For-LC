@@ -165,6 +165,10 @@ PLACEHOLDER_VALUE_RE = re.compile(
     r"placeholder|fill(?: me)? in|<[^>]*>|\{\{[^}]*\}\})$",
     re.IGNORECASE,
 )
+NOT_APPLICABLE_VALUE_RE = re.compile(
+    r"^not[_ -]?applicable$",
+    re.IGNORECASE,
+)
 PLAN_SECTIONS = (
     "## Metadata",
     "## Goal",
@@ -237,6 +241,10 @@ COMMONMARK_AUTOLINK_RE = re.compile(
     r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?)"
     r")>"
 )
+COMMONMARK_CODE_SPAN_RE = re.compile(
+    r"(?<!`)(?P<ticks>`+)(?!`)(?P<body>.*?)(?<!`)(?P=ticks)(?!`)",
+    re.DOTALL,
+)
 
 
 class HarnessError(RuntimeError):
@@ -297,9 +305,15 @@ class _VisibleInlineTextParser(HTMLParser):
         tag: str,
         attrs: list[tuple[str, str | None]],
     ) -> None:
-        if tag.casefold() not in VISIBLE_INLINE_HTML_TAGS:
+        folded = tag.casefold()
+        if folded not in VISIBLE_INLINE_HTML_TAGS:
             raise HarnessError(
                 f"unsupported inline HTML tag in concrete plan evidence: {tag}"
+            )
+        if folded not in VOID_HTML_TAGS:
+            raise HarnessError(
+                "non-void self-closing inline HTML is not allowed in "
+                f"concrete plan evidence: {tag}"
             )
         self._is_hidden(tag, attrs)
 
@@ -1588,7 +1602,24 @@ def plan_field(section: str, key: str) -> str:
 
 
 def visible_inline_text(value: str) -> str:
+    code_spans: list[tuple[str, str]] = []
     autolinks: list[tuple[str, str]] = []
+
+    def protect_code_span(match: re.Match[str]) -> str:
+        literal = match.group("body").replace("\r\n", "\n").replace("\r", "\n")
+        literal = literal.replace("\n", " ")
+        if (
+            len(literal) >= 2
+            and literal.startswith(" ")
+            and literal.endswith(" ")
+            and literal.strip(" ")
+        ):
+            literal = literal[1:-1]
+        token = f"\x00CODESPAN-{len(code_spans)}\x00"
+        while token in value:
+            token += "\x00"
+        code_spans.append((token, literal))
+        return token
 
     def protect_autolink(match: re.Match[str]) -> str:
         target = match.group("target")
@@ -1598,7 +1629,8 @@ def visible_inline_text(value: str) -> str:
         autolinks.append((token, target))
         return token
 
-    protected = COMMONMARK_AUTOLINK_RE.sub(protect_autolink, value)
+    protected = COMMONMARK_CODE_SPAN_RE.sub(protect_code_span, value)
+    protected = COMMONMARK_AUTOLINK_RE.sub(protect_autolink, protected)
     parser = _VisibleInlineTextParser()
     try:
         parser.feed(protected)
@@ -1606,6 +1638,8 @@ def visible_inline_text(value: str) -> str:
     except Exception as exc:
         raise HarnessError(f"cannot parse inline HTML: {exc}") from exc
     rendered = "".join(parser.parts)
+    for token, literal in code_spans:
+        rendered = rendered.replace(token, literal)
     for token, target in autolinks:
         rendered = rendered.replace(token, target)
     return rendered
@@ -1622,13 +1656,14 @@ def matches_placeholder_token(value: str) -> bool:
     return False
 
 
-def is_placeholder_value(value: str) -> bool:
+def normalize_visible_plan_value(value: str) -> tuple[str, bool]:
+    """Normalize rendered scalar prose and flag non-visible/unsafe values."""
     normalized = unicodedata.normalize("NFKC", value.strip())
     if any(
         unicodedata.category(character) in {"Cc", "Cf", "Mn"}
         for character in normalized
     ):
-        return True
+        return "", True
     prefix_changed = True
     while prefix_changed:
         previous = normalized
@@ -1651,7 +1686,7 @@ def is_placeholder_value(value: str) -> bool:
             unicodedata.category(character) in {"Cc", "Cf", "Mn"}
             for character in normalized
         ):
-            return True
+            return "", True
         changed = False
         for opening, closing in wrappers:
             if (
@@ -1663,8 +1698,9 @@ def is_placeholder_value(value: str) -> bool:
                 changed = True
         match = re.fullmatch(r"(`+)(.*?)\1", normalized, re.DOTALL)
         if match is not None:
-            normalized = match.group(2).strip()
-            changed = True
+            # Inline code is visible literal text. Angle-bracket content inside
+            # it is not raw HTML and must not be interpreted as such.
+            return match.group(2).strip(), False
         match = re.fullmatch(
             r"(?P<image>!?)\[(?P<label>[^\]\r\n]*)\](?P<suffix>.*)",
             normalized,
@@ -1675,7 +1711,7 @@ def is_placeholder_value(value: str) -> bool:
             or match.group("suffix").startswith(("(", "["))
         ):
             if match.group("image"):
-                return True
+                return "", True
             normalized = match.group("label").strip()
             changed = True
         match = re.fullmatch(
@@ -1697,7 +1733,7 @@ def is_placeholder_value(value: str) -> bool:
             normalized = match.group(1).strip()
             changed = True
         if matches_placeholder_token(normalized):
-            return True
+            return normalized, False
         rendered = visible_inline_text(normalized).strip()
         if rendered != normalized:
             normalized = rendered
@@ -1716,6 +1752,13 @@ def is_placeholder_value(value: str) -> bool:
         if markdown_plain != normalized:
             normalized = markdown_plain
             changed = True
+    return normalized, False
+
+
+def is_placeholder_value(value: str) -> bool:
+    normalized, forced_placeholder = normalize_visible_plan_value(value)
+    if forced_placeholder:
+        return True
     lowered = normalized.lower()
     return (
         not normalized
@@ -1723,6 +1766,20 @@ def is_placeholder_value(value: str) -> bool:
         or lowered.startswith("replace with ")
         or matches_placeholder_token(normalized)
     )
+
+
+def is_semantic_not_applicable(value: str) -> bool:
+    normalized, forced_placeholder = normalize_visible_plan_value(value)
+    if forced_placeholder:
+        return False
+    candidate = normalized.strip()
+    while candidate:
+        if NOT_APPLICABLE_VALUE_RE.fullmatch(candidate) is not None:
+            return True
+        if not unicodedata.category(candidate[-1]).startswith("P"):
+            return False
+        candidate = candidate[:-1].rstrip()
+    return False
 
 
 def markdown_table_cells(line: str) -> tuple[str, ...] | None:
@@ -2056,21 +2113,33 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
             for key, value in audit_values.items()
             if key != "No-subagent fallback reason"
         }
-        if any(value != "not_applicable" for value in delegated_fields.values()):
+        if any(
+            not is_semantic_not_applicable(value)
+            for value in delegated_fields.values()
+        ):
             raise HarnessError(
                 "single-agent plan delegation audit must be not_applicable"
             )
         fallback_reason = audit_values["No-subagent fallback reason"]
-        if (
-            values["Task class"] in {"standard", "critical"}
-            and (
-                fallback_reason == "not_applicable"
-                or is_placeholder_value(fallback_reason)
-            )
+        fallback_is_not_applicable = is_semantic_not_applicable(
+            fallback_reason
+        )
+        fallback_is_placeholder = is_placeholder_value(fallback_reason)
+        if values["Task class"] in {"standard", "critical"} and (
+            fallback_is_not_applicable or fallback_is_placeholder
         ):
             raise HarnessError(
                 "nontrivial single-agent plan needs a concrete "
                 "No-subagent fallback reason"
+            )
+        if (
+            values["Task class"] == "trivial"
+            and fallback_is_placeholder
+            and not fallback_is_not_applicable
+        ):
+            raise HarnessError(
+                "trivial single-agent plan needs a concrete "
+                "No-subagent fallback reason or not_applicable"
             )
     else:
         if audit_values["No-subagent fallback reason"] != "not_applicable":
