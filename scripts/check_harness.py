@@ -116,11 +116,7 @@ LEGACY_RUNTIME_KNOWN_SHA256 = {
     ),
 }
 V3_ARTIFACT_MARKERS = {
-    "AGENTS.md": (
-        "$manage-repo-harness",
-        "repo-harness-verifier-v3.1",
-        "source-isolated GitHub App",
-    ),
+    "AGENTS.md": ("$manage-repo-harness",),
     "scripts/check_harness.py": (
         "repo-harness-verifier-v3.1",
         "repo-harness-v3",
@@ -132,11 +128,19 @@ V3_ARTIFACT_MARKERS = {
         "baseline-receipt cleanup PR",
     ),
     "docs/index.md": (
-        "Machine-readable Harness contract",
+        ".harness/repo-contract.json",
         "docs/governance/harness.md",
-        "Baseline receipt:",
+    ),
+    "docs/INDEX.md": (
+        ".harness/repo-contract.json",
+        "docs/governance/harness.md",
     ),
     ".github/pull_request_template.md": (
+        "Plan lifecycle: `product-same-PR` | `harness-post-merge-cleanup`",
+        "Source-isolated publisher App id:",
+        "## Current-head Review",
+    ),
+    ".github/PULL_REQUEST_TEMPLATE.md": (
         "Plan lifecycle: `product-same-PR` | `harness-post-merge-cleanup`",
         "Source-isolated publisher App id:",
         "## Current-head Review",
@@ -158,7 +162,7 @@ LEGACY_GOVERNANCE_MARKERS = (
 )
 PLACEHOLDER_VALUE_RE = re.compile(
     r"^(?:tbd|todo|pending|unknown|n/?a|none|not[_ -]?applicable|"
-    r"placeholder|fill(?: me)? in|<[^>]*>|\{\{[^}]*\}\})[.!]?$",
+    r"placeholder|fill(?: me)? in|<[^>]*>|\{\{[^}]*\}\})$",
     re.IGNORECASE,
 )
 PLAN_SECTIONS = (
@@ -634,9 +638,32 @@ def legacy_runtime_paths(root: Path) -> tuple[str, ...]:
     return tuple(sorted(found))
 
 
+def repo_path_has_exact_case(root: Path, relative: str) -> bool:
+    current = root
+    parts = Path(relative).parts
+    for index, part in enumerate(parts):
+        try:
+            with os.scandir(current) as entries:
+                match = next((entry for entry in entries if entry.name == part), None)
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            raise HarnessError(
+                f"cannot inspect repository path casing for {relative}: {exc}"
+            ) from exc
+        if match is None:
+            return False
+        if index < len(parts) - 1 and not match.is_dir(follow_symlinks=False):
+            return False
+        current = current / part
+    return True
+
+
 def v3_artifact_paths(root: Path) -> tuple[str, ...]:
     found: set[str] = set()
     for relative in V3_ARTIFACT_EXACT_PATHS:
+        if not repo_path_has_exact_case(root, relative):
+            continue
         path = root / relative
         try:
             os.lstat(path)
@@ -648,6 +675,8 @@ def v3_artifact_paths(root: Path) -> tuple[str, ...]:
             ) from exc
         found.add(relative)
     for relative, markers in V3_ARTIFACT_MARKERS.items():
+        if not repo_path_has_exact_case(root, relative):
+            continue
         if not is_repo_regular_file(
             root,
             relative,
@@ -1582,6 +1611,17 @@ def visible_inline_text(value: str) -> str:
     return rendered
 
 
+def matches_placeholder_token(value: str) -> bool:
+    candidate = value.strip()
+    while candidate:
+        if PLACEHOLDER_VALUE_RE.fullmatch(candidate) is not None:
+            return True
+        if not unicodedata.category(candidate[-1]).startswith("P"):
+            return False
+        candidate = candidate[:-1].rstrip()
+    return False
+
+
 def is_placeholder_value(value: str) -> bool:
     normalized = unicodedata.normalize("NFKC", value.strip())
     if any(
@@ -1656,7 +1696,7 @@ def is_placeholder_value(value: str) -> bool:
         if match is not None:
             normalized = match.group(1).strip()
             changed = True
-        if PLACEHOLDER_VALUE_RE.fullmatch(normalized) is not None:
+        if matches_placeholder_token(normalized):
             return True
         rendered = visible_inline_text(normalized).strip()
         if rendered != normalized:
@@ -1681,7 +1721,7 @@ def is_placeholder_value(value: str) -> bool:
         not normalized
         or lowered in {"...", "…"}
         or lowered.startswith("replace with ")
-        or PLACEHOLDER_VALUE_RE.fullmatch(normalized) is not None
+        or matches_placeholder_token(normalized)
     )
 
 

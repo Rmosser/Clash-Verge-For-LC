@@ -66,3 +66,15 @@ unsupported HTML, empty structures, placeholder-only containers, and disguised
 Unicode placeholders do not count as concrete evidence. Markdown link/image
 syntax is replaced by visible prose plus a CommonMark URI or email autolink;
 attribute-free inline formatting remains valid visible prose.
+
+## Partial-v3 signatures and placeholder normalization
+
+Partial-v3 detection reads repository paths with exact case. It recognizes both
+the lowercase template entrypoints and repository-preserved uppercase
+`docs/INDEX.md` or `.github/PULL_REQUEST_TEMPLATE.md` variants. A customized
+`AGENTS.md` containing the `$manage-repo-harness` trigger, or a documentation
+index containing both the contract and governance entrypoints, is sufficient
+evidence of a partial v3 scaffold; canonical template prose is not required.
+
+Visible Active Plan values that reduce to a placeholder token after trailing
+Unicode punctuation is removed remain incomplete.
