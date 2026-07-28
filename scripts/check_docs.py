@@ -6,32 +6,38 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import re
 import stat
+import string
 import sys
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, NamedTuple
 
 
 ROOT = Path(__file__).resolve().parents[1]
 RULES_PATH = "docs/doc-sync-rules.json"
-LINK_RE = re.compile(
-    r"(?P<image>!)?\[[^\]\n]*\]\(\s*"
+INLINE_LINK_TAIL_RE = re.compile(
+    r"\(\s*"
     r"(?P<destination><[^>\n]+>|[^)\s]+)"
     r"(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?\s*\)"
 )
 REFERENCE_DEFINITION_RE = re.compile(
-    r"^[ ]{0,3}\[(?P<label>[^\]\n]+)\]:[ \t]*"
+    r"^[ ]{0,3}\[(?P<label>(?:\\[^\n]|[^\\\[\]\n])+)\]:[ \t]*"
     r"(?P<destination><[^>\n]+>|[^ \t\n]+)"
     r"(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?[ \t]*$"
 )
-REFERENCE_DEFINITION_PREFIX_RE = re.compile(r"^[ ]{0,3}\[[^\]\n]+\]:")
+REFERENCE_DEFINITION_PREFIX_RE = re.compile(
+    r"^[ ]{0,3}\[(?:\\[^\n]|[^\\\[\]\n])+\]:"
+)
 FULL_REFERENCE_LINK_RE = re.compile(
-    r"(?P<image>!)?\[(?P<text>[^\]\n]*)\]\[(?P<label>[^\]\n]*)\]"
+    r"(?P<image>!)?\[(?P<text>(?:\\[^\n]|[^\\\]\n])*)\]"
+    r"\[(?P<label>(?:\\[^\n]|[^\\\[\]\n])*)\]"
 )
 SHORTCUT_REFERENCE_LINK_RE = re.compile(
-    r"(?P<image>!)?\[(?P<label>[^\]\n]+)\](?![\[(])"
+    r"(?P<image>!)?\[(?P<label>(?:\\[^\n]|[^\\\[\]\n])+)\](?![\[(])"
 )
+INLINE_ANGLE_RE = re.compile(r"<[^>\r\n]*>")
 COMMONMARK_BLOCK_TAGS = (
     "address|article|aside|base|basefont|blockquote|body|caption|center|col|"
     "colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|"
@@ -55,8 +61,30 @@ class DocsError(ValueError):
     pass
 
 
+class InlineLinkCandidate(NamedTuple):
+    start: int
+    end: int
+    opening_bracket: int
+    closing_bracket: int
+    image: bool
+    destination: str
+
+
 def fail(message: str) -> None:
     raise DocsError(message)
+
+
+def reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            fail(f"{RULES_PATH} contains duplicate JSON key: {key}")
+        value[key] = item
+    return value
+
+
+def strict_json_loads(text: str) -> Any:
+    return json.loads(text, object_pairs_hook=reject_duplicate_json_keys)
 
 
 def indentation_columns(line: str) -> int:
@@ -191,8 +219,102 @@ def markdown_character_is_escaped(text: str, index: int) -> bool:
     return backslashes % 2 == 1
 
 
+def markdown_unescape(label: str) -> str:
+    output: list[str] = []
+    cursor = 0
+    while cursor < len(label):
+        if (
+            label[cursor] == "\\"
+            and cursor + 1 < len(label)
+            and label[cursor + 1] in string.punctuation
+        ):
+            output.append(label[cursor + 1])
+            cursor += 2
+            continue
+        output.append(label[cursor])
+        cursor += 1
+    return "".join(output)
+
+
 def normalized_reference_label(label: str) -> str:
-    return " ".join(label.split()).casefold()
+    return " ".join(markdown_unescape(label).split()).casefold()
+
+
+def inline_link_candidates(
+    text: str,
+) -> list[InlineLinkCandidate]:
+    """Return balanced CommonMark inline candidates with nested-link filtering."""
+
+    candidates: list[InlineLinkCandidate] = []
+    cursor = 0
+    while cursor < len(text):
+        bracket = text.find("[", cursor)
+        if bracket < 0:
+            break
+
+        depth = 1
+        label_cursor = bracket + 1
+        while label_cursor < len(text):
+            character = text[label_cursor]
+            if not markdown_character_is_escaped(text, label_cursor):
+                if character == "[":
+                    depth += 1
+                elif character == "]":
+                    depth -= 1
+                    if depth == 0:
+                        break
+            label_cursor += 1
+        if depth != 0:
+            cursor = bracket + 1
+            continue
+
+        tail = INLINE_LINK_TAIL_RE.match(text, label_cursor + 1)
+        if tail is None:
+            cursor = bracket + 1
+            continue
+
+        has_image_prefix = bracket > 0 and text[bracket - 1] == "!"
+        image = bool(
+            has_image_prefix
+            and not markdown_character_is_escaped(text, bracket - 1)
+        )
+        start = bracket - 1 if has_image_prefix else bracket
+        candidates.append(
+            InlineLinkCandidate(
+                start,
+                tail.end(),
+                bracket,
+                label_cursor,
+                image,
+                tail.group("destination").strip(),
+            )
+        )
+        cursor = bracket + 1
+
+    filtered: list[InlineLinkCandidate] = []
+    for candidate in candidates:
+        inside_image = any(
+            outer.image
+            and outer.opening_bracket < candidate.opening_bracket
+            and candidate.end <= outer.closing_bracket
+            for outer in candidates
+        )
+        if inside_image:
+            continue
+        nested_link = any(
+            not inner.image
+            and not markdown_character_is_escaped(
+                text,
+                inner.opening_bracket,
+            )
+            and candidate.opening_bracket < inner.opening_bracket
+            and inner.end <= candidate.closing_bracket
+            for inner in candidates
+        )
+        if nested_link:
+            continue
+        filtered.append(candidate)
+    return filtered
 
 
 def raw_link_targets(text: str) -> list[str]:
@@ -212,44 +334,68 @@ def raw_link_targets(text: str) -> list[str]:
             fail("documentation has an unsupported reference definition")
         content_lines.append(line)
     content = "\n".join(content_lines)
+    angle_spans = [
+        match.span()
+        for match in INLINE_ANGLE_RE.finditer(content)
+    ]
+    reference_content = INLINE_ANGLE_RE.sub(
+        lambda match: " " * len(match.group(0)),
+        content,
+    )
 
     raw_targets: list[str] = []
     occupied_spans: list[tuple[int, int]] = []
-    for match in LINK_RE.finditer(content):
-        bracket = match.start() + (1 if match.group("image") else 0)
-        image = bool(
-            match.group("image")
-            and not markdown_character_is_escaped(content, match.start())
-        )
-        occupied_spans.append(match.span())
-        if image or markdown_character_is_escaped(content, bracket):
+    for candidate in inline_link_candidates(content):
+        occupied_spans.append((candidate.start, candidate.end))
+        if any(
+            start <= candidate.opening_bracket < end
+            or start <= candidate.closing_bracket < end
+            for start, end in angle_spans
+        ):
             continue
-        raw_targets.append(match.group("destination").strip())
-    for match in FULL_REFERENCE_LINK_RE.finditer(content):
+        if candidate.image or markdown_character_is_escaped(
+            content,
+            candidate.opening_bracket,
+        ):
+            continue
+        raw_targets.append(candidate.destination)
+    for match in FULL_REFERENCE_LINK_RE.finditer(reference_content):
         bracket = match.start() + (1 if match.group("image") else 0)
         image = bool(
             match.group("image")
-            and not markdown_character_is_escaped(content, match.start())
+            and not markdown_character_is_escaped(
+                reference_content,
+                match.start(),
+            )
         )
         occupied_spans.append(match.span())
-        if image or markdown_character_is_escaped(content, bracket):
+        if image or markdown_character_is_escaped(
+            reference_content,
+            bracket,
+        ):
             continue
         label = match.group("label") or match.group("text")
         destination = definitions.get(normalized_reference_label(label))
         if destination is not None:
             raw_targets.append(destination.strip())
-    for match in SHORTCUT_REFERENCE_LINK_RE.finditer(content):
+    for match in SHORTCUT_REFERENCE_LINK_RE.finditer(reference_content):
         bracket = match.start() + (1 if match.group("image") else 0)
         image = bool(
             match.group("image")
-            and not markdown_character_is_escaped(content, match.start())
+            and not markdown_character_is_escaped(
+                reference_content,
+                match.start(),
+            )
         )
         if any(
             start <= match.start() and match.end() <= end
             for start, end in occupied_spans
         ):
             continue
-        if image or markdown_character_is_escaped(content, bracket):
+        if image or markdown_character_is_escaped(
+            reference_content,
+            bracket,
+        ):
             continue
         destination = definitions.get(
             normalized_reference_label(match.group("label"))
@@ -304,6 +450,57 @@ def bounded_path(
     ):
         fail(f"{label} must be a regular file or directory: {relative.as_posix()}")
     return candidate
+
+
+def read_regular_no_symlink_text(
+    root: Path,
+    relative: PurePosixPath,
+    label: str,
+) -> str:
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        fail(f"{label} cannot be opened safely on this platform")
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        directory_flags |= os.O_CLOEXEC
+        file_flags |= os.O_CLOEXEC
+
+    directory_fds: list[int] = []
+    file_fd = -1
+    try:
+        current_fd = os.open(root, directory_flags)
+        directory_fds.append(current_fd)
+        for part in relative.parts[:-1]:
+            current_fd = os.open(
+                part,
+                directory_flags,
+                dir_fd=current_fd,
+            )
+            directory_fds.append(current_fd)
+        file_fd = os.open(
+            relative.parts[-1],
+            file_flags,
+            dir_fd=current_fd,
+        )
+        if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+            fail(f"{label} must be a regular no-symlink file")
+        with os.fdopen(file_fd, "r", encoding="utf-8") as handle:
+            file_fd = -1
+            return handle.read()
+    except OSError as exc:
+        fail(f"cannot safely read {label}: {exc}")
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+        for directory_fd in reversed(directory_fds):
+            os.close(directory_fd)
+
+
+def load_rules(root: Path = ROOT) -> Any:
+    relative = canonical_relative(RULES_PATH, "documentation rules path")
+    text = read_regular_no_symlink_text(root, relative, RULES_PATH)
+    return strict_json_loads(text)
 
 
 def link_targets(source: Path, root: Path) -> set[Path]:
@@ -451,12 +648,24 @@ def self_test(value: dict[str, Any]) -> None:
         ),
     ):
         try:
-            visible = visible_markdown(hidden)
+            targets = raw_link_targets(hidden)
         except DocsError:
             continue
-        if LINK_RE.search(visible) is None:
+        if not targets:
             continue
         fail(f"negative self-test exposed a link inside {label}")
+    nested = "[documentation [index]](docs/index.md)\n"
+    if raw_link_targets(nested) != ["docs/index.md"]:
+        fail("positive self-test rejected a nested inline-link label")
+    nested_image = "![documentation [image]](docs/missing.md)\n"
+    if raw_link_targets(nested_image):
+        fail("negative self-test treated a nested image as navigation")
+    try:
+        strict_json_loads('{"required_paths": [], "required_paths": []}')
+    except DocsError:
+        pass
+    else:
+        fail("negative self-test accepted a duplicate JSON key")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -464,7 +673,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
     try:
-        value = json.loads((ROOT / RULES_PATH).read_text(encoding="utf-8"))
+        value = load_rules(ROOT)
         validate(value)
         if args.self_test:
             self_test(value)

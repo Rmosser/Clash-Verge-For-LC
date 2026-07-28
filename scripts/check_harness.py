@@ -227,8 +227,8 @@ VISIBLE_INLINE_HTML_TAGS = frozenset(
 )
 RAW_HTML_BLOCK_START_RE = re.compile(
     rf"^[ \t]{{0,3}}(?:"
-    rf"</?(?:script|pre|style|textarea)(?=[ \t>/])|"
-    rf"</?(?:{COMMONMARK_BLOCK_TAGS})(?=[ \t>/])|"
+    rf"</?(?:script|pre|style|textarea)(?=[ \t>/]|$)|"
+    rf"</?(?:{COMMONMARK_BLOCK_TAGS})(?=[ \t>/]|$)|"
     r"<\?|<![A-Z]|<!\[CDATA\[|"
     r"</?[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[^<>]*)?/?[ \t]*>[ \t]*$"
     r")",
@@ -1669,7 +1669,7 @@ def matches_placeholder_token(value: str) -> bool:
         if not unicodedata.category(candidate[-1]).startswith("P"):
             return False
         candidate = candidate[:-1].rstrip()
-    return False
+    return True
 
 
 def normalize_visible_plan_value(value: str) -> tuple[str, bool]:
@@ -1799,30 +1799,291 @@ def is_semantic_not_applicable(value: str) -> bool:
 
 
 def markdown_table_cells(line: str) -> tuple[str, ...] | None:
-    stripped = line.strip()
-    if not stripped.startswith("|") or not stripped.endswith("|"):
+    stripped = line.strip(" \t")
+    separators: list[int] = []
+    for index, character in enumerate(stripped):
+        if character != "|":
+            continue
+        backslashes = 0
+        cursor = index
+        while cursor > 0 and stripped[cursor - 1] == "\\":
+            backslashes += 1
+            cursor -= 1
+        if backslashes % 2 == 0:
+            separators.append(index)
+    if not separators:
         return None
-    return tuple(cell.strip() for cell in stripped.strip("|").split("|"))
+    boundaries = [-1, *separators, len(stripped)]
+    cells = [
+        stripped[boundaries[index] + 1 : boundaries[index + 1]].strip(" \t")
+        for index in range(len(boundaries) - 1)
+    ]
+    if separators[0] == 0:
+        cells.pop(0)
+    if separators[-1] == len(stripped) - 1:
+        cells.pop()
+    if not cells:
+        return None
+    return tuple(cell.replace(r"\|", "|") for cell in cells)
+
+
+class MarkdownTableBlock(NamedTuple):
+    header: tuple[str, ...]
+    rows: tuple[tuple[str, ...], ...]
+    start: int
+    end: int
+    safe_layout: bool
+
+
+def indentation_columns(value: str, initial: int = 0) -> int:
+    columns = initial
+    for character in value:
+        if character == " ":
+            columns += 1
+        elif character == "\t":
+            columns += 4 - (columns % 4)
+        else:
+            break
+    return columns
+
+
+def consume_indentation_columns(value: str, expected: int) -> str | None:
+    columns = 0
+    cursor = 0
+    while cursor < len(value) and value[cursor] in " \t":
+        next_columns = indentation_columns(value[cursor], columns)
+        if next_columns > expected:
+            return None
+        columns = next_columns
+        cursor += 1
+        if columns == expected:
+            return value[cursor:]
+    return None
+
+
+def commonmark_container_prefixes(
+    value: str,
+    *,
+    allow_non_one_ordered: bool = True,
+) -> tuple[tuple[str, ...], str]:
+    normalized = value
+    prefixes: list[str] = []
+    while True:
+        previous = normalized
+        quote = re.match(
+            r"^[ \t]{0,3}>[ \t]?",
+            normalized,
+        )
+        if quote is not None:
+            prefixes.append("quote")
+            normalized = normalized[quote.end() :]
+            continue
+        leading = re.match(r"^[ \t]*", normalized)
+        assert leading is not None
+        leading_text = leading.group(0)
+        leading_columns = indentation_columns(leading_text)
+        if leading_columns <= 3:
+            marker = re.match(
+                r"(?:(?P<bullet>[-+*])|"
+                r"(?P<number>\d{1,9})(?P<delimiter>[.)]))",
+                normalized[leading.end() :],
+            )
+            if marker is not None:
+                if (
+                    marker.group("number") not in {None, "1"}
+                    and not allow_non_one_ordered
+                ):
+                    return tuple(prefixes), normalized
+                marker_end = leading.end() + marker.end()
+                whitespace = re.match(r"[ \t]+", normalized[marker_end:])
+                if whitespace is not None:
+                    whitespace_text = whitespace.group(0)
+                    marker_end_columns = (
+                        leading_columns + len(marker.group(0))
+                    )
+                    padding_columns = (
+                        indentation_columns(
+                            whitespace_text,
+                            marker_end_columns,
+                        )
+                        - marker_end_columns
+                    )
+                    if 1 <= padding_columns <= 4:
+                        content_start = marker_end + whitespace.end()
+                        prefixes.append(
+                            f"list:{marker_end_columns + padding_columns}"
+                        )
+                        normalized = normalized[content_start:]
+                        continue
+                    # Five or more columns after a marker count as one
+                    # padding column; the remainder stays in the content.
+                    first_whitespace = whitespace_text[0]
+                    one_column = (
+                        indentation_columns(
+                            first_whitespace,
+                            marker_end_columns,
+                        )
+                        - marker_end_columns
+                    )
+                    prefixes.append(
+                        f"list:{marker_end_columns + one_column}"
+                    )
+                    normalized = normalized[marker_end + 1 :]
+                    continue
+        if normalized == previous:
+            return tuple(prefixes), normalized
 
 
 def strip_commonmark_container_prefixes(value: str) -> str:
-    normalized = value
-    while True:
-        previous = normalized
-        normalized = re.sub(
-            r"^[ \t]{0,3}>[ \t]?",
-            "",
-            normalized,
-            count=1,
+    return commonmark_container_prefixes(value)[1]
+
+
+def starts_gfm_table_interrupting_block(value: str) -> bool:
+    return bool(
+        re.match(
+            r"^[ ]{0,3}(?:"
+            r"#{1,6}(?:[ \t]+|$)|"
+            r"`{3,}|~{3,}|"
+            r"(?:\*[ \t]*){3,}[ \t]*$|"
+            r"(?:-[ \t]*){3,}[ \t]*$|"
+            r"(?:_[ \t]*){3,}[ \t]*$"
+            r")",
+            value,
         )
-        normalized = re.sub(
-            r"^[ \t]{0,3}(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$)",
-            "",
-            normalized,
-            count=1,
+        or RAW_HTML_BLOCK_START_RE.match(value)
+        or re.match(r"^(?: {4}|\t)", value)
+    )
+
+
+def normalize_markdown_table_context_line(
+    line: str,
+    expected_prefixes: tuple[str, ...],
+) -> str | None:
+    normalized = line
+    for prefix in expected_prefixes:
+        if prefix == "quote":
+            quote = re.match(r"^[ \t]{0,3}>[ \t]?", normalized)
+            if quote is None:
+                return None
+            normalized = normalized[quote.end() :]
+            continue
+        if not prefix.startswith("list:"):
+            return None
+        indentation = int(prefix.removeprefix("list:"))
+        remainder = consume_indentation_columns(normalized, indentation)
+        if remainder is None:
+            return None
+        normalized = remainder
+    # A new container starts a different block rather than another table row.
+    nested_prefixes, _ = commonmark_container_prefixes(normalized)
+    if nested_prefixes:
+        return None
+    return normalized
+
+
+def markdown_table_data_cells(
+    line: str,
+    expected_prefixes: tuple[str, ...],
+) -> tuple[str, ...] | None:
+    """Parse one GFM table row without treating a new block as table data."""
+    normalized = normalize_markdown_table_context_line(
+        line,
+        expected_prefixes,
+    )
+    if (
+        normalized is None
+        or not normalized.strip(" \t")
+        or starts_gfm_table_interrupting_block(normalized)
+    ):
+        return None
+    cells = markdown_table_cells(normalized)
+    if cells is not None:
+        return cells
+    # Within an open table, plain non-blank text is a short one-cell row.
+    return (normalized.strip(" \t"),)
+
+
+def markdown_table_blocks(
+    lines: list[str],
+) -> tuple[
+    tuple[MarkdownTableBlock, ...],
+    tuple[tuple[int, tuple[str, ...]], ...],
+]:
+    """Parse actual GFM table blocks and expose top-level header candidates."""
+    blocks: list[MarkdownTableBlock] = []
+    candidates: list[tuple[int, tuple[str, ...]]] = []
+    index = 0
+    while index < len(lines):
+        prefixes, header_line = commonmark_container_prefixes(
+            lines[index],
+            allow_non_one_ordered=(
+                index == 0
+                or not strip_commonmark_container_prefixes(
+                    lines[index - 1]
+                ).strip(" \t")
+            ),
         )
-        if normalized == previous:
-            return normalized
+        header = markdown_table_cells(header_line)
+        if header is None:
+            index += 1
+            continue
+        candidates.append((index, header))
+        if index + 1 >= len(lines):
+            index += 1
+            continue
+        separator_prefixes, separator_line = commonmark_container_prefixes(
+            lines[index + 1]
+        )
+        separator = markdown_table_cells(separator_line)
+        is_table = (
+            separator is not None
+            and len(separator) == len(header)
+            and all(
+                re.fullmatch(r":?-{3,}:?", cell) is not None
+                for cell in separator
+            )
+        )
+        if not is_table:
+            index += 1
+            continue
+        safe_layout = (
+            not prefixes
+            and not separator_prefixes
+            and (
+                index == 0
+                or not strip_commonmark_container_prefixes(
+                    lines[index - 1]
+                ).strip(" \t")
+            )
+        )
+        end = index + 2
+        rows: list[tuple[str, ...]] = []
+        while end < len(lines):
+            if safe_layout:
+                row = markdown_table_data_cells(lines[end], ())
+            else:
+                row_text = strip_commonmark_container_prefixes(lines[end])
+                if not row_text.strip(" \t"):
+                    row = None
+                else:
+                    row = markdown_table_cells(row_text)
+                    if row is None:
+                        row = (row_text.strip(" \t"),)
+            if row is None:
+                break
+            rows.append(row)
+            end += 1
+        blocks.append(
+            MarkdownTableBlock(
+                header=header,
+                rows=tuple(rows),
+                start=index,
+                end=end,
+                safe_layout=safe_layout,
+            )
+        )
+        index = end
+    return tuple(blocks), tuple(candidates)
 
 
 def reject_reference_definitions(lines: list[str], heading: str) -> None:
@@ -1867,50 +2128,45 @@ def validate_required_plan_table(
     requirement: ActivePlanTableRequirement,
 ) -> None:
     section = rendered_plan_text(plan_section(text, heading))
-    blocks: list[list[tuple[str, ...]]] = []
-    current: list[tuple[str, ...]] = []
-    for line in section.splitlines():
-        cells = markdown_table_cells(line)
-        if cells is None:
-            if current:
-                blocks.append(current)
-                current = []
-            continue
-        current.append(cells)
-    if current:
-        blocks.append(current)
-
+    lines = section.splitlines()
+    blocks, candidates = markdown_table_blocks(lines)
     matches = [
         block
         for block in blocks
-        if block and block[0] == requirement.header
+        if block.safe_layout and block.header == requirement.header
     ]
-    if len(matches) != 1:
+    candidate_indexes = [
+        index
+        for index, header in candidates
+        if header == requirement.header
+    ]
+    if len(matches) != 1 or len(candidate_indexes) != 1:
+        if not matches and len(candidate_indexes) == 1:
+            candidate_index = candidate_indexes[0]
+            if candidate_index + 1 >= len(lines):
+                raise HarnessError(
+                    f"Active Plan table has no separator in {heading}"
+                )
+            raise HarnessError(
+                f"Active Plan table has an invalid separator in {heading}"
+            )
         raise HarnessError(
             f"Active Plan must contain exactly one required table in {heading}"
         )
-    table = matches[0]
-    if len(table) < 2:
-        raise HarnessError(f"Active Plan table has no separator in {heading}")
-    separator = table[1]
-    if (
-        len(separator) != len(requirement.header)
-        or any(
-            re.fullmatch(r":?-{3,}:?", cell) is None
-            for cell in separator
-        )
-    ):
-        raise HarnessError(f"Active Plan table has an invalid separator in {heading}")
-    rows = table[2:]
+    rows = matches[0].rows
     if len(rows) < requirement.min_rows:
         raise HarnessError(
             f"Active Plan table has fewer than {requirement.min_rows} rows in "
             f"{heading}"
         )
     for row in rows:
+        visible_row = tuple(
+            visible_inline_text(cell).strip()
+            for cell in row[: len(requirement.header)]
+        )
         if (
-            len(row) != len(requirement.header)
-            or any(is_placeholder_value(cell) for cell in row)
+            len(row) < len(requirement.header)
+            or any(is_placeholder_value(cell) for cell in visible_row)
         ):
             raise HarnessError(
                 f"Active Plan table has an incomplete or placeholder row in {heading}"
@@ -1923,7 +2179,30 @@ def require_concrete_section(text: str, heading: str) -> str:
     rendered_section = rendered_plan_text(section)
     reject_reference_definitions(rendered_section.splitlines(), heading)
     reject_markdown_link_or_image_syntax(rendered_section, heading)
-    visible_section = visible_inline_text(rendered_section)
+    non_table_lines = rendered_section.splitlines()
+    table_blocks, _ = markdown_table_blocks(non_table_lines)
+    for block in table_blocks:
+        if not block.safe_layout:
+            for line_index in range(block.start, block.end):
+                non_table_lines[line_index] = ""
+            continue
+        header_width = len(block.header)
+        for row in block.rows:
+            visible_row = tuple(
+                visible_inline_text(cell).strip()
+                for cell in row[:header_width]
+            )
+            if (
+                len(row) >= header_width
+                and all(
+                    cell and not is_placeholder_value(cell)
+                    for cell in visible_row
+                )
+            ):
+                candidates.extend(visible_row)
+        for line_index in range(block.start, block.end):
+            non_table_lines[line_index] = ""
+    visible_section = visible_inline_text("\n".join(non_table_lines))
     lines = visible_section.splitlines()
     index = 0
     while index < len(lines):
@@ -2033,17 +2312,6 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
     )
     if text.strip() == template_text.strip():
         raise HarnessError("Active Plan must not be an unchanged template")
-    for heading in PLAN_SECTIONS + additional_sections:
-        if plan_section(text, heading).strip() == plan_section(
-            template_text,
-            heading,
-        ).strip():
-            raise HarnessError(
-                f"Active Plan section must not remain unchanged from template: {heading}"
-            )
-        if heading != "## Delegation Audit":
-            require_concrete_section(text, heading)
-
     for heading, labels in active_plan_required_fields(contract).items():
         section = plan_section(text, heading)
         for label in labels:
@@ -2054,6 +2322,16 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
                 )
     for heading, requirement in active_plan_required_tables(contract).items():
         validate_required_plan_table(text, heading, requirement)
+    for heading in PLAN_SECTIONS + additional_sections:
+        if plan_section(text, heading).strip() == plan_section(
+            template_text,
+            heading,
+        ).strip():
+            raise HarnessError(
+                f"Active Plan section must not remain unchanged from template: {heading}"
+            )
+        if heading != "## Delegation Audit":
+            require_concrete_section(text, heading)
 
     required_fields = {
         "## Scope": ("In scope", "Out of scope"),

@@ -105,7 +105,24 @@ behavior or claiming platform readiness.
   reference target is existence-checked; exact regressions cover all three
   reference forms, both pseudo-link forms, even escape parity, and dangling
   local targets.
+- Review adjudication round 10: upheld all three findings against head
+  `b5d526e1877082eca43d1d3e59a8487f8e1d5512`. The documentation contract is
+  now opened component-by-component as a regular no-symlink file and parsed
+  with duplicate-key rejection. Inline-link extraction uses balanced label
+  brackets, so a nested-label link to a missing local target fails closed.
+  Regressions retain regular-manifest loading, ordinary and escaped nested
+  labels, and nested images as safe controls.
+- Review adjudication round 11 rendered-entrypoint: upheld the overlapping
+  inline-HTML attribute pseudo-link and reference escape findings. Inline
+  candidates whose structural brackets belong to an angle span are excluded,
+  while complete inline HTML inside a genuine link label remains navigable.
+  Reference patterns consume escapes atomically, rejecting an odd-escaped
+  apparent closing bracket while preserving escaped-`]` labels; regressions
+  include each violation and its rendered safe control.
 - Review rework round 8 shared-verifier: upheld three fail-open schema and migration-signature findings. Pending and active platform gates now use exact state-specific schemas; documentation-index partial-v3 signatures recognize canonical index-relative governance links; and task classes are fixed to trivial, standard, and critical so contract vocabulary cannot disable delegation fallback rules.
+- Review rework round 10 shared-verifier: upheld three rendered-evidence findings. CommonMark block-tag openers ending at a line boundary now fail closed; punctuation-only plan values are placeholders; and table-only sections are evaluated by visible cells so empty, separator-only, or placeholder-only tables cannot satisfy required evidence.
+- Review rework round 11 shared-verifier: upheld the independent table semantics finding, including optional-edge GFM tables. Table headers and separators are schema rather than evidence; a table-only generic section now requires at least one complete, non-placeholder data row.
+- Review rework round 12 shared-verifier: upheld the final GFM table boundary findings. Active Plan table evidence now uses a conservative top-level, blank-boundary subset; short rows, container or open-paragraph layouts, duplicate schemas, hidden table-body headers, inline HTML placeholders, and non-ASCII structural whitespace all fail closed.
 - Current-head Review: pending; any finding, stale head, partial output,
   timeout, or author ambiguity blocks merge
 
