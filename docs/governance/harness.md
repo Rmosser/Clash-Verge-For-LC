@@ -48,3 +48,21 @@ the verifier traverses repository-relative components without following
 symlinks, requires bounded regular files, and reads through no-follow file
 descriptors. Any nested plan, oversized file, path race, placeholder-only
 required section, or ambiguous candidate surface fails closed.
+
+## Initial migration and parser determinism
+
+Initial migration recognizes a legacy base only when it matches a declared
+minimum structural profile; a version label alone is insufficient. A malformed
+or ambiguous repository identity, a contractless tree with legacy runtime, a
+partial v3 scaffold without its matching contract, or a legacy/v3 dual stack is
+`unknown` or `mixed` and fails closed. Known template hashes determine only
+whether automated replacement is safe; they do not establish the legacy
+generation.
+
+Contract and receipt JSON reject duplicate keys and non-standard numeric
+constants. Active Plan evidence means visible rendered prose. Fenced or indented
+code, comments, reference definitions and their continuation titles, hidden or
+unsupported HTML, empty structures, placeholder-only containers, and disguised
+Unicode placeholders do not count as concrete evidence. Markdown link/image
+syntax is replaced by visible prose plus a CommonMark URI or email autolink;
+attribute-free inline formatting remains valid visible prose.

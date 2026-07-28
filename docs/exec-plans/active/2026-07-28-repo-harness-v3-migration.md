@@ -76,6 +76,15 @@ behavior or claiming platform readiness.
 - Review rework round 2: the shared checker rejects dangling evaluation symlinks and off-layout manifests, Markdown-wrapped or comment-only placeholders, empty multiline fields, unchanged template sections, and delegation records without an explicit forbidden scope.
 - Review rework round 3: the shared checker validates only rendered plan prose, rejects placeholder-valued required fields, constrains active eval fixtures to distinct regular files inside their rule directory, and requires an explicit no-subagent fallback record.
 - Review rework round 4: upheld exact-head findings now require valid CommonMark closing fences, fail closed on raw HTML blocks, normalize inline HTML before placeholder detection, bind candidate verification to the exact git graph and complete base/head source trees including gitlink OIDs, enforce declared Active Plan sections, fields and tables, and allow receipt cleanup only when the receipt is newly added.
+- Review adjudication round 5: upheld the inert doc-sync finding. A
+  self-contained repository-owned checker now validates the semantic
+  `required_paths` inventory and declared entrypoint links, rejects symlinked
+  or escaping paths, and ignores fenced, indented, inline-code, image, and
+  otherwise non-navigable Markdown examples. The product
+  workflow runs its negative self-test; the contract covers the checker and
+  its missing-required-path and missing-entrypoint-link regressions as required
+  control files and revalidation commands.
+- Review rework round 5: upheld rollout findings now accept as Active Plan evidence only visible rendered Markdown, with container-aware CommonMark fence, indentation, list, task, heading, reference, HTML, autolink, and Unicode semantics; Markdown links and images are replaced by visible prose plus autolinks. Strict JSON rejects duplicate keys and non-standard constants. Initial migration recognizes only minimum legacy structural profiles and rejects malformed identity, contractless legacy runtime, partial v3 scaffolds, or legacy/v3 dual stacks. A rollout finding against the shared verifier concerning gitlinks was disputed: the exact commit-tree OID remains binding, while materialization permits only an absent or empty real directory.
 - Current-head Review: pending; any finding, stale head, partial output,
   timeout, or author ambiguity blocks merge
 

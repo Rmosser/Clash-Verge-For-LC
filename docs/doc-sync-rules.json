@@ -8,6 +8,8 @@
     "docs/exec-plans/active",
     "docs/exec-plans/completed",
     "docs/doc-sync-rules.json",
+    "scripts/check_docs.py",
+    "tests/test_check_docs.py",
     ".harness/repo-contract.json",
     ".github/pull_request_template.md",
     ".github/workflows/product-validation.yml",

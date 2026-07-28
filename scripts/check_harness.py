@@ -12,6 +12,7 @@ import re
 import stat
 import subprocess
 import sys
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
@@ -41,6 +42,7 @@ MAX_VERIFIER_BYTES = 4 * 1024 * 1024
 MAX_ACTIVE_PLAN_BYTES = 1024 * 1024
 MAX_EVAL_MANIFEST_BYTES = 1024 * 1024
 MAX_REQUIRED_FILE_BYTES = 16 * 1024 * 1024
+MAX_GOVERNANCE_INSPECTION_BYTES = 4 * 1024 * 1024
 EXECUTION_PLAN_POLICY = {
     "active_plan_directory": "docs/exec-plans/active",
     "pending_establishment": {
@@ -49,6 +51,111 @@ EXECUTION_PLAN_POLICY = {
         "ordinary_product_work": "forbidden_until_active_baseline",
     },
 }
+CONTRACT_REQUIRED_KEYS = frozenset(
+    {
+        "contract_version",
+        "repository",
+        "repository_id",
+        "default_branch",
+        "verifier",
+        "execution_plan_policy",
+        "control_plane_paths",
+        "audit_state_paths",
+        "required_files",
+        "required_checks",
+        "revalidation_groups",
+        "review",
+        "github_policy",
+        "platform_gate",
+        "publisher_validation",
+        "baseline_receipt",
+        "task_record_policy",
+    }
+)
+CONTRACT_OPTIONAL_KEYS = frozenset(
+    {
+        "active_plan_required_sections",
+        "active_plan_required_fields",
+        "active_plan_required_tables",
+    }
+)
+LEGACY_REVIEW_WORKFLOW_NAMES = frozenset(
+    {
+        f"codex-review-{suffix}.{extension}"
+        for suffix in ("gate", "signal", "heart" + "beat")
+        for extension in ("yml", "yaml")
+    }
+)
+LEGACY_RUNTIME_EXACT_PATHS = frozenset(
+    {
+        "scripts/check_codex_review.py",
+        "scripts/check_merge_receipt.py",
+        "scripts/check_loop_checkpoints.py",
+    }
+)
+LEGACY_REVIEW_WORKFLOW_MARKERS = (
+    "statuses: write",
+    "check_codex_review.py",
+    "check_merge_receipt.py",
+    "createcommitstatus",
+    "create-" + "check-run",
+    "/status" + "es/",
+    "repository-self-" + "supervised",
+    "repository_self_" + "supervised",
+)
+LEGACY_GOVERNANCE_PATHS = (
+    "docs/doc-sync-rules.json",
+    "docs/governance/checkpoint-ci-gate.md",
+)
+LEGACY_RUNTIME_KNOWN_SHA256 = {
+    "docs/doc-sync-rules.json": (
+        "66802b96f8cae40a4ee873779b2b6baf0d27a77d32a1f063c842f0993090f244"
+    ),
+    "docs/governance/checkpoint-ci-gate.md": (
+        "10299c7d5819ba3e4458440161445793cf3dc45200868c80c029813fd907449a"
+    ),
+}
+V3_ARTIFACT_MARKERS = {
+    "AGENTS.md": (
+        "$manage-repo-harness",
+        "repo-harness-verifier-v3.1",
+        "source-isolated GitHub App",
+    ),
+    "scripts/check_harness.py": (
+        "repo-harness-verifier-v3.1",
+        "repo-harness-v3",
+    ),
+    "docs/governance/harness.md": ("repo-harness-v3",),
+    "docs/exec-plans/template.md": (
+        "## Delegation Audit",
+        "Revalidation groups:",
+        "baseline-receipt cleanup PR",
+    ),
+    "docs/index.md": (
+        "Machine-readable Harness contract",
+        "docs/governance/harness.md",
+        "Baseline receipt:",
+    ),
+    ".github/pull_request_template.md": (
+        "Plan lifecycle: `product-same-PR` | `harness-post-merge-cleanup`",
+        "Source-isolated publisher App id:",
+        "## Current-head Review",
+    ),
+}
+V3_ARTIFACT_EXACT_PATHS = (RECEIPT_PATH,)
+LEGACY_GOVERNANCE_MARKERS = (
+    "codex-review-gate",
+    "codex-review-signal",
+    "codex-review-" + "heart" + "beat",
+    "check_codex_review.py",
+    "check_merge_receipt.py",
+    "repository-self-" + "supervised",
+    "repository_self_" + "supervised",
+    "trusted-owner-merge-executor",
+    "trusted_owner_serialized",
+    "fenced lease",
+    "fenced_lease",
+)
 PLACEHOLDER_VALUE_RE = re.compile(
     r"^(?:tbd|todo|pending|unknown|n/?a|none|not[_ -]?applicable|"
     r"placeholder|fill(?: me)? in|<[^>]*>|\{\{[^}]*\}\})[.!]?$",
@@ -73,14 +180,58 @@ COMMONMARK_BLOCK_TAGS = (
     "option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|"
     "title|tr|track|ul"
 )
+VOID_HTML_TAGS = frozenset(
+    {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+)
+VISIBLE_INLINE_HTML_TAGS = frozenset(
+    {
+        "b",
+        "br",
+        "code",
+        "del",
+        "em",
+        "i",
+        "kbd",
+        "mark",
+        "s",
+        "small",
+        "strong",
+        "sub",
+        "sup",
+        "u",
+        "wbr",
+    }
+)
 RAW_HTML_BLOCK_START_RE = re.compile(
     rf"^[ \t]{{0,3}}(?:"
     rf"</?(?:script|pre|style|textarea)(?=[ \t>/])|"
     rf"</?(?:{COMMONMARK_BLOCK_TAGS})(?=[ \t>/])|"
     r"<\?|<![A-Z]|<!\[CDATA\[|"
-    r"</?[A-Za-z][^<]*>[ \t]*$"
+    r"</?[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[^<>]*)?/?[ \t]*>[ \t]*$"
     r")",
     re.IGNORECASE,
+)
+COMMONMARK_AUTOLINK_RE = re.compile(
+    r"<(?P<target>"
+    r"(?:[A-Za-z][A-Za-z0-9+.-]{1,31}:[^<>\x00-\x20]*)"
+    r"|(?:[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?)"
+    r")>"
 )
 
 
@@ -94,9 +245,83 @@ class _VisibleInlineTextParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
+        self.hidden_stack: list[tuple[str, bool]] = []
+        self.hidden_depth = 0
+
+    @staticmethod
+    def _is_hidden(
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> bool:
+        if tag.casefold() in {"script", "style", "template"}:
+            return True
+        normalized = {
+            name.casefold(): (value or "").casefold()
+            for name, value in attrs
+        }
+        if "hidden" in normalized or normalized.get("aria-hidden") == "true":
+            return True
+        style = re.sub(r"\s+", "", normalized.get("style", ""))
+        if "display:none" in style or "visibility:hidden" in style:
+            return True
+        if normalized:
+            raise HarnessError(
+                "inline HTML attributes are not allowed in concrete plan evidence"
+            )
+        return False
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        folded = tag.casefold()
+        if folded not in VISIBLE_INLINE_HTML_TAGS:
+            raise HarnessError(
+                f"unsupported inline HTML tag in concrete plan evidence: {tag}"
+            )
+        if folded in VOID_HTML_TAGS:
+            self._is_hidden(tag, attrs)
+            return
+        hidden = self.hidden_depth > 0 or self._is_hidden(tag, attrs)
+        self.hidden_stack.append((folded, hidden))
+        if hidden:
+            self.hidden_depth += 1
+
+    def handle_startendtag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        if tag.casefold() not in VISIBLE_INLINE_HTML_TAGS:
+            raise HarnessError(
+                f"unsupported inline HTML tag in concrete plan evidence: {tag}"
+            )
+        self._is_hidden(tag, attrs)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.casefold()
+        if tag not in VISIBLE_INLINE_HTML_TAGS:
+            raise HarnessError(
+                f"unsupported inline HTML tag in concrete plan evidence: {tag}"
+            )
+        matching = next(
+            (
+                index
+                for index in range(len(self.hidden_stack) - 1, -1, -1)
+                if self.hidden_stack[index][0] == tag
+            ),
+            None,
+        )
+        if matching is None:
+            return
+        removed = self.hidden_stack[matching:]
+        del self.hidden_stack[matching:]
+        self.hidden_depth -= sum(1 for _, hidden in removed if hidden)
 
     def handle_data(self, data: str) -> None:
-        self.parts.append(data)
+        if self.hidden_depth == 0:
+            self.parts.append(data)
 
 
 class DiffEntry(NamedTuple):
@@ -286,25 +511,166 @@ def is_repo_regular_file(
         return False
 
 
+def strict_json_loads(text: str, label: str) -> Any:
+    def reject_duplicate_keys(
+        pairs: list[tuple[str, Any]],
+    ) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise HarnessError(f"duplicate JSON key in {label}: {key}")
+            value[key] = item
+        return value
+
+    def reject_nonstandard_constant(token: str) -> Any:
+        raise HarnessError(
+            f"non-standard JSON constant in {label}: {token}"
+        )
+
+    try:
+        return json.loads(
+            text,
+            object_pairs_hook=reject_duplicate_keys,
+            parse_constant=reject_nonstandard_constant,
+        )
+    except json.JSONDecodeError as exc:
+        raise HarnessError(f"cannot read valid JSON: {label}: {exc}") from exc
+
+
 def load_repo_json(
     root: Path,
     relative: str,
     *,
     max_bytes: int = MAX_CONTRACT_BYTES,
 ) -> dict[str, Any]:
-    try:
-        data = json.loads(
-            read_repo_regular_text(
-                root,
-                relative,
-                max_bytes=max_bytes,
-            )
-        )
-    except json.JSONDecodeError as exc:
-        raise HarnessError(f"cannot read valid JSON: {relative}: {exc}") from exc
+    data = strict_json_loads(
+        read_repo_regular_text(
+            root,
+            relative,
+            max_bytes=max_bytes,
+        ),
+        relative,
+    )
     if not isinstance(data, dict):
         raise HarnessError(f"JSON root must be an object: {relative}")
     return data
+
+
+def legacy_runtime_paths(root: Path) -> tuple[str, ...]:
+    found: set[str] = set()
+    for relative in LEGACY_RUNTIME_EXACT_PATHS:
+        path = root / relative
+        try:
+            os.lstat(path)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise HarnessError(
+                f"cannot inspect legacy runtime path {relative}: {exc}"
+            ) from exc
+        found.add(relative)
+
+    workflow_relative = ".github/workflows"
+    workflow_directory = root
+    try:
+        for component in safe_relative_parts(workflow_relative):
+            workflow_directory /= component
+            metadata = os.lstat(workflow_directory)
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(
+                metadata.st_mode
+            ):
+                raise HarnessError(
+                    ".github/workflows must be a real in-repository directory"
+                )
+    except FileNotFoundError:
+        workflow_directory = None
+    except OSError as exc:
+        raise HarnessError(f"cannot inspect .github/workflows: {exc}") from exc
+
+    if workflow_directory is not None:
+        try:
+            workflow_names = sorted(os.listdir(workflow_directory))
+        except OSError as exc:
+            raise HarnessError(f"cannot enumerate .github/workflows: {exc}") from exc
+        for name in workflow_names:
+            if not name.casefold().endswith((".yml", ".yaml")):
+                continue
+            relative = f"{workflow_relative}/{name}"
+            if name.casefold() in LEGACY_REVIEW_WORKFLOW_NAMES:
+                found.add(relative)
+                continue
+            text = read_repo_regular_text(
+                root,
+                relative,
+                max_bytes=MAX_GOVERNANCE_INSPECTION_BYTES,
+            ).casefold()
+            if any(marker in text for marker in LEGACY_REVIEW_WORKFLOW_MARKERS):
+                found.add(relative)
+
+    for relative in LEGACY_GOVERNANCE_PATHS:
+        path = root / relative
+        try:
+            os.lstat(path)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise HarnessError(
+                f"cannot inspect legacy governance path {relative}: {exc}"
+            ) from exc
+        if sha256_repo_file(
+            root,
+            relative,
+            max_bytes=MAX_GOVERNANCE_INSPECTION_BYTES,
+        ) == LEGACY_RUNTIME_KNOWN_SHA256.get(relative):
+            found.add(relative)
+            continue
+        text = read_repo_regular_text(
+            root,
+            relative,
+            max_bytes=MAX_GOVERNANCE_INSPECTION_BYTES,
+        ).casefold()
+        if any(marker in text for marker in LEGACY_GOVERNANCE_MARKERS):
+            found.add(relative)
+    return tuple(sorted(found))
+
+
+def v3_artifact_paths(root: Path) -> tuple[str, ...]:
+    found: set[str] = set()
+    for relative in V3_ARTIFACT_EXACT_PATHS:
+        path = root / relative
+        try:
+            os.lstat(path)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise HarnessError(
+                f"cannot inspect v3 artifact path {relative}: {exc}"
+            ) from exc
+        found.add(relative)
+    for relative, markers in V3_ARTIFACT_MARKERS.items():
+        if not is_repo_regular_file(
+            root,
+            relative,
+            max_bytes=MAX_GOVERNANCE_INSPECTION_BYTES,
+        ):
+            continue
+        text = read_repo_regular_text(
+            root,
+            relative,
+            max_bytes=MAX_GOVERNANCE_INSPECTION_BYTES,
+        )
+        if all(marker in text for marker in markers):
+            found.add(relative)
+    return tuple(sorted(found))
+
+
+def validate_no_legacy_runtime(root: Path) -> None:
+    legacy = legacy_runtime_paths(root)
+    if legacy:
+        raise HarnessError(
+            "v3 tree retains legacy Harness runtime paths: "
+            + ", ".join(legacy)
+        )
 
 
 def sha256_repo_file(
@@ -483,8 +849,25 @@ def validate_contract(
 ) -> None:
     if check_files and not is_repo_regular_file(root, CONTRACT_PATH):
         raise HarnessError("contract must be a regular in-repository file")
+    contract_keys = set(contract)
+    missing_keys = sorted(CONTRACT_REQUIRED_KEYS - contract_keys)
+    unexpected_keys = sorted(
+        contract_keys - CONTRACT_REQUIRED_KEYS - CONTRACT_OPTIONAL_KEYS
+    )
+    if missing_keys or unexpected_keys:
+        details: list[str] = []
+        if missing_keys:
+            details.append(f"missing={missing_keys!r}")
+        if unexpected_keys:
+            details.append(f"unexpected={unexpected_keys!r}")
+        raise HarnessError(
+            "contract top-level schema differs from this verifier release "
+            f"({'; '.join(details)})"
+        )
     if contract.get("contract_version") != CONTRACT_VERSION:
         raise HarnessError("unsupported contract_version")
+    if check_files:
+        validate_no_legacy_runtime(root)
     repository = contract.get("repository")
     if not isinstance(repository, str) or not REPOSITORY_RE.fullmatch(repository):
         raise HarnessError("repository must be OWNER/REPOSITORY")
@@ -1027,6 +1410,10 @@ def active_plans(root: Path) -> list[Path]:
                     f"Active Plan path is not a real directory: "
                     f"{nested.relative_to(root).as_posix()}"
                 )
+            raise HarnessError(
+                "nested Active Plans are forbidden: "
+                f"{nested.relative_to(root).as_posix()}"
+            )
         for name in file_names:
             path = current_path / name
             relative = path.relative_to(root).as_posix()
@@ -1038,8 +1425,20 @@ def active_plans(root: Path) -> list[Path]:
                 raise HarnessError(
                     f"Active Plan path must be a bounded regular file: {relative}"
                 )
-            if path.suffix != ".md":
+            if path.name == ".gitkeep" and path.parent == directory:
+                if read_repo_regular_text(
+                    root,
+                    relative,
+                    max_bytes=MAX_ACTIVE_PLAN_BYTES,
+                ).strip():
+                    raise HarnessError(
+                        "Active Plan .gitkeep sentinel must be empty"
+                    )
                 continue
+            if path.suffix != ".md":
+                raise HarnessError(
+                    f"unexpected file in Active Plan directory: {relative}"
+                )
             if path.parent != directory:
                 raise HarnessError(f"nested Active Plans are forbidden: {relative}")
             plans.append(path)
@@ -1048,33 +1447,68 @@ def active_plans(root: Path) -> list[Path]:
 
 def rendered_plan_text(text: str) -> str:
     """Remove Markdown regions that do not render as plan prose."""
+    def indentation_columns(value: str) -> int:
+        columns = 0
+        for character in value:
+            if character == " ":
+                columns += 1
+            elif character == "\t":
+                columns += 4 - (columns % 4)
+            else:
+                break
+        return columns
+
+    def fence_parts(value: str) -> tuple[str, str] | None:
+        indent = re.match(r"^[ \t]*", value)
+        assert indent is not None
+        if indentation_columns(indent.group(0)) > 3:
+            return None
+        match = re.fullmatch(
+            r"(`{3,}|~{3,})([^\r\n]*)",
+            value[len(indent.group(0)) :],
+        )
+        if match is None:
+            return None
+        return match.group(1), match.group(2)
+
     visible_lines: list[str] = []
     fence: tuple[str, int] | None = None
     for line in text.splitlines(keepends=True):
         content = line.rstrip("\r\n")
-        if fence is not None:
-            match = re.fullmatch(
-                r"[ \t]{0,3}(`{3,}|~{3,})[ \t]*",
-                content,
-            )
+        container_content = strip_commonmark_container_prefixes(content)
+        if container_content != content:
             if (
-                match is not None
-                and match.group(1)[0] == fence[0]
-                and len(match.group(1)) >= fence[1]
+                fence_parts(container_content) is not None
+                or indentation_columns(container_content) >= 4
+            ):
+                raise HarnessError(
+                    "Active Plan contains a code block inside a Markdown container"
+                )
+        if fence is not None:
+            closing = fence_parts(content)
+            if (
+                closing is not None
+                and not closing[1].strip()
+                and closing[0][0] == fence[0]
+                and len(closing[0]) >= fence[1]
             ):
                 fence = None
             visible_lines.append("\n" if line.endswith("\n") else "")
             continue
-        match = re.match(r"^[ \t]{0,3}(`{3,}|~{3,})([^\r\n]*)$", content)
-        if match is not None:
-            marker = match.group(1)
-            info = match.group(2)
+        opening = fence_parts(content)
+        if opening is not None:
+            marker, info = opening
             if marker[0] != "`" or "`" not in info:
                 fence = (marker[0], len(marker))
                 visible_lines.append("\n" if line.endswith("\n") else "")
                 continue
+        if indentation_columns(content) >= 4:
+            visible_lines.append("\n" if line.endswith("\n") else "")
+            continue
         visible_lines.append(line)
 
+    if fence is not None:
+        raise HarnessError("Active Plan contains an unterminated fenced block")
     visible = "".join(visible_lines)
     visible = re.sub(
         r"<!--.*?-->",
@@ -1124,13 +1558,60 @@ def plan_field(section: str, key: str) -> str:
     return matches[0].group(1).strip()
 
 
+def visible_inline_text(value: str) -> str:
+    autolinks: list[tuple[str, str]] = []
+
+    def protect_autolink(match: re.Match[str]) -> str:
+        target = match.group("target")
+        token = f"\x00AUTOLINK-{len(autolinks)}\x00"
+        while token in value:
+            token += "\x00"
+        autolinks.append((token, target))
+        return token
+
+    protected = COMMONMARK_AUTOLINK_RE.sub(protect_autolink, value)
+    parser = _VisibleInlineTextParser()
+    try:
+        parser.feed(protected)
+        parser.close()
+    except Exception as exc:
+        raise HarnessError(f"cannot parse inline HTML: {exc}") from exc
+    rendered = "".join(parser.parts)
+    for token, target in autolinks:
+        rendered = rendered.replace(token, target)
+    return rendered
+
+
 def is_placeholder_value(value: str) -> bool:
-    normalized = value.strip()
-    normalized = re.sub(r"^(?:>\s*)+", "", normalized)
+    normalized = unicodedata.normalize("NFKC", value.strip())
+    if any(
+        unicodedata.category(character) in {"Cc", "Cf", "Mn"}
+        for character in normalized
+    ):
+        return True
+    prefix_changed = True
+    while prefix_changed:
+        previous = normalized
+        normalized = re.sub(r"^(?:>[ \t]*)+", "", normalized)
+        normalized = re.sub(
+            r"^(?:[-*+]|\d+[.)])[ \t]+",
+            "",
+            normalized,
+        )
+        normalized = re.sub(r"^\[[ xX-]\][ \t]*", "", normalized)
+        prefix_changed = normalized != previous
     normalized = re.sub(r"^#{1,6}[ \t]+", "", normalized)
+    normalized = re.sub(r"[ \t]+#+[ \t]*$", "", normalized)
+    normalized = re.sub(r"(?<!\\)\\[ \t]*$", "", normalized)
     wrappers = (("**", "**"), ("__", "__"), ("~~", "~~"), ("*", "*"), ("_", "_"))
     changed = True
     while changed:
+        normalized = unicodedata.normalize("NFKC", normalized)
+        if any(
+            unicodedata.category(character) in {"Cc", "Cf", "Mn"}
+            for character in normalized
+        ):
+            return True
         changed = False
         for opening, closing in wrappers:
             if (
@@ -1143,6 +1624,19 @@ def is_placeholder_value(value: str) -> bool:
         match = re.fullmatch(r"(`+)(.*?)\1", normalized, re.DOTALL)
         if match is not None:
             normalized = match.group(2).strip()
+            changed = True
+        match = re.fullmatch(
+            r"(?P<image>!?)\[(?P<label>[^\]\r\n]*)\](?P<suffix>.*)",
+            normalized,
+            re.DOTALL,
+        )
+        if match is not None and (
+            not match.group("suffix")
+            or match.group("suffix").startswith(("(", "["))
+        ):
+            if match.group("image"):
+                return True
+            normalized = match.group("label").strip()
             changed = True
         match = re.fullmatch(
             r"!?\[([^\]\r\n]*)\]\([^)\r\n]*\)",
@@ -1158,12 +1652,29 @@ def is_placeholder_value(value: str) -> bool:
         if match is not None:
             normalized = match.group(1).strip()
             changed = True
-        parser = _VisibleInlineTextParser()
-        parser.feed(normalized)
-        parser.close()
-        rendered = "".join(parser.parts).strip()
+        match = re.fullmatch(r"!?\[([^\]\r\n]+)\]", normalized)
+        if match is not None:
+            normalized = match.group(1).strip()
+            changed = True
+        if PLACEHOLDER_VALUE_RE.fullmatch(normalized) is not None:
+            return True
+        rendered = visible_inline_text(normalized).strip()
         if rendered != normalized:
             normalized = rendered
+            changed = True
+        markdown_plain = re.sub(
+            r"!?\[([^\]\r\n]*)\]\([^)\r\n]*\)",
+            r"\1",
+            normalized,
+        )
+        markdown_plain = re.sub(
+            r"!?\[([^\]\r\n]*)\]\[[^\]\r\n]*\]",
+            r"\1",
+            markdown_plain,
+        )
+        markdown_plain = re.sub(r"(?<!\\)[*_~`]+", "", markdown_plain).strip()
+        if markdown_plain != normalized:
+            normalized = markdown_plain
             changed = True
     lowered = normalized.lower()
     return (
@@ -1179,6 +1690,62 @@ def markdown_table_cells(line: str) -> tuple[str, ...] | None:
     if not stripped.startswith("|") or not stripped.endswith("|"):
         return None
     return tuple(cell.strip() for cell in stripped.strip("|").split("|"))
+
+
+def strip_commonmark_container_prefixes(value: str) -> str:
+    normalized = value
+    while True:
+        previous = normalized
+        normalized = re.sub(
+            r"^[ \t]{0,3}>[ \t]?",
+            "",
+            normalized,
+            count=1,
+        )
+        normalized = re.sub(
+            r"^[ \t]{0,3}(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$)",
+            "",
+            normalized,
+            count=1,
+        )
+        if normalized == previous:
+            return normalized
+
+
+def reject_reference_definitions(lines: list[str], heading: str) -> None:
+    open_label = False
+    label_size = 0
+    for raw_line in lines:
+        line = strip_commonmark_container_prefixes(raw_line)
+        if re.match(r"^[ \t]{0,3}\[.+\]:", line):
+            raise HarnessError(
+                f"Active Plan {heading} contains a non-rendered "
+                "reference definition"
+            )
+        if open_label:
+            label_size += len(line) + 1
+            if re.search(r"\]:[ \t]*(?:\S|$)", line):
+                raise HarnessError(
+                    f"Active Plan {heading} contains a non-rendered "
+                    "multiline reference definition"
+                )
+            if not line.strip() or label_size > 1000:
+                open_label = False
+            continue
+        if re.match(r"^[ \t]{0,3}\[[^\]\r\n]*$", line):
+            open_label = True
+            label_size = len(line)
+
+
+def reject_markdown_link_or_image_syntax(text: str, heading: str) -> None:
+    if re.search(r"!\[", text) or re.search(
+        r"\](?:[ \t\r\n]*)[\[(]",
+        text,
+    ):
+        raise HarnessError(
+            f"Active Plan {heading} uses Markdown link or image syntax; "
+            "use visible prose and a CommonMark autolink instead"
+        )
 
 
 def validate_required_plan_table(
@@ -1240,10 +1807,51 @@ def validate_required_plan_table(
 def require_concrete_section(text: str, heading: str) -> str:
     section = plan_section(text, heading)
     candidates: list[str] = []
-    visible_section = rendered_plan_text(section)
-    for raw_line in visible_section.splitlines():
+    rendered_section = rendered_plan_text(section)
+    reject_reference_definitions(rendered_section.splitlines(), heading)
+    reject_markdown_link_or_image_syntax(rendered_section, heading)
+    visible_section = visible_inline_text(rendered_section)
+    lines = visible_section.splitlines()
+    index = 0
+    while index < len(lines):
+        raw_line = strip_commonmark_container_prefixes(lines[index])
+        reference = re.match(
+            r"^[ \t]{0,3}\[[^\]\r\n]+\]:(?P<definition>.*)$",
+            raw_line,
+        )
+        if reference is not None:
+            if not reference.group("definition").strip():
+                raise HarnessError(
+                    f"Active Plan {heading} contains an ambiguous multiline "
+                    "reference definition"
+                )
+            if (
+                index + 1 < len(lines)
+                and re.fullmatch(
+                    r"""[ \t]{0,3}(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|"""
+                    r"""\((?:[^)\\]|\\.)*\))[ \t]*""",
+                    lines[index + 1],
+                )
+                is not None
+            ):
+                index += 2
+            else:
+                index += 1
+            continue
+        index += 1
         line = raw_line.strip()
         if not line:
+            continue
+        if re.fullmatch(r"#{1,6}(?:[ \t]+#*[ \t]*)?", line):
+            continue
+        if re.fullmatch(
+            r"(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,}",
+            line,
+        ):
+            continue
+        if re.fullmatch(r"(?:=+|-+)", line):
+            continue
+        if re.fullmatch(r"\[[^\]\r\n]+\]:[ \t]*\S.*", line):
             continue
         line = re.sub(r"^(?:[-*+]|\d+[.)])\s*", "", line).strip()
         field_match = re.fullmatch(
@@ -2002,20 +2610,241 @@ def validate_source_snapshot(
         raise HarnessError(f"{label} source snapshot changed during validation")
 
 
-def load_contract_at_commit(git_dir: Path, sha: str, root: Path) -> dict[str, Any]:
+def load_raw_contract_at_commit(
+    git_dir: Path,
+    sha: str,
+    *,
+    required: bool,
+) -> dict[str, Any] | None:
+    entry = git_tree_entries(git_dir, sha).get(os.fsencode(CONTRACT_PATH))
+    if entry is None:
+        if required:
+            raise HarnessError("validated commit has no readable contract")
+        return None
+    if entry.mode not in {"100644", "100755"} or entry.object_type != "blob":
+        raise HarnessError("validated commit contract is not a regular Git blob")
     completed = git_result(git_dir, "show", f"{sha}:{CONTRACT_PATH}")
     if completed.returncode != 0:
-        raise HarnessError(
-            f"validated commit has no readable contract: {completed.stderr.strip()}"
-        )
-    try:
-        contract = json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        raise HarnessError("validated commit contract is invalid JSON") from exc
+        raise HarnessError("cannot read validated commit contract")
+    if len(completed.stdout.encode("utf-8")) > MAX_CONTRACT_BYTES:
+        raise HarnessError("validated commit contract exceeds the size limit")
+    contract = strict_json_loads(
+        completed.stdout,
+        "validated commit contract",
+    )
     if not isinstance(contract, dict):
         raise HarnessError("validated commit contract root must be an object")
+    return contract
+
+
+def load_contract_at_commit(git_dir: Path, sha: str, root: Path) -> dict[str, Any]:
+    contract = load_raw_contract_at_commit(git_dir, sha, required=True)
+    assert contract is not None
     validate_contract(contract, root, check_files=False)
     return contract
+
+
+def legacy_contract_repository(contract: dict[str, Any]) -> str | None:
+    identities: set[str] = set()
+
+    def record(value: Any, label: str, *, allow_none: bool = False) -> None:
+        if value is None and allow_none:
+            return
+        if not isinstance(value, str) or REPOSITORY_RE.fullmatch(value) is None:
+            raise HarnessError(
+                f"recognized legacy contract has invalid repository identity: {label}"
+            )
+        if not value.lower().startswith("local/"):
+            identities.add(value)
+
+    for key in ("repository", "repo_full_name"):
+        if key in contract:
+            record(contract[key], key)
+    if "repo" in contract:
+        value = contract["repo"]
+        if isinstance(value, dict):
+            if "github_full_name" in value:
+                record(
+                    value["github_full_name"],
+                    "repo.github_full_name",
+                    allow_none=True,
+                )
+        else:
+            record(value, "repo")
+    project = contract.get("project")
+    if isinstance(project, dict):
+        if "repo_full_name" in project:
+            record(
+                project["repo_full_name"],
+                "project.repo_full_name",
+                allow_none=True,
+            )
+    if len(identities) > 1:
+        raise HarnessError(
+            "recognized legacy contract declares ambiguous repository identities"
+        )
+    return next(iter(identities)) if identities else None
+
+
+def validate_recognized_legacy_contract(
+    contract: dict[str, Any],
+    candidate_repository: str,
+) -> str:
+    def has_fields(required: dict[str, type]) -> bool:
+        return all(
+            isinstance(contract.get(key), expected)
+            for key, expected in required.items()
+        )
+
+    contract_version = contract.get("contract_version")
+    has_schema_version = "schema_version" in contract
+    has_numeric_version = "version" in contract
+    generation: str | None = None
+    if contract_version in {"legacy-v1", "legacy-v2"}:
+        recognized = (
+            not has_schema_version
+            and not has_numeric_version
+            and contract.get("mode") == "repo-native-agent-cicd"
+            and has_fields(
+                {
+                    "repo": str,
+                    "boundary": dict,
+                    "checkpoint_gate": dict,
+                    "codex_review": dict,
+                }
+            )
+        )
+        if recognized:
+            generation = contract_version
+    elif contract_version in {
+        "agent-cicd-checkpoint-gate-v0",
+        "agent-cicd-checkpoint-gate-v1",
+    }:
+        recognized = (
+            not has_schema_version
+            and not has_numeric_version
+            and contract.get("mode") == "repo-native-agent-cicd"
+            and has_fields(
+                {
+                    "repo": str,
+                    "boundary": dict,
+                    "checkpoint_gate": dict,
+                    "codex_review": dict,
+                }
+            )
+        )
+        if recognized:
+            generation = (
+                "legacy-v1"
+                if contract_version == "agent-cicd-checkpoint-gate-v0"
+                else "legacy-v2"
+            )
+    elif contract_version == "woodpecker-rainierdev-actions-migration-v1":
+        recognized = (
+            not has_schema_version
+            and not has_numeric_version
+            and contract.get("mode") == "repo-native-agent-cicd"
+            and has_fields(
+                {
+                    "repo": str,
+                    "boundary": dict,
+                    "checkpoint_gate": dict,
+                    "codex_review": dict,
+                    "actions_migration": dict,
+                    "actions_outage_safety": dict,
+                    "runtime_contract": dict,
+                }
+            )
+        )
+        if recognized:
+            generation = "legacy-v2"
+    elif contract_version == "workspace-harness-governance-v0":
+        recognized = (
+            not has_schema_version
+            and not has_numeric_version
+            and contract.get("mode") == "repo-native-agent-cicd"
+            and has_fields(
+                {
+                    "repo": dict,
+                    "entrypoints": dict,
+                    "boundary": dict,
+                    "validation_registry": dict,
+                    "codex_review": dict,
+                    "platform_gate": dict,
+                }
+            )
+        )
+        if recognized:
+            generation = "legacy-v1"
+    elif contract_version is None and has_schema_version:
+        schema_version = contract.get("schema_version")
+        valid_version = (
+            isinstance(schema_version, int)
+            and not isinstance(schema_version, bool)
+            and schema_version == 1
+            and not has_numeric_version
+        )
+        runtime_profile = (
+            valid_version
+            and contract.get("governance_model") == "agent-cicd"
+            and "agent_cicd" not in contract
+            and has_fields(
+                {
+                    "repo_full_name": str,
+                    "entrypoints": dict,
+                    "active_plan": dict,
+                    "claims": list,
+                    "required_local_checks": list,
+                    "readiness": dict,
+                }
+            )
+        )
+        xhs_profile = (
+            valid_version
+            and "governance_model" not in contract
+            and has_fields(
+                {
+                    "repo_full_name": str,
+                    "agent_cicd": dict,
+                    "claims": dict,
+                    "allowed_pr1_paths": list,
+                    "forbidden_without_explicit_authorization": list,
+                    "validation_registry": dict,
+                    "readiness": dict,
+                }
+            )
+        )
+        if runtime_profile != xhs_profile:
+            generation = "legacy-v2"
+    elif contract_version is None and has_numeric_version:
+        numeric_version = contract.get("version")
+        recognized = (
+            isinstance(numeric_version, int)
+            and not isinstance(numeric_version, bool)
+            and numeric_version == 1
+            and not has_schema_version
+            and has_fields(
+                {
+                    "project": dict,
+                    "agent_cicd": dict,
+                    "claims": dict,
+                    "gates": dict,
+                    "forbidden_in_pr1": list,
+                }
+            )
+        )
+        if recognized:
+            generation = "legacy-v2"
+    if generation is None:
+        raise HarnessError(
+            "base contract does not match a recognized legacy shape"
+        )
+    identity = legacy_contract_repository(contract)
+    if identity is not None and identity.lower() != candidate_repository.lower():
+        raise HarnessError(
+            "legacy and candidate repository identities do not match"
+        )
+    return generation
 
 
 def git_diff_entries(git_dir: Path, base_sha: str, head_sha: str) -> list[DiffEntry]:
@@ -2198,7 +3027,73 @@ def verify_candidate(
         label="target",
     )
 
-    trusted_contract = load_contract_at_commit(git_dir, base_sha, trusted_root)
+    candidate_contract = load_repo_json(target_root, CONTRACT_PATH)
+    head_contract = load_contract_at_commit(git_dir, head_sha, target_root)
+    if candidate_contract != head_contract:
+        raise HarnessError("target root contract does not match head contract")
+    validate_contract(candidate_contract, target_root)
+    validate_expected_identity(
+        candidate_contract,
+        expected_repository=expected_repository,
+        expected_repository_id=expected_repository_id,
+        expected_default_branch=expected_default_branch,
+    )
+    trusted_contract = load_raw_contract_at_commit(
+        git_dir,
+        base_sha,
+        required=False,
+    )
+    partial_v3 = v3_artifact_paths(trusted_root)
+    if trusted_contract is None:
+        legacy = legacy_runtime_paths(trusted_root)
+        if legacy:
+            raise HarnessError(
+                "contractless base with legacy Harness runtime is unknown: "
+                + ", ".join(legacy)
+            )
+        if partial_v3:
+            raise HarnessError(
+                "contractless base contains partial v3 Harness artifacts: "
+                + ", ".join(partial_v3)
+            )
+    entries = git_diff_entries(git_dir, base_sha, head_sha)
+    paths = sorted(changed_paths(entries))
+    if (
+        trusted_contract is None
+        or trusted_contract.get("contract_version") != CONTRACT_VERSION
+    ):
+        if trusted_contract is not None:
+            validate_recognized_legacy_contract(
+                trusted_contract,
+                candidate_contract["repository"],
+            )
+            if partial_v3:
+                raise HarnessError(
+                    "legacy base is mixed with v3 Harness artifacts: "
+                    + ", ".join(partial_v3)
+                )
+            trusted_root_contract = load_repo_json(trusted_root, CONTRACT_PATH)
+            if trusted_root_contract != trusted_contract:
+                raise HarnessError(
+                    "trusted root contract does not match base contract"
+                )
+        if CONTRACT_PATH not in paths:
+            raise HarnessError(
+                "initial pending establishment must add or replace the contract"
+            )
+        if candidate_contract["platform_gate"]["state"] != "pending":
+            raise HarnessError(EXTERNAL_AUTHORITY_REQUIRED)
+        validate_active_plan(target_root, candidate_contract)
+        validate_eval_rules(target_root)
+        validate_pending_establishment(target_root, candidate_contract)
+        audit = normalize_specs(
+            candidate_contract["audit_state_paths"],
+            "audit_state_paths",
+        )
+        if any(matches_any(path, audit) for path in paths):
+            raise HarnessError(EXTERNAL_AUTHORITY_REQUIRED)
+        raise HarnessError(EXTERNAL_AUTHORITY_REQUIRED)
+
     trusted_root_contract = load_repo_json(trusted_root, CONTRACT_PATH)
     if trusted_root_contract != trusted_contract:
         raise HarnessError("trusted root contract does not match base contract")
@@ -2219,17 +3114,6 @@ def verify_candidate(
                 f"candidate deletes or replaces required file: {relative}"
             )
 
-    candidate_contract = load_repo_json(target_root, CONTRACT_PATH)
-    head_contract = load_contract_at_commit(git_dir, head_sha, target_root)
-    if candidate_contract != head_contract:
-        raise HarnessError("target root contract does not match head contract")
-    validate_contract(candidate_contract, target_root)
-    validate_expected_identity(
-        candidate_contract,
-        expected_repository=expected_repository,
-        expected_repository_id=expected_repository_id,
-        expected_default_branch=expected_default_branch,
-    )
     validate_candidate_contract_transition(
         trusted_contract,
         candidate_contract,
@@ -2253,8 +3137,6 @@ def verify_candidate(
         raise HarnessError(EXTERNAL_AUTHORITY_REQUIRED)
     validate_pending_establishment(target_root, candidate_contract)
 
-    entries = git_diff_entries(git_dir, base_sha, head_sha)
-    paths = sorted(changed_paths(entries))
     audit = normalize_specs(trusted_contract["audit_state_paths"], "audit_state_paths")
     if any(matches_any(path, audit) for path in paths):
         raise HarnessError(EXTERNAL_AUTHORITY_REQUIRED)

@@ -4,8 +4,9 @@ This repository runs Mihomo on LazyCat with domestic direct routing, overseas pr
 
 ## Harness bootloader
 
-1. Read `docs/index.md`.
-2. Read `.harness/repo-contract.json` from the trusted base.
+1. Read [docs/index.md](docs/index.md).
+2. Read [.harness/repo-contract.json](.harness/repo-contract.json) from the
+   trusted base.
 3. Invoke `$manage-repo-harness` for Harness diagnosis, establishment, control-plane changes, platform changes, revalidation, improvement, or migration.
 4. For ordinary product work, cite a valid baseline receipt, follow the Active Plan when required, run product checks, obtain a complete clean current-head Codex Review, and merge only through GitHub's required gates.
 

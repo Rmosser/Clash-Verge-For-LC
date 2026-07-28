@@ -5,7 +5,7 @@
   "default_branch": "main",
   "verifier": {
     "release": "repo-harness-verifier-v3.1",
-    "sha256": "4f59a84f636140e277b6728f4ab6e59064acb561dce64922e95bfc1d87dee933",
+    "sha256": "33cd2a05cfcc4593ee503cb73ea67250b67bf869cb3f1f0dcb277dd8ede1d2ce",
     "authority": "source_isolated_publisher_bundle"
   },
   "task_record_policy": {
@@ -71,6 +71,14 @@
       "pattern": "docs/doc-sync-rules.json"
     },
     {
+      "kind": "exact",
+      "pattern": "scripts/check_docs.py"
+    },
+    {
+      "kind": "exact",
+      "pattern": "tests/test_check_docs.py"
+    },
+    {
       "kind": "glob",
       "pattern": "docs/governance/**"
     },
@@ -97,6 +105,8 @@
     "scripts/check_harness.py",
     "docs/index.md",
     "docs/doc-sync-rules.json",
+    "scripts/check_docs.py",
+    "tests/test_check_docs.py",
     "docs/governance/harness.md",
     "docs/exec-plans/template.md"
   ],
@@ -135,10 +145,14 @@
         "AGENTS.md",
         "docs/index.md",
         "docs/doc-sync-rules.json",
-        "docs/exec-plans/template.md"
+        "docs/exec-plans/template.md",
+        "scripts/check_docs.py",
+        "tests/test_check_docs.py"
       ],
       "commands": [
         "python3 -I -B scripts/check_harness.py --repo .",
+        "python3 -I -B scripts/check_docs.py --self-test",
+        "python3 -I -B tests/test_check_docs.py",
         "python3 -m json.tool docs/doc-sync-rules.json >/dev/null"
       ]
     },
@@ -151,6 +165,7 @@
       ],
       "commands": [
         "python3 -I -B scripts/check_harness.py --repo .",
+        "python3 -I -B scripts/check_docs.py --self-test",
         "bash scripts/test.sh"
       ]
     },
