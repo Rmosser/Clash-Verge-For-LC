@@ -131,6 +131,8 @@ behavior or claiming platform readiness.
 - Repository review rework round 15: the canonical documentation inventory and index now include the three current product/deployment documents that were previously reachable only through `docs/README.md`.
 - Repository review rework round 16: resolved full and shortcut reference links inside an inline-link label now deactivate the outer inline candidate before navigation targets are collected.
 - Review rework round 24 shared-verifier: upheld establishment-scope, Unicode visual-blank, misnested inline-HTML, and quoted raw-HTML findings. The initial migration boundary is verifier-owned and independent of the candidate contract; invisible fillers and structurally ambiguous HTML now fail closed.
+- Review rework round 25 shared-verifier: upheld pending-establishment scope findings. The fixed migration boundary now names only recognized validation workflows, direct-child checker patterns, and a content-bound Ruff exclusion; release workflows, nested executable scripts, and unrelated pyproject changes fail closed.
+- Review rework round 25 documentation: angle masking is limited to syntactically valid CommonMark autolinks and inline HTML.
 - Current-head Review: pending; any finding, stale head, partial output,
   timeout, or author ambiguity blocks merge
 

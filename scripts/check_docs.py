@@ -32,7 +32,20 @@ FULL_REFERENCE_LINK_RE = re.compile(
 SHORTCUT_REFERENCE_LINK_RE = re.compile(
     r"(?P<image>!)?\[(?P<label>(?:\\[^\n]|[^\\\[\]\n])+)\](?![\[(])"
 )
-INLINE_ANGLE_RE = re.compile(r"<[^>\r\n]*>")
+COMMONMARK_AUTOLINK_RE = re.compile(
+    r"<(?:"
+    r"[A-Za-z][A-Za-z0-9+.-]{1,31}:[^<>\x00-\x20]*"
+    r"|[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?"
+    r")>"
+)
+HTML_ATTRIBUTE = (
+    r"[A-Za-z_:][A-Za-z0-9_.:-]*"
+    r"(?:[ \t]*=[ \t]*(?:[^ \t\n\"'=<>`]+|'[^']*'|\"[^\"]*\"))?"
+)
+INLINE_HTML_TAG_RE = re.compile(
+    rf"</?[A-Za-z][A-Za-z0-9-]*(?:[ \t]+{HTML_ATTRIBUTE})*[ \t]*/?>"
+)
 COMMONMARK_BLOCK_TAGS = (
     "address|article|aside|base|basefont|blockquote|body|caption|center|col|"
     "colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|"
@@ -522,14 +535,17 @@ def raw_link_targets(text: str) -> list[str]:
             fail("documentation has an unsupported reference definition")
         content_lines.append(line)
     content = "\n".join(content_lines)
-    angle_spans = [
-        match.span()
-        for match in INLINE_ANGLE_RE.finditer(content)
-    ]
-    reference_content = INLINE_ANGLE_RE.sub(
-        lambda match: " " * len(match.group(0)),
-        content,
+    angle_spans = sorted(
+        {
+            match.span()
+            for pattern in (COMMONMARK_AUTOLINK_RE, INLINE_HTML_TAG_RE)
+            for match in pattern.finditer(content)
+        }
     )
+    reference_characters = list(content)
+    for start, end in angle_spans:
+        reference_characters[start:end] = " " * (end - start)
+    reference_content = "".join(reference_characters)
 
     full_references: list[tuple[re.Match[str], str]] = []
     full_reference_spans: list[tuple[int, int]] = []

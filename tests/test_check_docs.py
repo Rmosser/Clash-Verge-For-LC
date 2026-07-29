@@ -162,6 +162,7 @@ class DocumentationContractTest(unittest.TestCase):
             "[missing](docs/missing.md)\n",
             "[missing][dangling]\n[dangling]: docs/missing.md\n",
             "[missing [nested]](docs/missing.md)\n",
+            "prefix <x [missing](docs/missing.md)> suffix\n",
         ):
             with self.subTest(dangling=dangling):
                 source.write_text(

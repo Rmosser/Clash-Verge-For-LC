@@ -13,7 +13,7 @@ import stat
 import subprocess
 import sys
 import unicodedata
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -107,18 +107,45 @@ LEGACY_GOVERNANCE_PATHS = (
     "docs/doc-sync-rules.json",
     "docs/governance/checkpoint-ci-gate.md",
 )
+PENDING_VALIDATION_WORKFLOW_NAMES = frozenset(
+    {
+        f"{name}.{extension}"
+        for name in (
+            "checkpoint-ci",
+            "doc-sync",
+            "docs-ci",
+            "harness-evidence",
+            "product-ci",
+            "product-validation",
+            "repository-validation",
+            "smoke",
+        )
+        for extension in ("yml", "yaml")
+    }
+)
 PENDING_ESTABLISHMENT_PATHS = (
     {"kind": "glob", "pattern": ".harness/**"},
-    {"kind": "glob", "pattern": ".github/**"},
+    {"kind": "exact", "pattern": ".github/PULL_REQUEST_TEMPLATE.md"},
+    {"kind": "exact", "pattern": ".github/pull_request_template.md"},
+    {"kind": "exact", "pattern": ".github/doc-sync-rules.json"},
+    *(
+        {
+            "kind": "exact",
+            "pattern": f".github/workflows/{name}",
+        }
+        for name in sorted(
+            PENDING_VALIDATION_WORKFLOW_NAMES | LEGACY_REVIEW_WORKFLOW_NAMES
+        )
+    ),
     {"kind": "exact", "pattern": "AGENTS.md"},
     {"kind": "exact", "pattern": "README.md"},
     {"kind": "exact", "pattern": "CLAUDE.md"},
     {"kind": "glob", "pattern": "docs/**"},
     {"kind": "glob", "pattern": "evals/harness/**"},
-    {"kind": "glob", "pattern": "scripts/check_*.py"},
+    {"kind": "direct_glob", "pattern": "scripts/check_*.py"},
     {"kind": "exact", "pattern": "scripts/test_harness_regressions.py"},
-    {"kind": "glob", "pattern": "scripts/validate*"},
-    {"kind": "glob", "pattern": "scripts/verify-*"},
+    {"kind": "direct_glob", "pattern": "scripts/validate*"},
+    {"kind": "direct_glob", "pattern": "scripts/verify-*"},
     {"kind": "exact", "pattern": "scripts/active_plan_checks.py"},
     {"kind": "exact", "pattern": "scripts/run_docs_consistency_audit.py"},
     {"kind": "exact", "pattern": "scripts/trusted-owner-merge-executor.py"},
@@ -775,6 +802,13 @@ def normalize_specs(value: Any, field: str) -> list[dict[str, str]]:
 def matches(path: str, spec: dict[str, str]) -> bool:
     if spec["kind"] == "exact":
         return path == spec["pattern"]
+    if spec["kind"] == "direct_glob":
+        pattern_parent, _, pattern_name = spec["pattern"].rpartition("/")
+        path_parent, _, path_name = path.rpartition("/")
+        return pattern_parent == path_parent and fnmatch.fnmatchcase(
+            path_name,
+            pattern_name,
+        )
     return fnmatch.fnmatchcase(path, spec["pattern"])
 
 
@@ -3027,11 +3061,11 @@ def validate_receipt_structure(
         raise HarnessError("receipt validated_at must be UTC RFC3339 seconds")
     try:
         parsed_at = datetime.strptime(validated_at, "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=timezone.utc
+            tzinfo=UTC
         )
     except ValueError as exc:
         raise HarnessError("receipt validated_at is not a real UTC timestamp") from exc
-    if parsed_at > datetime.now(timezone.utc) + timedelta(minutes=5):
+    if parsed_at > datetime.now(UTC) + timedelta(minutes=5):
         raise HarnessError("receipt validated_at is in the future")
     groups = receipt.get("validated_groups")
     results = receipt.get("results")
@@ -3282,7 +3316,8 @@ def validate_source_snapshot(
     extra_paths = set(before) - set(allowed_kinds)
     missing_paths = set(required_kinds) - set(before)
     if extra_paths or missing_paths:
-        deepest_first = lambda path: (-path.count(b"/"), path)
+        def deepest_first(path: bytes) -> tuple[int, bytes]:
+            return -path.count(b"/"), path
         extra = sorted(
             extra_paths,
             key=deepest_first,
@@ -3636,6 +3671,27 @@ def validate_pending_establishment_paths(paths: list[str]) -> None:
         )
 
 
+def validate_pending_sensitive_files(
+    trusted_root: Path,
+    target_root: Path,
+    paths: list[str],
+) -> None:
+    if "pyproject.toml" not in paths:
+        return
+    base = read_repo_regular_text(trusted_root, "pyproject.toml")
+    candidate = read_repo_regular_text(target_root, "pyproject.toml")
+    ruff_exclusion = 'exclude = ["scripts/check_harness.py"]\n'
+    if ruff_exclusion in base or candidate.count(ruff_exclusion) != 1:
+        raise HarnessError(
+            "pending establishment may only add the fixed check_harness.py "
+            "Ruff exclusion to pyproject.toml"
+        )
+    if candidate.replace(ruff_exclusion, "", 1) != base:
+        raise HarnessError(
+            "pending establishment contains unrelated pyproject.toml changes"
+        )
+
+
 def self_test_pending_establishment_paths() -> None:
     validate_pending_establishment_paths(
         [
@@ -3661,6 +3717,20 @@ def self_test_pending_establishment_paths() -> None:
     else:
         raise HarnessError(
             "pending-establishment path self-test accepted a product path"
+        )
+    for escaped_product_path in (
+        ".github/workflows/release.yml",
+        "scripts/check_payload/product.py",
+        "scripts/validate_payload/runtime.sh",
+        "scripts/verify-x/nested/payload",
+    ):
+        try:
+            validate_pending_establishment_paths([escaped_product_path])
+        except HarnessError:
+            continue
+        raise HarnessError(
+            "pending-establishment path self-test accepted a nested or "
+            f"product-owned path: {escaped_product_path}"
         )
 
 
@@ -3866,6 +3936,7 @@ def verify_candidate(
         if candidate_contract["platform_gate"]["state"] != "pending":
             raise HarnessError(EXTERNAL_AUTHORITY_REQUIRED)
         validate_pending_establishment_paths(paths)
+        validate_pending_sensitive_files(trusted_root, target_root, paths)
         validate_active_plan(target_root, candidate_contract)
         validate_eval_rules(target_root)
         validate_pending_establishment(target_root, candidate_contract)
