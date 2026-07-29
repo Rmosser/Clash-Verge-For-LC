@@ -124,6 +124,7 @@ behavior or claiming platform readiness.
 - Review rework round 11 shared-verifier: upheld the independent table semantics finding, including optional-edge GFM tables. Table headers and separators are schema rather than evidence; a table-only generic section now requires at least one complete, non-placeholder data row.
 - Review rework round 12 shared-verifier: upheld the final GFM table boundary findings. Active Plan table evidence now uses a conservative top-level, blank-boundary subset; short rows, container or open-paragraph layouts, duplicate schemas, hidden table-body headers, inline HTML placeholders, and non-ASCII structural whitespace all fail closed.
 - Review rework round 13 shared-verifier: upheld the inline-code/comment ordering finding. Complete exact-delimiter backtick spans are protected before HTML-comment processing; unmatched delimiters or comments remain fail closed.
+- Review rework round 14 shared-verifier: upheld exact-head findings now reject mixed diagnostic and candidate arguments, mask multiline code spans before plan-structure parsing, honor escaped backticks, strip placeholder punctuation symmetrically, and reject undeclared nested policy fields. HTML comments and inline code now follow rendered-order precedence.
 - Current-head Review: pending; any finding, stale head, partial output,
   timeout, or author ambiguity blocks merge
 

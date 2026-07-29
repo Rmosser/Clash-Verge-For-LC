@@ -1169,6 +1169,16 @@ def validate_contract(
     task_policy = contract.get("task_record_policy")
     if not isinstance(task_policy, dict):
         raise HarnessError("task_record_policy is required")
+    expected_task_policy_keys = {
+        "task_class_values",
+        "record_actual",
+        "model_policy",
+        "reasoning_effort_values",
+        "speed_values",
+        "unknown_allowed",
+    }
+    if set(task_policy) != expected_task_policy_keys:
+        raise HarnessError("task_record_policy contains undeclared fields")
     if task_policy.get("task_class_values") != [
         "trivial",
         "standard",
@@ -1193,6 +1203,17 @@ def validate_contract(
     review = contract.get("review")
     if not isinstance(review, dict):
         raise HarnessError("review policy is required")
+    expected_review_keys = {
+        "supervision_model",
+        "allowed_authors",
+        "head_requirement",
+        "clean_requirement",
+        "finding_policy",
+        "fail_closed_on",
+        "required_status_translation",
+    }
+    if set(review) != expected_review_keys:
+        raise HarnessError("review policy contains undeclared fields")
     if review.get("supervision_model") != "trusted_agent_interpreted":
         raise HarnessError("unexpected review supervision model")
     if review.get("head_requirement") != "exact_live_pr_head":
@@ -1222,6 +1243,18 @@ def validate_contract(
         raise HarnessError("Review fail-closed cases are incomplete")
 
     github = contract.get("github_policy")
+    expected_github_policy_keys = {
+        "pr_only",
+        "strict_base_freshness",
+        "no_bypass",
+        "same_repository_prs_only",
+        "force_push_allowed",
+        "branch_deletion_allowed",
+        "expected_head_required",
+        "merge_authority_model",
+    }
+    if not isinstance(github, dict) or set(github) != expected_github_policy_keys:
+        raise HarnessError("github_policy contains undeclared fields")
     required_true = (
         "pr_only",
         "strict_base_freshness",
@@ -1229,7 +1262,7 @@ def validate_contract(
         "same_repository_prs_only",
         "expected_head_required",
     )
-    if not isinstance(github, dict) or any(github.get(key) is not True for key in required_true):
+    if any(github.get(key) is not True for key in required_true):
         raise HarnessError("GitHub policy does not require all atomic machine gates")
     if github.get("force_push_allowed") is not False:
         raise HarnessError("force-push must be disabled")
@@ -1244,6 +1277,14 @@ def validate_contract(
     baseline = contract.get("baseline_receipt")
     if not isinstance(baseline, dict):
         raise HarnessError("baseline_receipt policy is required")
+    if set(baseline) != {
+        "path",
+        "schema_version",
+        "evidence_kind",
+        "check_name",
+        "allowed_validators",
+    }:
+        raise HarnessError("baseline_receipt policy contains undeclared fields")
     if baseline.get("path") != RECEIPT_PATH or baseline.get("schema_version") != RECEIPT_VERSION:
         raise HarnessError("unexpected baseline receipt policy")
     if baseline.get("evidence_kind") != "github_app_check_run":
@@ -1504,6 +1545,15 @@ def active_plans(root: Path) -> list[Path]:
     return sorted(plans)
 
 
+def markdown_character_is_escaped(text: str, index: int) -> bool:
+    backslashes = 0
+    cursor = index - 1
+    while cursor >= 0 and text[cursor] == "\\":
+        backslashes += 1
+        cursor -= 1
+    return backslashes % 2 == 1
+
+
 def protect_inline_code_spans(text: str) -> tuple[str, tuple[tuple[str, str], ...]]:
     """Replace complete CommonMark backtick spans with collision-free tokens."""
     runs: list[tuple[int, int, int]] = []
@@ -1512,6 +1562,9 @@ def protect_inline_code_spans(text: str) -> tuple[str, tuple[tuple[str, str], ..
         start = text.find("`", cursor)
         if start < 0:
             break
+        if markdown_character_is_escaped(text, start):
+            cursor = start + 1
+            continue
         end = start + 1
         while end < len(text) and text[end] == "`":
             end += 1
@@ -1558,6 +1611,65 @@ def restore_inline_code_spans(
     for token, literal in spans:
         text = text.replace(token, literal)
     return text
+
+
+def render_inline_code_and_html_comments(text: str) -> str:
+    """Remove real HTML comments while preserving bounded inline-code literals."""
+    output: list[str] = []
+    cursor = 0
+    while cursor < len(text):
+        if text.startswith("<!--", cursor):
+            end = text.find("-->", cursor + 4)
+            if end < 0:
+                raise HarnessError("Active Plan contains a malformed HTML comment")
+            comment = text[cursor : end + 3]
+            output.append("\n" * comment.count("\n"))
+            cursor = end + 3
+            continue
+        if text.startswith("-->", cursor):
+            raise HarnessError("Active Plan contains a malformed HTML comment")
+        if text[cursor] == "`" and not markdown_character_is_escaped(text, cursor):
+            run_end = cursor + 1
+            while run_end < len(text) and text[run_end] == "`":
+                run_end += 1
+            delimiter = text[cursor:run_end]
+            search = run_end
+            closing = -1
+            while True:
+                candidate = text.find(delimiter, search)
+                if candidate < 0:
+                    break
+                after = candidate + len(delimiter)
+                if (
+                    not markdown_character_is_escaped(text, candidate)
+                    and (candidate == 0 or text[candidate - 1] != "`")
+                    and (after == len(text) or text[after] != "`")
+                ):
+                    closing = candidate
+                    break
+                search = candidate + 1
+            if closing >= 0:
+                span_end = closing + len(delimiter)
+                literal = text[cursor:span_end]
+                if "\n" in literal or "\r" in literal:
+                    output.append(
+                        "".join(
+                            character
+                            if character in {"\n", "\r"}
+                            else " "
+                            for character in literal
+                        )
+                    )
+                else:
+                    output.append(literal)
+                cursor = span_end
+                continue
+            output.append(delimiter)
+            cursor = run_end
+            continue
+        output.append(text[cursor])
+        cursor += 1
+    return "".join(output)
 
 
 def rendered_plan_text(text: str) -> str:
@@ -1624,23 +1736,13 @@ def rendered_plan_text(text: str) -> str:
 
     if fence is not None:
         raise HarnessError("Active Plan contains an unterminated fenced block")
-    visible, inline_code_spans = protect_inline_code_spans(
-        "".join(visible_lines)
-    )
-    visible = re.sub(
-        r"<!--.*?-->",
-        lambda match: "\n" * match.group(0).count("\n"),
-        visible,
-        flags=re.DOTALL,
-    )
-    if "<!--" in visible or "-->" in visible:
-        raise HarnessError("Active Plan contains a malformed HTML comment")
+    visible = render_inline_code_and_html_comments("".join(visible_lines))
     if any(
         RAW_HTML_BLOCK_START_RE.match(line)
         for line in visible.splitlines()
     ):
         raise HarnessError("Active Plan contains raw HTML block markup")
-    return restore_inline_code_spans(visible, inline_code_spans)
+    return visible
 
 
 def self_test_rendered_plan_text() -> None:
@@ -1661,6 +1763,14 @@ def self_test_rendered_plan_text() -> None:
             )
     if "real comment" in rendered or "visible" not in rendered:
         raise HarnessError("HTML-comment rendering self-test failed")
+    precedence = rendered_plan_text("<!-- ` internal -->\nafter `visible`\n")
+    if "internal" in precedence or "`visible`" not in precedence:
+        raise HarnessError("comment/code precedence self-test failed")
+    multiline = rendered_plan_text(
+        "# Plan ``\n## Metadata\n- Owner: Rmosser\n``\n"
+    )
+    if "## Metadata" in multiline or "Owner:" in multiline:
+        raise HarnessError("multiline code-span structure self-test failed")
 
     negative_cases = (
         "<!-- unmatched opener",
@@ -1715,8 +1825,8 @@ def visible_inline_text(value: str) -> str:
     code_spans: list[tuple[str, str]] = []
     autolinks: list[tuple[str, str]] = []
 
-    def protect_code_span(match: re.Match[str]) -> str:
-        literal = match.group("body").replace("\r\n", "\n").replace("\r", "\n")
+    def normalize_code_span_body(body: str) -> str:
+        literal = body.replace("\r\n", "\n").replace("\r", "\n")
         literal = literal.replace("\n", " ")
         if (
             len(literal) >= 2
@@ -1725,11 +1835,7 @@ def visible_inline_text(value: str) -> str:
             and literal.strip(" ")
         ):
             literal = literal[1:-1]
-        token = f"\x00CODESPAN-{len(code_spans)}\x00"
-        while token in value:
-            token += "\x00"
-        code_spans.append((token, literal))
-        return token
+        return literal
 
     def protect_autolink(match: re.Match[str]) -> str:
         target = match.group("target")
@@ -1739,7 +1845,11 @@ def visible_inline_text(value: str) -> str:
         autolinks.append((token, target))
         return token
 
-    protected = COMMONMARK_CODE_SPAN_RE.sub(protect_code_span, value)
+    protected, raw_code_spans = protect_inline_code_spans(value)
+    for token, raw_literal in raw_code_spans:
+        delimiter_length = len(raw_literal) - len(raw_literal.lstrip("`"))
+        literal = raw_literal[delimiter_length:-delimiter_length]
+        code_spans.append((token, normalize_code_span_body(literal)))
     protected = COMMONMARK_AUTOLINK_RE.sub(protect_autolink, protected)
     parser = _VisibleInlineTextParser()
     try:
@@ -1760,9 +1870,13 @@ def matches_placeholder_token(value: str) -> bool:
     while candidate:
         if PLACEHOLDER_VALUE_RE.fullmatch(candidate) is not None:
             return True
-        if not unicodedata.category(candidate[-1]).startswith("P"):
-            return False
-        candidate = candidate[:-1].rstrip()
+        if unicodedata.category(candidate[-1]).startswith("P"):
+            candidate = candidate[:-1].rstrip()
+            continue
+        if unicodedata.category(candidate[0]).startswith("P"):
+            candidate = candidate[1:].lstrip()
+            continue
+        return False
     return True
 
 
@@ -1806,11 +1920,16 @@ def normalize_visible_plan_value(value: str) -> tuple[str, bool]:
             ):
                 normalized = normalized[len(opening) : -len(closing)].strip()
                 changed = True
-        match = re.fullmatch(r"(`+)(.*?)\1", normalized, re.DOTALL)
+        match = re.fullmatch(
+            r"(?<!`)(?P<ticks>`+)(?!`)(?P<body>.*?)"
+            r"(?<!`)(?P=ticks)(?!`)",
+            normalized,
+            re.DOTALL,
+        )
         if match is not None:
             # Inline code is visible literal text. Angle-bracket content inside
             # it is not raw HTML and must not be interpreted as such.
-            return match.group(2).strip(), False
+            return match.group("body").strip(), False
         match = re.fullmatch(
             r"(?P<image>!?)\[(?P<label>[^\]\r\n]*)\](?P<suffix>.*)",
             normalized,
@@ -3679,6 +3798,19 @@ def main() -> int:
                 )
             self_test_rendered_plan_text()
         elif args.repo:
+            if any(
+                value is not None
+                for value in (
+                    args.trusted_root,
+                    args.target_root,
+                    args.git_dir,
+                    args.base_sha,
+                    args.head_sha,
+                )
+            ):
+                raise HarnessError(
+                    "--repo cannot be combined with candidate-mode arguments"
+                )
             root = args.repo.resolve()
             contract = load_repo_json(root, CONTRACT_PATH)
             validate_contract(contract, root)

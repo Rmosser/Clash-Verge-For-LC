@@ -48,8 +48,8 @@ COMMONMARK_BLOCK_TAGS = (
 )
 RAW_HTML_BLOCK_START_RE = re.compile(
     rf"^[ \t]{{0,3}}(?:"
-    rf"</?(?:script|pre|style|textarea)(?=[ \t>/])|"
-    rf"</?(?:{COMMONMARK_BLOCK_TAGS})(?=[ \t>/])|"
+    rf"</?(?:script|pre|style|textarea)(?=[ \t>/]|$)|"
+    rf"</?(?:{COMMONMARK_BLOCK_TAGS})(?=[ \t>/]|$)|"
     r"<\?|<![A-Z]|<!\[CDATA\[|"
     r"</?[A-Za-z][^<]*>[ \t]*$"
     r")",
@@ -156,6 +156,53 @@ def strip_code_spans(text: str) -> str:
     return "".join(output)
 
 
+def strip_inline_code_and_html_comments(text: str) -> str:
+    output: list[str] = []
+    cursor = 0
+    while cursor < len(text):
+        if text.startswith("<!--", cursor):
+            end = text.find("-->", cursor + 4)
+            if end < 0:
+                fail("documentation contains a malformed HTML comment")
+            output.append("\n" * text[cursor : end + 3].count("\n"))
+            cursor = end + 3
+            continue
+        if text.startswith("-->", cursor):
+            fail("documentation contains a malformed HTML comment")
+        if text[cursor] == "`" and not markdown_character_is_escaped(text, cursor):
+            run_end = cursor + 1
+            while run_end < len(text) and text[run_end] == "`":
+                run_end += 1
+            delimiter = text[cursor:run_end]
+            search = run_end
+            span_end = -1
+            while True:
+                closing = text.find(delimiter, search)
+                if closing < 0:
+                    break
+                after = closing + len(delimiter)
+                if (
+                    not markdown_character_is_escaped(text, closing)
+                    and (closing == 0 or text[closing - 1] != "`")
+                    and (after == len(text) or text[after] != "`")
+                ):
+                    span_end = after
+                    output.append(
+                        "\n" * text[cursor:span_end].count("\n")
+                    )
+                    break
+                search = closing + 1
+            if span_end >= 0:
+                cursor = span_end
+                continue
+            output.append(delimiter)
+            cursor = run_end
+            continue
+        output.append(text[cursor])
+        cursor += 1
+    return "".join(output)
+
+
 def visible_markdown(text: str) -> str:
     lines: list[str] = []
     fence: tuple[str, int] | None = None
@@ -196,16 +243,13 @@ def visible_markdown(text: str) -> str:
         lines.append(line)
     if fence is not None:
         fail("documentation contains an unterminated fenced code block")
-    visible = re.sub(
-        r"<!--.*?-->",
-        lambda match: "\n" * match.group(0).count("\n"),
-        "".join(lines),
-        flags=re.DOTALL,
-    )
-    if "<!--" in visible or "-->" in visible:
-        fail("documentation contains a malformed HTML comment")
-    visible = strip_code_spans(visible)
-    if any(RAW_HTML_BLOCK_START_RE.match(line) for line in visible.splitlines()):
+    visible = strip_inline_code_and_html_comments("".join(lines))
+    if any(
+        RAW_HTML_BLOCK_START_RE.match(
+            strip_commonmark_container_prefixes(line)[0]
+        )
+        for line in visible.splitlines()
+    ):
         fail("documentation contains raw HTML block markup")
     return visible
 
