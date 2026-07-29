@@ -27,6 +27,7 @@ behavior or claiming platform readiness.
 
 ## Baseline
 
+- Validated commit: unavailable until expected-head establishment merge and cleanup receipt
 - Receipt: absent and forbidden during pending establishment
 - Migration base: `0d3610f1353a9a0242a9c54c7fd037f2e8da37d5`
 - Revalidation required: true
@@ -61,6 +62,7 @@ behavior or claiming platform readiness.
 
 ## Validation
 
+- Review rework round 17 shared-verifier: upheld exact-head schema and rendered-evidence findings. Contract path, verifier, revalidation-group, required-check publisher, and publisher-validation objects now reject undeclared fields; baseline labels are mandatory; CommonMark code-span closers do not treat backslashes as escapes.
 - Required files: every path in `.harness/repo-contract.json`
 - Required checks: harness/evidence, product/validation (declared inventory; unavailable Actions results
   are not synthesized or treated as green)

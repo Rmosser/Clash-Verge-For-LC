@@ -745,6 +745,10 @@ def normalize_specs(value: Any, field: str) -> list[dict[str, str]]:
     for item in value:
         if not isinstance(item, dict):
             raise HarnessError(f"{field} entries must be objects")
+        if set(item) != {"kind", "pattern"}:
+            raise HarnessError(
+                f"{field} entries may contain only kind and pattern"
+            )
         kind = item.get("kind")
         pattern = item.get("pattern")
         if kind not in {"exact", "glob"} or not isinstance(pattern, str) or not pattern:
@@ -936,6 +940,8 @@ def validate_contract(
     verifier = contract.get("verifier")
     if not isinstance(verifier, dict):
         raise HarnessError("verifier policy is required")
+    if set(verifier) != {"release", "sha256", "authority"}:
+        raise HarnessError("verifier policy contains undeclared fields")
     release = verifier.get("release")
     verifier_sha = verifier.get("sha256")
     if release not in SUPPORTED_VERIFIER_RELEASES:
@@ -1010,6 +1016,10 @@ def validate_contract(
     for name, group in groups.items():
         if not isinstance(name, str) or not isinstance(group, dict):
             raise HarnessError("invalid revalidation group")
+        if set(group) != {"paths", "commands"}:
+            raise HarnessError(
+                f"group {name} contains undeclared fields"
+            )
         paths = group.get("paths")
         commands = group.get("commands")
         if not isinstance(paths, list) or not paths:
@@ -1051,6 +1061,8 @@ def validate_contract(
     for check in checks:
         if not isinstance(check, dict):
             raise HarnessError("required_checks entries must be objects")
+        if set(check) != {"context", "kind", "publisher"}:
+            raise HarnessError("required check contains undeclared fields")
         context = check.get("context")
         if not isinstance(context, str) or not context:
             raise HarnessError("required check context is required")
@@ -1061,18 +1073,30 @@ def validate_contract(
             raise HarnessError("required check publisher must be an object")
         model = publisher.get("model")
         if context == "harness/evidence":
+            if set(publisher) != {"model", "app_id", "app_slug"}:
+                raise HarnessError(
+                    "harness/evidence publisher contains undeclared fields"
+                )
             if model != "source_isolated_github_app":
                 raise HarnessError(
                     "harness/evidence publisher must be a source-isolated GitHub App"
                 )
             harness_checks.append(check)
         elif model == "github_actions_shared":
+            if set(publisher) != {"model", "app_id", "app_slug"}:
+                raise HarnessError(
+                    "shared Actions publisher contains undeclared fields"
+                )
             if publisher.get("app_id") is not None or publisher.get("app_slug") not in {
                 None,
                 "github-actions",
             }:
                 raise HarnessError("shared Actions publisher identity is resolved live")
         elif model == "github_app":
+            if set(publisher) != {"model", "app_id", "app_slug"}:
+                raise HarnessError(
+                    "product GitHub App publisher contains undeclared fields"
+                )
             app_id = publisher.get("app_id")
             app_slug = publisher.get("app_slug")
             if (
@@ -1151,6 +1175,14 @@ def validate_contract(
     publisher_validation = contract.get("publisher_validation")
     if not isinstance(publisher_validation, dict):
         raise HarnessError("publisher_validation policy is required")
+    if set(publisher_validation) != {
+        "model",
+        "profile_id",
+        "profile_sha256",
+    }:
+        raise HarnessError(
+            "publisher_validation policy contains undeclared fields"
+        )
     if publisher_validation.get("model") != "external_sandbox_profile":
         raise HarnessError("publisher must use an external sandbox profile")
     profile_id = publisher_validation.get("profile_id")
@@ -1641,8 +1673,7 @@ def render_inline_code_and_html_comments(text: str) -> str:
                     break
                 after = candidate + len(delimiter)
                 if (
-                    not markdown_character_is_escaped(text, candidate)
-                    and (candidate == 0 or text[candidate - 1] != "`")
+                    (candidate == 0 or text[candidate - 1] != "`")
                     and (after == len(text) or text[after] != "`")
                 ):
                     closing = candidate
@@ -2555,6 +2586,12 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
             require_concrete_section(text, heading)
 
     required_fields = {
+        "## Baseline": (
+            "Receipt",
+            "Validated commit",
+            "Revalidation required",
+            "Revalidation groups",
+        ),
         "## Scope": ("In scope", "Out of scope"),
         "## Validation": (
             "Required files",
