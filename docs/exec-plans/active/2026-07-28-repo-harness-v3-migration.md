@@ -134,6 +134,10 @@ behavior or claiming platform readiness.
   timeout, or author ambiguity blocks merge
 
 - Review rework round 19 shared-verifier: upheld the remaining schema, mode-separation, and rendered-HTML findings. `task_record_policy.unknown_allowed` is now an exact boolean; empty verification arguments cannot enter rendering self-test mode; and multiline raw-HTML wrappers fail closed before hidden plan structure can be accepted.
+- Review rework round 21 shared-verifier: upheld multiline and unmatched inline-HTML findings. Quote-aware tag scanning now rejects every tag opener that crosses a line even when quoted attributes contain angle brackets, and unclosed inline tags cannot conceal required Active Plan evidence.
+
+- Review rework round 21 documentation: upheld balanced-destination and autolink findings. Inline destinations now parse balanced parentheses, while URI autolinks remain valid external links rather than raw HTML.
+
 ## Documentation Impact
 
 - Result: updated

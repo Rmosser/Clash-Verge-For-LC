@@ -17,11 +17,6 @@ from typing import Any, NamedTuple
 
 ROOT = Path(__file__).resolve().parents[1]
 RULES_PATH = "docs/doc-sync-rules.json"
-INLINE_LINK_TAIL_RE = re.compile(
-    r"\(\s*"
-    r"(?P<destination><[^>\n]+>|[^)\s]+)"
-    r"(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?\s*\)"
-)
 REFERENCE_DEFINITION_RE = re.compile(
     r"^[ ]{0,3}\[(?P<label>(?:\\[^\n]|[^\\\[\]\n])+)\]:[ \t]*"
     r"(?P<destination><[^>\n]+>|[^ \t\n]+)"
@@ -51,7 +46,7 @@ RAW_HTML_BLOCK_START_RE = re.compile(
     rf"</?(?:script|pre|style|textarea)(?=[ \t>/]|$)|"
     rf"</?(?:{COMMONMARK_BLOCK_TAGS})(?=[ \t>/]|$)|"
     r"<\?|<![A-Z]|<!\[CDATA\[|"
-    r"</?[A-Za-z][^<]*>[ \t]*$"
+    r"</?[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[^<>\r\n]*)?/?[ \t]*>[ \t]*$"
     r")",
     re.IGNORECASE,
 )
@@ -284,6 +279,113 @@ def normalized_reference_label(label: str) -> str:
     return " ".join(markdown_unescape(label).split()).casefold()
 
 
+def inline_whitespace_end(text: str, cursor: int) -> int | None:
+    line_endings = 0
+    while cursor < len(text) and text[cursor].isspace():
+        if text[cursor] == "\r":
+            line_endings += 1
+            cursor += 1
+            if cursor < len(text) and text[cursor] == "\n":
+                cursor += 1
+        elif text[cursor] == "\n":
+            line_endings += 1
+            cursor += 1
+        else:
+            cursor += 1
+        if line_endings > 1:
+            return None
+    return cursor
+
+
+def inline_link_end_after_title(
+    text: str,
+    cursor: int,
+) -> int | None:
+    whitespace_start = cursor
+    cursor = inline_whitespace_end(text, cursor)
+    if cursor is None:
+        return None
+    if cursor < len(text) and text[cursor] == ")":
+        return cursor + 1
+    if cursor == whitespace_start:
+        return None
+    if cursor >= len(text) or text[cursor] not in {'"', "'", "("}:
+        return None
+    opening = text[cursor]
+    closing = ")" if opening == "(" else opening
+    cursor += 1
+    while cursor < len(text):
+        if text[cursor] in "\r\n":
+            return None
+        if (
+            text[cursor] == "\\"
+            and cursor + 1 < len(text)
+            and text[cursor + 1] in string.punctuation
+        ):
+            cursor += 2
+            continue
+        if text[cursor] == closing:
+            cursor += 1
+            break
+        cursor += 1
+    else:
+        return None
+    cursor = inline_whitespace_end(text, cursor)
+    if cursor is not None and cursor < len(text) and text[cursor] == ")":
+        return cursor + 1
+    return None
+
+
+def inline_link_tail(
+    text: str,
+    cursor: int,
+) -> tuple[int, str] | None:
+    if cursor >= len(text) or text[cursor] != "(":
+        return None
+    cursor = inline_whitespace_end(text, cursor + 1)
+    if cursor is None or cursor >= len(text):
+        return None
+    destination_start = cursor
+    if text[cursor] == "<":
+        cursor += 1
+        while cursor < len(text):
+            if text[cursor] in "\r\n<":
+                return None
+            if text[cursor] == ">":
+                destination = text[destination_start : cursor + 1]
+                end = inline_link_end_after_title(text, cursor + 1)
+                return (end, destination) if end is not None else None
+            cursor += 1
+        return None
+    depth = 0
+    while cursor < len(text):
+        character = text[cursor]
+        if (
+            character == "\\"
+            and cursor + 1 < len(text)
+            and text[cursor + 1] in string.punctuation
+        ):
+            cursor += 2
+            continue
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            if depth == 0:
+                return cursor + 1, text[destination_start:cursor]
+            depth -= 1
+        elif character.isspace():
+            if depth != 0:
+                return None
+            end = inline_link_end_after_title(text, cursor)
+            if end is None:
+                return None
+            return end, text[destination_start:cursor]
+        elif character in "<>":
+            return None
+        cursor += 1
+    return None
+
+
 def inline_link_candidates(
     text: str,
 ) -> list[InlineLinkCandidate]:
@@ -312,7 +414,7 @@ def inline_link_candidates(
             cursor = bracket + 1
             continue
 
-        tail = INLINE_LINK_TAIL_RE.match(text, label_cursor + 1)
+        tail = inline_link_tail(text, label_cursor + 1)
         if tail is None:
             cursor = bracket + 1
             continue
@@ -326,11 +428,11 @@ def inline_link_candidates(
         candidates.append(
             InlineLinkCandidate(
                 start,
-                tail.end(),
+                tail[0],
                 bracket,
                 label_cursor,
                 image,
-                tail.group("destination").strip(),
+                tail[1].strip(),
             )
         )
         cursor = bracket + 1
@@ -753,6 +855,11 @@ def self_test(value: dict[str, Any]) -> None:
     nested = "[documentation [index]](docs/index.md)\n"
     if raw_link_targets(nested) != ["docs/index.md"]:
         fail("positive self-test rejected a nested inline-link label")
+    balanced = "[documentation](docs/index_(advanced).md)\n"
+    if raw_link_targets(balanced) != ["docs/index_(advanced).md"]:
+        fail("positive self-test rejected a balanced inline destination")
+    if raw_link_targets("<https://example.com>\n"):
+        fail("URI autolink was treated as a repository link")
     nested_reference = (
         "[Outer [Inner][inside]](docs/index.md)\n"
         "[inside]: docs/inside.md\n"

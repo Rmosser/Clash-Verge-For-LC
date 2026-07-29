@@ -1707,6 +1707,46 @@ def render_inline_code_and_html_comments(text: str) -> str:
 
 def rendered_plan_text(text: str) -> str:
     """Remove Markdown regions that do not render as plan prose."""
+    def contains_multiline_html_tag(value: str) -> bool:
+        cursor = 0
+        while cursor < len(value):
+            opening = value.find("<", cursor)
+            if opening < 0:
+                return False
+            tag = opening + 1
+            if tag < len(value) and value[tag] == "/":
+                tag += 1
+            if tag >= len(value) or not value[tag].isalpha():
+                cursor = opening + 1
+                continue
+            while tag < len(value) and (
+                value[tag].isalnum() or value[tag] == "-"
+            ):
+                tag += 1
+            if (
+                tag < len(value)
+                and value[tag] not in " \t/>"
+                and value[tag] not in "\r\n"
+            ):
+                cursor = opening + 1
+                continue
+            quote: str | None = None
+            scan = tag
+            while scan < len(value):
+                character = value[scan]
+                if character in "\r\n":
+                    return True
+                if quote is not None:
+                    if character == quote:
+                        quote = None
+                elif character in {'"', "'"}:
+                    quote = character
+                elif character == ">":
+                    break
+                scan += 1
+            cursor = scan + 1
+        return False
+
     def indentation_columns(value: str) -> int:
         columns = 0
         for character in value:
@@ -1770,10 +1810,7 @@ def rendered_plan_text(text: str) -> str:
     if fence is not None:
         raise HarnessError("Active Plan contains an unterminated fenced block")
     visible = render_inline_code_and_html_comments("".join(visible_lines))
-    if re.search(
-        r"</?[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[^<>]*)?[\r\n][^<>]*>",
-        visible,
-    ):
+    if contains_multiline_html_tag(visible):
         raise HarnessError("Active Plan contains multiline raw HTML markup")
     if any(
         RAW_HTML_BLOCK_START_RE.match(line)
@@ -1816,6 +1853,7 @@ def self_test_rendered_plan_text() -> None:
         "`unmatched delimiter <!--",
         "<section>\n",
         '<strong title="\n## Metadata\n- Owner: hidden\n">x</strong>\n',
+        '<strong title="a > b\n## Metadata\n- Owner: hidden\n">x</strong>\n',
     )
     for fixture in negative_cases:
         try:
@@ -1826,6 +1864,12 @@ def self_test_rendered_plan_text() -> None:
             "rendering self-test accepted unsafe markup: "
             + repr(fixture)
         )
+    try:
+        visible_inline_text("Rmosser <strong hidden>")
+    except HarnessError:
+        pass
+    else:
+        raise HarnessError("rendering self-test accepted an unclosed inline tag")
 
 
 def plan_heading_pattern(heading: str) -> str:
@@ -1904,6 +1948,8 @@ def visible_inline_text(value: str) -> str:
         parser.close()
     except Exception as exc:
         raise HarnessError(f"cannot parse inline HTML: {exc}") from exc
+    if parser.hidden_stack:
+        raise HarnessError("inline HTML contains an unclosed tag")
     rendered = "".join(parser.parts)
     for token, literal in code_spans:
         rendered = rendered.replace(token, literal)
