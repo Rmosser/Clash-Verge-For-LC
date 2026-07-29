@@ -125,6 +125,8 @@ behavior or claiming platform readiness.
 - Review rework round 12 shared-verifier: upheld the final GFM table boundary findings. Active Plan table evidence now uses a conservative top-level, blank-boundary subset; short rows, container or open-paragraph layouts, duplicate schemas, hidden table-body headers, inline HTML placeholders, and non-ASCII structural whitespace all fail closed.
 - Review rework round 13 shared-verifier: upheld the inline-code/comment ordering finding. Complete exact-delimiter backtick spans are protected before HTML-comment processing; unmatched delimiters or comments remain fail closed.
 - Review rework round 14 shared-verifier: upheld exact-head findings now reject mixed diagnostic and candidate arguments, mask multiline code spans before plan-structure parsing, honor escaped backticks, strip placeholder punctuation symmetrically, and reject undeclared nested policy fields. HTML comments and inline code now follow rendered-order precedence.
+- Review rework round 15 shared-verifier: upheld exact-head findings now reject identity flags in rendering self-test mode and normalize equivalent CommonMark level-two headings before section uniqueness and order checks.
+- Repository review rework round 15: the canonical documentation inventory and index now include the three current product/deployment documents that were previously reachable only through `docs/README.md`.
 - Current-head Review: pending; any finding, stale head, partial output,
   timeout, or author ambiguity blocks merge
 

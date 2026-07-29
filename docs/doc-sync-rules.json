@@ -16,9 +16,12 @@
     "README.md",
     "docs/CURRENT_RUNTIME.md",
     "docs/USER_GUIDE.md",
+    "docs/CONTAINER_PROXY_GUIDE.md",
     "docs/LAZYCAT_NETWORK_REPORT.md",
     "docs/SECURITY.md",
-    "docs/HOST_NATIVE_RUNBOOK.md"
+    "docs/HOST_NATIVE_RUNBOOK.md",
+    "docs/PACKAGING.md",
+    "docs/CLASH_VERGE_WEB_SMOKE_CHECKLIST.md"
   ],
   "audit_state_path": ".harness/baseline-receipt.json",
   "entrypoint_links": [
@@ -35,9 +38,12 @@
         "../README.md",
         "CURRENT_RUNTIME.md",
         "USER_GUIDE.md",
+        "CONTAINER_PROXY_GUIDE.md",
         "LAZYCAT_NETWORK_REPORT.md",
         "SECURITY.md",
         "HOST_NATIVE_RUNBOOK.md",
+        "PACKAGING.md",
+        "CLASH_VERGE_WEB_SMOKE_CHECKLIST.md",
         "governance/harness.md",
         "exec-plans/template.md",
         "doc-sync-rules.json",

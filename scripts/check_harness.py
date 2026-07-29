@@ -1789,13 +1789,21 @@ def self_test_rendered_plan_text() -> None:
         )
 
 
+def plan_heading_pattern(heading: str) -> str:
+    if not heading.startswith("## "):
+        raise HarnessError(f"unsupported Active Plan heading: {heading}")
+    label = re.escape(heading[3:])
+    return rf"^[ ]{{0,3}}##[ \t]+{label}(?:[ \t]+#+)?[ \t]*$"
+
+
 def plan_section(text: str, heading: str) -> str:
     text = rendered_plan_text(text)
     matches = list(
         re.finditer(
-        rf"^{re.escape(heading)}\s*$\n(?P<body>.*?)(?=^## |\Z)",
-        text,
-        re.MULTILINE | re.DOTALL,
+            plan_heading_pattern(heading)
+            + r"\n(?P<body>.*?)(?=^[ ]{0,3}##(?:[ \t]+|$)|\Z)",
+            text,
+            re.MULTILINE | re.DOTALL,
         )
     )
     if not matches:
@@ -2494,7 +2502,7 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
     for section in PLAN_SECTIONS:
         matches = list(
             re.finditer(
-                rf"^{re.escape(section)}\s*$",
+                plan_heading_pattern(section),
                 visible_text,
                 re.MULTILINE,
             )
@@ -2509,7 +2517,7 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
     for section in additional_sections:
         matches = list(
             re.finditer(
-                rf"^{re.escape(section)}\s*$",
+                plan_heading_pattern(section),
                 visible_text,
                 re.MULTILINE,
             )
@@ -3791,6 +3799,9 @@ def main() -> int:
                 or args.git_dir
                 or args.base_sha
                 or args.head_sha
+                or args.expected_repository
+                or args.expected_repository_id is not None
+                or args.expected_default_branch
                 or args.check_platform
             ):
                 raise HarnessError(

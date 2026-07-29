@@ -5,9 +5,12 @@
 - [README.md](../README.md): project entrypoint and quick start.
 - [CURRENT_RUNTIME.md](CURRENT_RUNTIME.md): current runtime contract and source of truth.
 - [USER_GUIDE.md](USER_GUIDE.md): subscription import, Docker proxy, and user operations.
+- [CONTAINER_PROXY_GUIDE.md](CONTAINER_PROXY_GUIDE.md): developer-facing container proxy setup.
 - [LAZYCAT_NETWORK_REPORT.md](LAZYCAT_NETWORK_REPORT.md): TUN and control-plane bypass risks.
 - [SECURITY.md](SECURITY.md): controller isolation and secret handling.
 - [HOST_NATIVE_RUNBOOK.md](HOST_NATIVE_RUNBOOK.md): host-native recovery and bootstrap.
+- [PACKAGING.md](PACKAGING.md): LPK packaging and distribution boundaries.
+- [CLASH_VERGE_WEB_SMOKE_CHECKLIST.md](CLASH_VERGE_WEB_SMOKE_CHECKLIST.md): web regression checklist.
 
 ## Harness governance
 
