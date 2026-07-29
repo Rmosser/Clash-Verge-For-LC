@@ -1504,6 +1504,62 @@ def active_plans(root: Path) -> list[Path]:
     return sorted(plans)
 
 
+def protect_inline_code_spans(text: str) -> tuple[str, tuple[tuple[str, str], ...]]:
+    """Replace complete CommonMark backtick spans with collision-free tokens."""
+    runs: list[tuple[int, int, int]] = []
+    cursor = 0
+    while cursor < len(text):
+        start = text.find("`", cursor)
+        if start < 0:
+            break
+        end = start + 1
+        while end < len(text) and text[end] == "`":
+            end += 1
+        runs.append((start, end, end - start))
+        cursor = end
+
+    next_same_length: list[int | None] = [None] * len(runs)
+    last_by_length: dict[int, int] = {}
+    for index in range(len(runs) - 1, -1, -1):
+        delimiter_length = runs[index][2]
+        next_same_length[index] = last_by_length.get(delimiter_length)
+        last_by_length[delimiter_length] = index
+
+    parts: list[str] = []
+    spans: list[tuple[str, str]] = []
+    cursor = 0
+    run_index = 0
+    while run_index < len(runs):
+        opener_start, opener_end, _ = runs[run_index]
+        parts.append(text[cursor:opener_start])
+        closing_index = next_same_length[run_index]
+        if closing_index is None:
+            parts.append(text[opener_start:opener_end])
+            cursor = opener_end
+            run_index += 1
+            continue
+        closing_end = runs[closing_index][1]
+        literal = text[opener_start:closing_end]
+        token = f"\x00HARNESS-CODE-SPAN-{len(spans)}\x00"
+        while token in text:
+            token += "\x00"
+        spans.append((token, literal))
+        parts.append(token)
+        cursor = closing_end
+        run_index = closing_index + 1
+    parts.append(text[cursor:])
+    return "".join(parts), tuple(spans)
+
+
+def restore_inline_code_spans(
+    text: str,
+    spans: tuple[tuple[str, str], ...],
+) -> str:
+    for token, literal in spans:
+        text = text.replace(token, literal)
+    return text
+
+
 def rendered_plan_text(text: str) -> str:
     """Remove Markdown regions that do not render as plan prose."""
     def indentation_columns(value: str) -> int:
@@ -1568,7 +1624,9 @@ def rendered_plan_text(text: str) -> str:
 
     if fence is not None:
         raise HarnessError("Active Plan contains an unterminated fenced block")
-    visible = "".join(visible_lines)
+    visible, inline_code_spans = protect_inline_code_spans(
+        "".join(visible_lines)
+    )
     visible = re.sub(
         r"<!--.*?-->",
         lambda match: "\n" * match.group(0).count("\n"),
@@ -1582,7 +1640,43 @@ def rendered_plan_text(text: str) -> str:
         for line in visible.splitlines()
     ):
         raise HarnessError("Active Plan contains raw HTML block markup")
-    return visible
+    return restore_inline_code_spans(visible, inline_code_spans)
+
+
+def self_test_rendered_plan_text() -> None:
+    protected = (
+        "`<!-- literal -->`\n"
+        "`<!-- exact-scope:begin -->`\n"
+        "<!-- real comment -->\n"
+        "visible\n"
+    )
+    rendered = rendered_plan_text(protected)
+    for literal in (
+        "`<!-- literal -->`",
+        "`<!-- exact-scope:begin -->`",
+    ):
+        if literal not in rendered:
+            raise HarnessError(
+                f"inline-code rendering self-test lost literal: {literal}"
+            )
+    if "real comment" in rendered or "visible" not in rendered:
+        raise HarnessError("HTML-comment rendering self-test failed")
+
+    negative_cases = (
+        "<!-- unmatched opener",
+        "--> unmatched closer",
+        "`unmatched delimiter <!--",
+        "<section>\n",
+    )
+    for fixture in negative_cases:
+        try:
+            rendered_plan_text(fixture)
+        except HarnessError:
+            continue
+        raise HarnessError(
+            "rendering self-test accepted unsafe markup: "
+            + repr(fixture)
+        )
 
 
 def plan_section(text: str, heading: str) -> str:
@@ -3563,13 +3657,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-repository-id", type=int)
     parser.add_argument("--expected-default-branch")
     parser.add_argument("--check-platform", action="store_true")
+    parser.add_argument("--self-test-rendering", action="store_true")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     try:
-        if args.repo:
+        if args.self_test_rendering:
+            if (
+                args.repo
+                or args.trusted_root
+                or args.target_root
+                or args.git_dir
+                or args.base_sha
+                or args.head_sha
+                or args.check_platform
+            ):
+                raise HarnessError(
+                    "--self-test-rendering cannot be combined with verification arguments"
+                )
+            self_test_rendered_plan_text()
+        elif args.repo:
             root = args.repo.resolve()
             contract = load_repo_json(root, CONTRACT_PATH)
             validate_contract(contract, root)
@@ -3610,7 +3719,10 @@ def main() -> int:
     except HarnessError as exc:
         print(f"harness check failed: {exc}", file=sys.stderr)
         return 1
-    print("harness diagnostic structure check passed; readiness is not established")
+    if args.self_test_rendering:
+        print("harness plan rendering self-test passed")
+    else:
+        print("harness diagnostic structure check passed; readiness is not established")
     return 0
 
 

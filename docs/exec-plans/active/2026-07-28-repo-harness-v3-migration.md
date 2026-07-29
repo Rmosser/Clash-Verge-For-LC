@@ -123,6 +123,7 @@ behavior or claiming platform readiness.
 - Review rework round 10 shared-verifier: upheld three rendered-evidence findings. CommonMark block-tag openers ending at a line boundary now fail closed; punctuation-only plan values are placeholders; and table-only sections are evaluated by visible cells so empty, separator-only, or placeholder-only tables cannot satisfy required evidence.
 - Review rework round 11 shared-verifier: upheld the independent table semantics finding, including optional-edge GFM tables. Table headers and separators are schema rather than evidence; a table-only generic section now requires at least one complete, non-placeholder data row.
 - Review rework round 12 shared-verifier: upheld the final GFM table boundary findings. Active Plan table evidence now uses a conservative top-level, blank-boundary subset; short rows, container or open-paragraph layouts, duplicate schemas, hidden table-body headers, inline HTML placeholders, and non-ASCII structural whitespace all fail closed.
+- Review rework round 13 shared-verifier: upheld the inline-code/comment ordering finding. Complete exact-delimiter backtick spans are protected before HTML-comment processing; unmatched delimiters or comments remain fail closed.
 - Current-head Review: pending; any finding, stale head, partial output,
   timeout, or author ambiguity blocks merge
 
