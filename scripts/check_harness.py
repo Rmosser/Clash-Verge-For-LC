@@ -3825,6 +3825,116 @@ def toml_assignment_first_key_segment(line: str) -> str | None:
     return segment
 
 
+def toml_key_segments(text: str) -> tuple[str, ...] | None:
+    parts: list[str] = []
+    start = 0
+    quote: str | None = None
+    escaped = False
+    for index, character in enumerate(text):
+        if quote is not None:
+            if quote == '"' and escaped:
+                escaped = False
+                continue
+            if quote == '"' and character == "\\":
+                escaped = True
+                continue
+            if character == quote:
+                quote = None
+            continue
+        if character in {'"', "'"}:
+            quote = character
+        elif character == ".":
+            parts.append(text[start:index].strip())
+            start = index + 1
+    if quote is not None:
+        return None
+    parts.append(text[start:].strip())
+    decoded: list[str] = []
+    for part in parts:
+        if re.fullmatch(r"[A-Za-z0-9_-]+", part):
+            decoded.append(part)
+        elif len(part) >= 2 and part[0] == part[-1] == "'":
+            decoded.append(part[1:-1])
+        elif len(part) >= 2 and part[0] == part[-1] == '"':
+            try:
+                value = json.loads(part)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return None
+            if not isinstance(value, str):
+                return None
+            decoded.append(value)
+        else:
+            return None
+    return tuple(decoded)
+
+
+def toml_assignment_key_segments(line: str) -> tuple[str, ...] | None:
+    quote: str | None = None
+    escaped = False
+    for index, character in enumerate(line):
+        if quote is not None:
+            if quote == '"' and escaped:
+                escaped = False
+                continue
+            if quote == '"' and character == "\\":
+                escaped = True
+                continue
+            if character == quote:
+                quote = None
+            continue
+        if character == "#":
+            return None
+        if character in {'"', "'"}:
+            quote = character
+        elif character == "=":
+            return toml_key_segments(line[:index].strip())
+    return None
+
+
+def toml_table_key_segments(line: str) -> tuple[str, ...] | None:
+    stripped = line.lstrip()
+    if not stripped.startswith("[") or stripped.startswith("[["):
+        return None
+    quote: str | None = None
+    escaped = False
+    for index, character in enumerate(stripped[1:], start=1):
+        if quote is not None:
+            if quote == '"' and escaped:
+                escaped = False
+                continue
+            if quote == '"' and character == "\\":
+                escaped = True
+                continue
+            if character == quote:
+                quote = None
+            continue
+        if character in {'"', "'"}:
+            quote = character
+        elif character == "]":
+            remainder = stripped[index + 1 :].strip()
+            if remainder and not remainder.startswith("#"):
+                return None
+            return toml_key_segments(stripped[1:index].strip())
+    return None
+
+
+def toml_has_dotted_ruff_definition(text: str) -> bool:
+    current_table: tuple[str, ...] = ()
+    for line in text.splitlines():
+        table = toml_table_key_segments(line)
+        if table is not None:
+            current_table = table
+            continue
+        key = toml_assignment_key_segments(line)
+        if key is None:
+            continue
+        if current_table == () and key[:2] == ("tool", "ruff"):
+            return True
+        if current_table == ("tool",) and key[:1] == ("ruff",):
+            return True
+    return False
+
+
 def toml_table_has_exclude_assignment(text: str) -> bool:
     current_table: str | None = None
     for line in text.splitlines():
@@ -3904,8 +4014,17 @@ def validate_pending_sensitive_files(
             line,
         )
     }
-    if "[tool.ruff]" not in base_tables and candidate == base + new_table:
+    if (
+        "[tool.ruff]" not in base_tables
+        and not toml_has_dotted_ruff_definition(base)
+        and candidate == base + new_table
+    ):
         return
+    if toml_has_dotted_ruff_definition(base):
+        raise HarnessError(
+            "pending Ruff table conflicts with an existing dotted "
+            "tool.ruff definition"
+        )
     raise HarnessError(
         "pending establishment contains unrelated pyproject.toml changes"
     )

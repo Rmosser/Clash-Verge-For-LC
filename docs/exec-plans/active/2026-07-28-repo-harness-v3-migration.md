@@ -136,6 +136,7 @@ behavior or claiming platform readiness.
 - Review rework round 26 shared-verifier: upheld exact-head scope, compatibility, and configuration findings. Pending establishment now uses an explicit transitional path inventory, rejects ordinary diffs even from a pending v3 base, binds the fixed Ruff exclusion to `[tool.ruff]`, and remains importable on Python 3.10.
 - Review rework round 27 shared-verifier: upheld Python 3.10 and Ruff table findings. The checker no longer imports `tomllib`; it proves the sole fixed exclusion is inside an existing `[tool.ruff]` table or a canonical newly appended table, and rejects ambiguous multiline TOML.
 - Review rework round 28 shared-verifier: upheld the Ruff insertion findings. Pending establishment now accepts the fixed exclusion only as a standalone table-scope key and rejects an existing semantic `[tool.ruff]` exclude assignment.
+- Review rework round 30 shared-verifier: upheld the dotted Ruff definition finding. Pending establishment now rejects root `tool.ruff.*` assignments and `[tool]`-relative `ruff.*` assignments before appending `[tool.ruff]`, while retaining valid subtable-first TOML semantics.
 - Current-head Review: pending; any finding, stale head, partial output,
   timeout, or author ambiguity blocks merge
 
