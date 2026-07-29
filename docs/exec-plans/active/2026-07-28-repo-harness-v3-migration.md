@@ -133,6 +133,7 @@ behavior or claiming platform readiness.
 - Current-head Review: pending; any finding, stale head, partial output,
   timeout, or author ambiguity blocks merge
 
+- Review rework round 19 shared-verifier: upheld the remaining schema, mode-separation, and rendered-HTML findings. `task_record_policy.unknown_allowed` is now an exact boolean; empty verification arguments cannot enter rendering self-test mode; and multiline raw-HTML wrappers fail closed before hidden plan structure can be accepted.
 ## Documentation Impact
 
 - Result: updated

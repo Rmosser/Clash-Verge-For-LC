@@ -1231,6 +1231,8 @@ def validate_contract(
         raise HarnessError("unexpected reasoning-effort values")
     if task_policy.get("speed_values") != ["standard", "fast"]:
         raise HarnessError("unexpected speed values")
+    if type(task_policy.get("unknown_allowed")) is not bool:
+        raise HarnessError("task_record_policy.unknown_allowed must be boolean")
 
     review = contract.get("review")
     if not isinstance(review, dict):
@@ -1768,6 +1770,11 @@ def rendered_plan_text(text: str) -> str:
     if fence is not None:
         raise HarnessError("Active Plan contains an unterminated fenced block")
     visible = render_inline_code_and_html_comments("".join(visible_lines))
+    if re.search(
+        r"</?[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[^<>]*)?[\r\n][^<>]*>",
+        visible,
+    ):
+        raise HarnessError("Active Plan contains multiline raw HTML markup")
     if any(
         RAW_HTML_BLOCK_START_RE.match(line)
         for line in visible.splitlines()
@@ -1808,6 +1815,7 @@ def self_test_rendered_plan_text() -> None:
         "--> unmatched closer",
         "`unmatched delimiter <!--",
         "<section>\n",
+        '<strong title="\n## Metadata\n- Owner: hidden\n">x</strong>\n',
     )
     for fixture in negative_cases:
         try:
@@ -3834,11 +3842,11 @@ def main() -> int:
                 or args.trusted_root
                 or args.target_root
                 or args.git_dir
-                or args.base_sha
-                or args.head_sha
-                or args.expected_repository
+                or args.base_sha is not None
+                or args.head_sha is not None
+                or args.expected_repository is not None
                 or args.expected_repository_id is not None
-                or args.expected_default_branch
+                or args.expected_default_branch is not None
                 or args.check_platform
             ):
                 raise HarnessError(
