@@ -387,10 +387,88 @@ def raw_link_targets(text: str) -> list[str]:
         content,
     )
 
+    full_references: list[tuple[re.Match[str], str]] = []
+    full_reference_spans: list[tuple[int, int]] = []
+    for match in FULL_REFERENCE_LINK_RE.finditer(reference_content):
+        full_reference_spans.append(match.span())
+        bracket = match.start() + (1 if match.group("image") else 0)
+        image = bool(
+            match.group("image")
+            and not markdown_character_is_escaped(
+                reference_content,
+                match.start(),
+            )
+        )
+        if image or markdown_character_is_escaped(reference_content, bracket):
+            continue
+        label = match.group("label") or match.group("text")
+        destination = definitions.get(normalized_reference_label(label))
+        if destination is not None:
+            full_references.append((match, destination.strip()))
+
+    shortcut_references: list[tuple[re.Match[str], str]] = []
+    for match in SHORTCUT_REFERENCE_LINK_RE.finditer(reference_content):
+        if any(
+            start <= match.start() and match.end() <= end
+            for start, end in full_reference_spans
+        ):
+            continue
+        bracket = match.start() + (1 if match.group("image") else 0)
+        image = bool(
+            match.group("image")
+            and not markdown_character_is_escaped(
+                reference_content,
+                match.start(),
+            )
+        )
+        if image or markdown_character_is_escaped(reference_content, bracket):
+            continue
+        destination = definitions.get(
+            normalized_reference_label(match.group("label"))
+        )
+        if destination is not None:
+            shortcut_references.append((match, destination.strip()))
+
+    resolved_reference_spans = [
+        match.span()
+        for match, _ in full_references + shortcut_references
+    ]
+
+    def label_contains_resolved_reference(
+        candidate: InlineLinkCandidate,
+    ) -> bool:
+        label = reference_content[
+            candidate.opening_bracket + 1 : candidate.closing_bracket
+        ]
+        full_spans: list[tuple[int, int]] = []
+        for match in FULL_REFERENCE_LINK_RE.finditer(label):
+            full_spans.append(match.span())
+            reference_label = match.group("label") or match.group("text")
+            if (
+                definitions.get(
+                    normalized_reference_label(reference_label)
+                )
+                is not None
+            ):
+                return True
+        for match in SHORTCUT_REFERENCE_LINK_RE.finditer(label):
+            if any(
+                start <= match.start() and match.end() <= end
+                for start, end in full_spans
+            ):
+                continue
+            if (
+                definitions.get(
+                    normalized_reference_label(match.group("label"))
+                )
+                is not None
+            ):
+                return True
+        return False
+
     raw_targets: list[str] = []
     occupied_spans: list[tuple[int, int]] = []
     for candidate in inline_link_candidates(content):
-        occupied_spans.append((candidate.start, candidate.end))
         if any(
             start <= candidate.opening_bracket < end
             or start <= candidate.closing_bracket < end
@@ -402,50 +480,24 @@ def raw_link_targets(text: str) -> list[str]:
             candidate.opening_bracket,
         ):
             continue
-        raw_targets.append(candidate.destination)
-    for match in FULL_REFERENCE_LINK_RE.finditer(reference_content):
-        bracket = match.start() + (1 if match.group("image") else 0)
-        image = bool(
-            match.group("image")
-            and not markdown_character_is_escaped(
-                reference_content,
-                match.start(),
-            )
-        )
-        occupied_spans.append(match.span())
-        if image or markdown_character_is_escaped(
-            reference_content,
-            bracket,
-        ):
+        if any(
+            candidate.opening_bracket < start
+            and end <= candidate.closing_bracket
+            for start, end in resolved_reference_spans
+        ) or label_contains_resolved_reference(candidate):
             continue
-        label = match.group("label") or match.group("text")
-        destination = definitions.get(normalized_reference_label(label))
-        if destination is not None:
-            raw_targets.append(destination.strip())
-    for match in SHORTCUT_REFERENCE_LINK_RE.finditer(reference_content):
-        bracket = match.start() + (1 if match.group("image") else 0)
-        image = bool(
-            match.group("image")
-            and not markdown_character_is_escaped(
-                reference_content,
-                match.start(),
-            )
-        )
+        occupied_spans.append((candidate.start, candidate.end))
+        raw_targets.append(candidate.destination)
+    for match, destination in full_references:
+        occupied_spans.append(match.span())
+        raw_targets.append(destination)
+    for match, destination in shortcut_references:
         if any(
             start <= match.start() and match.end() <= end
             for start, end in occupied_spans
         ):
             continue
-        if image or markdown_character_is_escaped(
-            reference_content,
-            bracket,
-        ):
-            continue
-        destination = definitions.get(
-            normalized_reference_label(match.group("label"))
-        )
-        if destination is not None:
-            raw_targets.append(destination.strip())
+        raw_targets.append(destination)
     return raw_targets
 
 
@@ -701,6 +753,18 @@ def self_test(value: dict[str, Any]) -> None:
     nested = "[documentation [index]](docs/index.md)\n"
     if raw_link_targets(nested) != ["docs/index.md"]:
         fail("positive self-test rejected a nested inline-link label")
+    nested_reference = (
+        "[Outer [Inner][inside]](docs/index.md)\n"
+        "[inside]: docs/inside.md\n"
+    )
+    if raw_link_targets(nested_reference) != ["docs/inside.md"]:
+        fail("nested full-reference link precedence self-test failed")
+    nested_shortcut = (
+        "[Outer [Inner]](docs/index.md)\n"
+        "[Inner]: docs/inside.md\n"
+    )
+    if raw_link_targets(nested_shortcut) != ["docs/inside.md"]:
+        fail("nested shortcut-reference link precedence self-test failed")
     nested_image = "![documentation [image]](docs/missing.md)\n"
     if raw_link_targets(nested_image):
         fail("negative self-test treated a nested image as navigation")
