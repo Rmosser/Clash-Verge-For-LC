@@ -133,6 +133,7 @@ behavior or claiming platform readiness.
 - Review rework round 24 shared-verifier: upheld establishment-scope, Unicode visual-blank, misnested inline-HTML, and quoted raw-HTML findings. The initial migration boundary is verifier-owned and independent of the candidate contract; invisible fillers and structurally ambiguous HTML now fail closed.
 - Review rework round 25 shared-verifier: upheld pending-establishment scope findings. The fixed migration boundary now names only recognized validation workflows, direct-child checker patterns, and a content-bound Ruff exclusion; release workflows, nested executable scripts, and unrelated pyproject changes fail closed.
 - Review rework round 25 documentation: angle masking is limited to syntactically valid CommonMark autolinks and inline HTML.
+- Review rework round 26 shared-verifier: upheld exact-head scope, compatibility, and configuration findings. Pending establishment now uses an explicit transitional path inventory, rejects ordinary diffs even from a pending v3 base, binds the fixed Ruff exclusion to `[tool.ruff]`, and remains importable on Python 3.10.
 - Current-head Review: pending; any finding, stale head, partial output,
   timeout, or author ambiguity blocks merge
 

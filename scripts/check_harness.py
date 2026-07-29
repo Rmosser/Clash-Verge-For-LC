@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import fnmatch
 import hashlib
 import json
@@ -12,8 +13,9 @@ import re
 import stat
 import subprocess
 import sys
+import tomllib
 import unicodedata
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -123,6 +125,75 @@ PENDING_VALIDATION_WORKFLOW_NAMES = frozenset(
         for extension in ("yml", "yaml")
     }
 )
+PENDING_MIGRATION_DOCUMENT_PATHS = frozenset(
+    {
+        "docs/INDEX.md",
+        "docs/agent-entrypoints/harness-engineering-" + "coach.md",
+        "docs/architecture-decisions/20260610-intake-registry-worker-queue.md",
+        "docs/architecture.md",
+        "docs/design-docs/harness-engineering.md",
+        "docs/design-docs/pr-policy.md",
+        "docs/doc-sync-rules.json",
+        "docs/documentation-contract.json",
+        "docs/exec-plans/template.md",
+        "docs/governance/actions-outage-safety.md",
+        "docs/governance/agent-delivery-runbook.md",
+        "docs/governance/branch-protection-pr-policy.md",
+        "docs/governance/checkpoint-ci-gate.md",
+        "docs/governance/harness.md",
+        "docs/governance/pr-review-loop.md",
+        "docs/governance/read-only-query-policy.md",
+        "docs/index.md",
+        "docs/operations/runbook.md",
+        "docs/product-decisions/20260610-download-intake-worker-queue-policy.md",
+        "docs/repo-sitemap.md",
+        "docs/rollouts/20260725-repository-policy.snapshot.json",
+        "docs/rollouts/actions-outage-safety.schema.json",
+        "docs/runbooks/runtime-target-adaptation.md",
+        "docs/security.md",
+    }
+)
+PENDING_MIGRATION_SCRIPT_PATHS = frozenset(
+    {
+        "scripts/active_plan_checks.py",
+        "scripts/check_codex_review.py",
+        "scripts/check_doc_sync.py",
+        "scripts/check_docs.py",
+        "scripts/check_docs_links.py",
+        "scripts/check_docs_paths.py",
+        "scripts/check_docs_project.py",
+        "scripts/check_docs_structure.py",
+        "scripts/check_documentation_contract.py",
+        "scripts/check_harness.py",
+        "scripts/check_knowledge_index.py",
+        "scripts/check_longbridge.py",
+        "scripts/check_loop_checkpoints.py",
+        "scripts/check_node_major.py",
+        "scripts/check_package_contract.py",
+        "scripts/check_plan_required.py",
+        "scripts/run_docs_consistency_audit.py",
+        "scripts/test_harness_regressions.py",
+        "scripts/trusted-owner-merge-executor.py",
+        "scripts/validate.sh",
+        "scripts/validate_active_plan_contract.py",
+        "scripts/verify-actions-migration-ledger.py",
+        "scripts/verify-actions-outage-safety.py",
+        "scripts/verify-rollout-evidence.py",
+    }
+)
+PENDING_MIGRATION_TEST_PATHS = frozenset(
+    {
+        "tests/test_check_docs.py",
+        "tests/test_check_longbridge.py",
+        "tests/test_check_loop_checkpoints.py",
+        "tests/test_doc_sync.py",
+        "tests/test_doc_sync_check.py",
+        "tests/test_docs_check.py",
+        "tests/test_harness_current_head.py",
+        "tests/test_plan_required_check.py",
+        "tests/test_repository_contracts.py",
+    }
+)
 PENDING_ESTABLISHMENT_PATHS = (
     {"kind": "glob", "pattern": ".harness/**"},
     {"kind": "exact", "pattern": ".github/PULL_REQUEST_TEMPLATE.md"},
@@ -140,16 +211,21 @@ PENDING_ESTABLISHMENT_PATHS = (
     {"kind": "exact", "pattern": "AGENTS.md"},
     {"kind": "exact", "pattern": "README.md"},
     {"kind": "exact", "pattern": "CLAUDE.md"},
-    {"kind": "glob", "pattern": "docs/**"},
+    *(
+        {"kind": "exact", "pattern": path}
+        for path in sorted(PENDING_MIGRATION_DOCUMENT_PATHS)
+    ),
+    {"kind": "glob", "pattern": "docs/exec-plans/active/**"},
+    {"kind": "glob", "pattern": "docs/exec-plans/completed/**"},
     {"kind": "glob", "pattern": "evals/harness/**"},
-    {"kind": "direct_glob", "pattern": "scripts/check_*.py"},
-    {"kind": "exact", "pattern": "scripts/test_harness_regressions.py"},
-    {"kind": "direct_glob", "pattern": "scripts/validate*"},
-    {"kind": "direct_glob", "pattern": "scripts/verify-*"},
-    {"kind": "exact", "pattern": "scripts/active_plan_checks.py"},
-    {"kind": "exact", "pattern": "scripts/run_docs_consistency_audit.py"},
-    {"kind": "exact", "pattern": "scripts/trusted-owner-merge-executor.py"},
-    {"kind": "glob", "pattern": "tests/**"},
+    *(
+        {"kind": "exact", "pattern": path}
+        for path in sorted(PENDING_MIGRATION_SCRIPT_PATHS)
+    ),
+    *(
+        {"kind": "exact", "pattern": path}
+        for path in sorted(PENDING_MIGRATION_TEST_PATHS)
+    ),
     {"kind": "exact", "pattern": "requirements-validation.txt"},
     {"kind": "exact", "pattern": "pyproject.toml"},
 )
@@ -3061,11 +3137,11 @@ def validate_receipt_structure(
         raise HarnessError("receipt validated_at must be UTC RFC3339 seconds")
     try:
         parsed_at = datetime.strptime(validated_at, "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=UTC
+            tzinfo=timezone.utc
         )
     except ValueError as exc:
         raise HarnessError("receipt validated_at is not a real UTC timestamp") from exc
-    if parsed_at > datetime.now(UTC) + timedelta(minutes=5):
+    if parsed_at > datetime.now(timezone.utc) + timedelta(minutes=5):
         raise HarnessError("receipt validated_at is in the future")
     groups = receipt.get("validated_groups")
     results = receipt.get("results")
@@ -3690,6 +3766,27 @@ def validate_pending_sensitive_files(
         raise HarnessError(
             "pending establishment contains unrelated pyproject.toml changes"
         )
+    try:
+        base_value = tomllib.loads(base)
+        candidate_value = tomllib.loads(candidate)
+    except tomllib.TOMLDecodeError as exc:
+        raise HarnessError(
+            f"pending establishment contains invalid pyproject.toml: {exc}"
+        ) from exc
+    expected_value = copy.deepcopy(base_value)
+    tool = expected_value.setdefault("tool", {})
+    if not isinstance(tool, dict):
+        raise HarnessError("pyproject.toml tool must be a TOML table")
+    ruff = tool.setdefault("ruff", {})
+    if not isinstance(ruff, dict) or "exclude" in ruff:
+        raise HarnessError(
+            "pending establishment cannot replace an existing Ruff exclusion"
+        )
+    ruff["exclude"] = ["scripts/check_harness.py"]
+    if candidate_value != expected_value:
+        raise HarnessError(
+            "pending Ruff exclusion is not bound to the [tool.ruff] table"
+        )
 
 
 def self_test_pending_establishment_paths() -> None:
@@ -3720,9 +3817,12 @@ def self_test_pending_establishment_paths() -> None:
         )
     for escaped_product_path in (
         ".github/workflows/release.yml",
+        "docs/dashboard/api.md",
         "scripts/check_payload/product.py",
+        "scripts/check_extension.py",
         "scripts/validate_payload/runtime.sh",
         "scripts/verify-x/nested/payload",
+        "tests/test_authentication.py",
     ):
         try:
             validate_pending_establishment_paths([escaped_product_path])
@@ -3952,6 +4052,9 @@ def verify_candidate(
     if trusted_root_contract != trusted_contract:
         raise HarnessError("trusted root contract does not match base contract")
     validate_contract(trusted_contract, trusted_root)
+    if trusted_contract["platform_gate"]["state"] == "pending":
+        validate_pending_establishment_paths(paths)
+        validate_pending_sensitive_files(trusted_root, target_root, paths)
 
     for relative in trusted_contract["required_files"]:
         max_bytes = (
