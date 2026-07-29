@@ -138,6 +138,7 @@ behavior or claiming platform readiness.
 - Review rework round 28 shared-verifier: upheld the Ruff insertion findings. Pending establishment now accepts the fixed exclusion only as a standalone table-scope key and rejects an existing semantic `[tool.ruff]` exclude assignment.
 - Review rework round 30 shared-verifier: upheld the dotted Ruff definition finding. Pending establishment now rejects root `tool.ruff.*` assignments and `[tool]`-relative `ruff.*` assignments before appending `[tool.ruff]`, while retaining valid subtable-first TOML semantics.
 - Review rework round 31 shared-verifier: upheld the equivalent Ruff table finding. Pending establishment now applies semantic TOML table segments to existing-table detection, insertion scope, and existing `exclude` checks, so quoted-equivalent `[tool."ruff"]` declarations cannot be duplicated.
+- Review rework round 32 shared-verifier: upheld the Ruff array-of-table finding. Pending establishment now rejects exact quoted or unquoted `[[tool.ruff]]` declarations and root inline `tool` assignments before appending `[tool.ruff]`, while retaining valid deeper Ruff array-of-table paths.
 - Current-head Review: pending; any finding, stale head, partial output,
   timeout, or author ambiguity blocks merge
 

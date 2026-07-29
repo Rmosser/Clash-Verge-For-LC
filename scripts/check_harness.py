@@ -3918,6 +3918,34 @@ def toml_table_key_segments(line: str) -> tuple[str, ...] | None:
     return None
 
 
+def toml_array_table_key_segments(line: str) -> tuple[str, ...] | None:
+    stripped = line.lstrip()
+    if not stripped.startswith("[["):
+        return None
+    quote: str | None = None
+    escaped = False
+    for index in range(2, len(stripped) - 1):
+        character = stripped[index]
+        if quote is not None:
+            if quote == '"' and escaped:
+                escaped = False
+                continue
+            if quote == '"' and character == "\\":
+                escaped = True
+                continue
+            if character == quote:
+                quote = None
+            continue
+        if character in {'"', "'"}:
+            quote = character
+        elif stripped.startswith("]]", index):
+            remainder = stripped[index + 2 :].strip()
+            if remainder and not remainder.startswith("#"):
+                return None
+            return toml_key_segments(stripped[2:index].strip())
+    return None
+
+
 def toml_has_dotted_ruff_definition(text: str) -> bool:
     current_table: tuple[str, ...] = ()
     for line in text.splitlines():
@@ -3925,10 +3953,17 @@ def toml_has_dotted_ruff_definition(text: str) -> bool:
         if table is not None:
             current_table = table
             continue
+        array_table = toml_array_table_key_segments(line)
+        if array_table is not None:
+            current_table = array_table
+            continue
         key = toml_assignment_key_segments(line)
         if key is None:
             continue
-        if current_table == () and key[:2] == ("tool", "ruff"):
+        if current_table == () and (
+            key == ("tool",)
+            or key[:2] == ("tool", "ruff")
+        ):
             return True
         if current_table == ("tool",) and key[:1] == ("ruff",):
             return True
@@ -4005,12 +4040,23 @@ def validate_pending_sensitive_files(
         for line in base.splitlines()
         if (table := toml_table_key_segments(line)) is not None
     }
+    base_array_tables = {
+        table
+        for line in base.splitlines()
+        if (table := toml_array_table_key_segments(line)) is not None
+    }
     if (
         ("tool", "ruff") not in base_tables
+        and ("tool", "ruff") not in base_array_tables
         and not toml_has_dotted_ruff_definition(base)
         and candidate == base + new_table
     ):
         return
+    if ("tool", "ruff") in base_array_tables:
+        raise HarnessError(
+            "pending Ruff table conflicts with an existing "
+            "tool.ruff array-of-table declaration"
+        )
     if toml_has_dotted_ruff_definition(base):
         raise HarnessError(
             "pending Ruff table conflicts with an existing dotted "

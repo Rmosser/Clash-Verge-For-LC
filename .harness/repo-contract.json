@@ -5,7 +5,7 @@
   "default_branch": "main",
   "verifier": {
     "release": "repo-harness-verifier-v3.1",
-    "sha256": "65e0784d11c202e03476264e8e3212ad94ac5717800f5b8d93286fa508cb6316",
+    "sha256": "bad1685477f9a1365faefabba4c0506f47682d0e074c515a290c165dde9a6c8e",
     "authority": "source_isolated_publisher_bundle"
   },
   "task_record_policy": {
