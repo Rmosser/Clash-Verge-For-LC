@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import copy
 import fnmatch
 import hashlib
 import json
@@ -13,7 +12,6 @@ import re
 import stat
 import subprocess
 import sys
-import tomllib
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
@@ -3762,31 +3760,45 @@ def validate_pending_sensitive_files(
             "pending establishment may only add the fixed check_harness.py "
             "Ruff exclusion to pyproject.toml"
         )
-    if candidate.replace(ruff_exclusion, "", 1) != base:
+    if "'''" in base or '"""' in base:
         raise HarnessError(
-            "pending establishment contains unrelated pyproject.toml changes"
+            "pending pyproject.toml migration cannot safely classify "
+            "multiline TOML strings"
         )
-    try:
-        base_value = tomllib.loads(base)
-        candidate_value = tomllib.loads(candidate)
-    except tomllib.TOMLDecodeError as exc:
-        raise HarnessError(
-            f"pending establishment contains invalid pyproject.toml: {exc}"
-        ) from exc
-    expected_value = copy.deepcopy(base_value)
-    tool = expected_value.setdefault("tool", {})
-    if not isinstance(tool, dict):
-        raise HarnessError("pyproject.toml tool must be a TOML table")
-    ruff = tool.setdefault("ruff", {})
-    if not isinstance(ruff, dict) or "exclude" in ruff:
-        raise HarnessError(
-            "pending establishment cannot replace an existing Ruff exclusion"
+    without_exclusion = candidate.replace(ruff_exclusion, "", 1)
+    if without_exclusion == base:
+        insertion = candidate.index(ruff_exclusion)
+        table_headers = [
+            line.strip().split("#", 1)[0].rstrip()
+            for line in candidate[:insertion].splitlines()
+            if re.fullmatch(
+                r"[ \t]*\[\[?[^\]\r\n]+\]\]?[ \t]*(?:#.*)?",
+                line,
+            )
+        ]
+        if not table_headers or table_headers[-1] != "[tool.ruff]":
+            raise HarnessError(
+                "pending Ruff exclusion is not bound to the [tool.ruff] table"
+            )
+        return
+
+    separator = "" if not base or base.endswith("\n\n") else (
+        "\n" if base.endswith("\n") else "\n\n"
+    )
+    new_table = separator + "[tool.ruff]\n" + ruff_exclusion
+    base_tables = {
+        line.strip().split("#", 1)[0].rstrip()
+        for line in base.splitlines()
+        if re.fullmatch(
+            r"[ \t]*\[\[?[^\]\r\n]+\]\]?[ \t]*(?:#.*)?",
+            line,
         )
-    ruff["exclude"] = ["scripts/check_harness.py"]
-    if candidate_value != expected_value:
-        raise HarnessError(
-            "pending Ruff exclusion is not bound to the [tool.ruff] table"
-        )
+    }
+    if "[tool.ruff]" not in base_tables and candidate == base + new_table:
+        return
+    raise HarnessError(
+        "pending establishment contains unrelated pyproject.toml changes"
+    )
 
 
 def self_test_pending_establishment_paths() -> None:
