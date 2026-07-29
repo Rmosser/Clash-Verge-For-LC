@@ -3745,6 +3745,104 @@ def validate_pending_establishment_paths(paths: list[str]) -> None:
         )
 
 
+def toml_insert_is_at_table_scope(text: str) -> bool:
+    square_depth = 0
+    curly_depth = 0
+    quote: str | None = None
+    escaped = False
+    comment = False
+    for character in text:
+        if comment:
+            if character == "\n":
+                comment = False
+            continue
+        if quote is not None:
+            if quote == '"' and escaped:
+                escaped = False
+                continue
+            if quote == '"' and character == "\\":
+                escaped = True
+                continue
+            if character == quote:
+                quote = None
+            continue
+        if character == "#":
+            comment = True
+        elif character in {'"', "'"}:
+            quote = character
+        elif character == "[":
+            square_depth += 1
+        elif character == "]":
+            square_depth -= 1
+        elif character == "{":
+            curly_depth += 1
+        elif character == "}":
+            curly_depth -= 1
+        if square_depth < 0 or curly_depth < 0:
+            return False
+    return (
+        quote is None
+        and square_depth == 0
+        and curly_depth == 0
+    )
+
+
+def toml_assignment_first_key_segment(line: str) -> str | None:
+    quote: str | None = None
+    escaped = False
+    assignment = -1
+    first_dot = -1
+    for index, character in enumerate(line):
+        if quote is not None:
+            if quote == '"' and escaped:
+                escaped = False
+                continue
+            if quote == '"' and character == "\\":
+                escaped = True
+                continue
+            if character == quote:
+                quote = None
+            continue
+        if character == "#":
+            break
+        if character in {'"', "'"}:
+            quote = character
+        elif character == "." and first_dot < 0:
+            first_dot = index
+        elif character == "=":
+            assignment = index
+            break
+    if assignment < 0 or quote is not None:
+        return None
+    key_end = first_dot if 0 <= first_dot < assignment else assignment
+    segment = line[:key_end].strip()
+    if (
+        len(segment) >= 2
+        and segment[0] == segment[-1]
+        and segment[0] in {'"', "'"}
+    ):
+        segment = segment[1:-1]
+    return segment
+
+
+def toml_table_has_exclude_assignment(text: str) -> bool:
+    current_table: str | None = None
+    for line in text.splitlines():
+        header = line.strip().split("#", 1)[0].rstrip()
+        if re.fullmatch(
+            r"[ \t]*\[\[?[^\]\r\n]+\]\]?[ \t]*(?:#.*)?",
+            line,
+        ):
+            current_table = header
+            continue
+        if (
+            current_table == "[tool.ruff]"
+            and toml_assignment_first_key_segment(line) == "exclude"
+        ):
+            return True
+    return False
+
+
 def validate_pending_sensitive_files(
     trusted_root: Path,
     target_root: Path,
@@ -3768,6 +3866,13 @@ def validate_pending_sensitive_files(
     without_exclusion = candidate.replace(ruff_exclusion, "", 1)
     if without_exclusion == base:
         insertion = candidate.index(ruff_exclusion)
+        if (
+            insertion > 0
+            and candidate[insertion - 1] != "\n"
+        ) or not toml_insert_is_at_table_scope(candidate[:insertion]):
+            raise HarnessError(
+                "pending Ruff exclusion is not a standalone table-scope key"
+            )
         table_headers = [
             line.strip().split("#", 1)[0].rstrip()
             for line in candidate[:insertion].splitlines()
@@ -3779,6 +3884,11 @@ def validate_pending_sensitive_files(
         if not table_headers or table_headers[-1] != "[tool.ruff]":
             raise HarnessError(
                 "pending Ruff exclusion is not bound to the [tool.ruff] table"
+            )
+        if toml_table_has_exclude_assignment(base):
+            raise HarnessError(
+                "pending Ruff exclusion conflicts with an existing "
+                "[tool.ruff] exclude assignment"
             )
         return
 
