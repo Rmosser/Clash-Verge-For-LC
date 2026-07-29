@@ -107,6 +107,25 @@ LEGACY_GOVERNANCE_PATHS = (
     "docs/doc-sync-rules.json",
     "docs/governance/checkpoint-ci-gate.md",
 )
+PENDING_ESTABLISHMENT_PATHS = (
+    {"kind": "glob", "pattern": ".harness/**"},
+    {"kind": "glob", "pattern": ".github/**"},
+    {"kind": "exact", "pattern": "AGENTS.md"},
+    {"kind": "exact", "pattern": "README.md"},
+    {"kind": "exact", "pattern": "CLAUDE.md"},
+    {"kind": "glob", "pattern": "docs/**"},
+    {"kind": "glob", "pattern": "evals/harness/**"},
+    {"kind": "glob", "pattern": "scripts/check_*.py"},
+    {"kind": "exact", "pattern": "scripts/test_harness_regressions.py"},
+    {"kind": "glob", "pattern": "scripts/validate*"},
+    {"kind": "glob", "pattern": "scripts/verify-*"},
+    {"kind": "exact", "pattern": "scripts/active_plan_checks.py"},
+    {"kind": "exact", "pattern": "scripts/run_docs_consistency_audit.py"},
+    {"kind": "exact", "pattern": "scripts/trusted-owner-merge-executor.py"},
+    {"kind": "glob", "pattern": "tests/**"},
+    {"kind": "exact", "pattern": "requirements-validation.txt"},
+    {"kind": "exact", "pattern": "pyproject.toml"},
+)
 LEGACY_RUNTIME_KNOWN_SHA256 = {
     "docs/doc-sync-rules.json": (
         "66802b96f8cae40a4ee873779b2b6baf0d27a77d32a1f063c842f0993090f244"
@@ -230,7 +249,7 @@ RAW_HTML_BLOCK_START_RE = re.compile(
     rf"</?(?:script|pre|style|textarea)(?=[ \t>/]|$)|"
     rf"</?(?:{COMMONMARK_BLOCK_TAGS})(?=[ \t>/]|$)|"
     r"<\?|<![A-Z]|<!\[CDATA\[|"
-    r"</?[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[^<>]*)?/?[ \t]*>[ \t]*$"
+    r"</?[A-Za-z][A-Za-z0-9-]*(?:[ \t]+(?:[^<>\"']|\"[^\"]*\"|'[^']*')*)?/?[ \t]*>[ \t]*$"
     r")",
     re.IGNORECASE,
 )
@@ -323,19 +342,13 @@ class _VisibleInlineTextParser(HTMLParser):
             raise HarnessError(
                 f"unsupported inline HTML tag in concrete plan evidence: {tag}"
             )
-        matching = next(
-            (
-                index
-                for index in range(len(self.hidden_stack) - 1, -1, -1)
-                if self.hidden_stack[index][0] == tag
-            ),
-            None,
-        )
-        if matching is None:
-            return
-        removed = self.hidden_stack[matching:]
-        del self.hidden_stack[matching:]
-        self.hidden_depth -= sum(1 for _, hidden in removed if hidden)
+        if not self.hidden_stack or self.hidden_stack[-1][0] != tag:
+            raise HarnessError(
+                f"misnested or unmatched inline HTML closing tag: {tag}"
+            )
+        _, hidden = self.hidden_stack.pop()
+        if hidden:
+            self.hidden_depth -= 1
 
     def handle_data(self, data: str) -> None:
         if self.hidden_depth == 0:
@@ -1073,13 +1086,13 @@ def validate_contract(
             raise HarnessError("required check publisher must be an object")
         model = publisher.get("model")
         if context == "harness/evidence":
-            if set(publisher) != {"model", "app_id", "app_slug"}:
-                raise HarnessError(
-                    "harness/evidence publisher contains undeclared fields"
-                )
             if model != "source_isolated_github_app":
                 raise HarnessError(
                     "harness/evidence publisher must be a source-isolated GitHub App"
+                )
+            if set(publisher) != {"model", "app_id", "app_slug"}:
+                raise HarnessError(
+                    "harness/evidence publisher contains undeclared fields"
                 )
             harness_checks.append(check)
         elif model == "github_actions_shared":
@@ -1811,7 +1824,7 @@ def rendered_plan_text(text: str) -> str:
         raise HarnessError("Active Plan contains an unterminated fenced block")
     visible = render_inline_code_and_html_comments("".join(visible_lines))
     if contains_multiline_html_tag(visible):
-        raise HarnessError("Active Plan contains multiline raw HTML markup")
+        raise HarnessError("Active Plan contains multiline raw HTML block markup")
     if any(
         RAW_HTML_BLOCK_START_RE.match(line)
         for line in visible.splitlines()
@@ -1854,6 +1867,7 @@ def self_test_rendered_plan_text() -> None:
         "<section>\n",
         '<strong title="\n## Metadata\n- Owner: hidden\n">x</strong>\n',
         '<strong title="a > b\n## Metadata\n- Owner: hidden\n">x</strong>\n',
+        '<x title="a > b">\n## Metadata\n- Owner: hidden\n\n',
     )
     for fixture in negative_cases:
         try:
@@ -1870,6 +1884,14 @@ def self_test_rendered_plan_text() -> None:
         pass
     else:
         raise HarnessError("rendering self-test accepted an unclosed inline tag")
+    try:
+        visible_inline_text("<strong><em hidden>x</strong>Rmosser</em>")
+    except HarnessError:
+        pass
+    else:
+        raise HarnessError("rendering self-test accepted misnested inline HTML")
+    if normalize_visible_plan_value("pending\u2800") != ("", True):
+        raise HarnessError("rendering self-test accepted a visually blank suffix")
 
 
 def plan_heading_pattern(heading: str) -> str:
@@ -1976,10 +1998,16 @@ def matches_placeholder_token(value: str) -> bool:
 def normalize_visible_plan_value(value: str) -> tuple[str, bool]:
     """Normalize rendered scalar prose and flag non-visible/unsafe values."""
     normalized = unicodedata.normalize("NFKC", value.strip())
-    if any(
-        unicodedata.category(character) in {"Cc", "Cf", "Mn"}
-        for character in normalized
-    ):
+    def unsafe_character(character: str) -> bool:
+        category = unicodedata.category(character)
+        name = unicodedata.name(character, "")
+        return (
+            category in {"Cc", "Cf", "Mn"}
+            or character in {"\u2800", "\u3164", "\uffa0"}
+            or name.endswith(" FILLER")
+        )
+
+    if any(unsafe_character(character) for character in normalized):
         return "", True
     prefix_changed = True
     while prefix_changed:
@@ -1999,10 +2027,7 @@ def normalize_visible_plan_value(value: str) -> tuple[str, bool]:
     changed = True
     while changed:
         normalized = unicodedata.normalize("NFKC", normalized)
-        if any(
-            unicodedata.category(character) in {"Cc", "Cf", "Mn"}
-            for character in normalized
-        ):
+        if any(unsafe_character(character) for character in normalized):
             return "", True
         changed = False
         for opening, closing in wrappers:
@@ -3597,6 +3622,48 @@ def changed_paths(entries: list[DiffEntry]) -> set[str]:
     return {path for entry in entries for path in entry.paths}
 
 
+def validate_pending_establishment_paths(paths: list[str]) -> None:
+    ordinary = sorted(
+        path
+        for path in paths
+        if not matches_any(path, list(PENDING_ESTABLISHMENT_PATHS))
+    )
+    if ordinary:
+        raise HarnessError(
+            "initial pending establishment contains ordinary product-path "
+            "changes outside the verifier-owned migration boundary: "
+            + ", ".join(ordinary)
+        )
+
+
+def self_test_pending_establishment_paths() -> None:
+    validate_pending_establishment_paths(
+        [
+            ".harness/repo-contract.json",
+            ".github/workflows/product-validation.yml",
+            "docs/governance/harness.md",
+            "scripts/check_harness.py",
+            "tests/test_repository_contracts.py",
+        ]
+    )
+    try:
+        validate_pending_establishment_paths(
+            [
+                ".harness/repo-contract.json",
+                "src/product.py",
+            ]
+        )
+    except HarnessError as exc:
+        if "src/product.py" not in str(exc):
+            raise HarnessError(
+                "pending-establishment path self-test lost rejected path"
+            ) from exc
+    else:
+        raise HarnessError(
+            "pending-establishment path self-test accepted a product path"
+        )
+
+
 def control_specs_for(*contracts: dict[str, Any]) -> list[dict[str, str]]:
     specs: list[dict[str, str]] = []
     for contract in contracts:
@@ -3798,6 +3865,7 @@ def verify_candidate(
             )
         if candidate_contract["platform_gate"]["state"] != "pending":
             raise HarnessError(EXTERNAL_AUTHORITY_REQUIRED)
+        validate_pending_establishment_paths(paths)
         validate_active_plan(target_root, candidate_contract)
         validate_eval_rules(target_root)
         validate_pending_establishment(target_root, candidate_contract)
@@ -3899,6 +3967,7 @@ def main() -> int:
                     "--self-test-rendering cannot be combined with verification arguments"
                 )
             self_test_rendered_plan_text()
+            self_test_pending_establishment_paths()
         elif args.repo:
             if any(
                 value is not None
