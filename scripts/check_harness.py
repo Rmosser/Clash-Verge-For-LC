@@ -3936,17 +3936,14 @@ def toml_has_dotted_ruff_definition(text: str) -> bool:
 
 
 def toml_table_has_exclude_assignment(text: str) -> bool:
-    current_table: str | None = None
+    current_table: tuple[str, ...] | None = None
     for line in text.splitlines():
-        header = line.strip().split("#", 1)[0].rstrip()
-        if re.fullmatch(
-            r"[ \t]*\[\[?[^\]\r\n]+\]\]?[ \t]*(?:#.*)?",
-            line,
-        ):
-            current_table = header
+        table = toml_table_key_segments(line)
+        if table is not None:
+            current_table = table
             continue
         if (
-            current_table == "[tool.ruff]"
+            current_table == ("tool", "ruff")
             and toml_assignment_first_key_segment(line) == "exclude"
         ):
             return True
@@ -3984,14 +3981,11 @@ def validate_pending_sensitive_files(
                 "pending Ruff exclusion is not a standalone table-scope key"
             )
         table_headers = [
-            line.strip().split("#", 1)[0].rstrip()
+            table
             for line in candidate[:insertion].splitlines()
-            if re.fullmatch(
-                r"[ \t]*\[\[?[^\]\r\n]+\]\]?[ \t]*(?:#.*)?",
-                line,
-            )
+            if (table := toml_table_key_segments(line)) is not None
         ]
-        if not table_headers or table_headers[-1] != "[tool.ruff]":
+        if not table_headers or table_headers[-1] != ("tool", "ruff"):
             raise HarnessError(
                 "pending Ruff exclusion is not bound to the [tool.ruff] table"
             )
@@ -4007,15 +4001,12 @@ def validate_pending_sensitive_files(
     )
     new_table = separator + "[tool.ruff]\n" + ruff_exclusion
     base_tables = {
-        line.strip().split("#", 1)[0].rstrip()
+        table
         for line in base.splitlines()
-        if re.fullmatch(
-            r"[ \t]*\[\[?[^\]\r\n]+\]\]?[ \t]*(?:#.*)?",
-            line,
-        )
+        if (table := toml_table_key_segments(line)) is not None
     }
     if (
-        "[tool.ruff]" not in base_tables
+        ("tool", "ruff") not in base_tables
         and not toml_has_dotted_ruff_definition(base)
         and candidate == base + new_table
     ):
