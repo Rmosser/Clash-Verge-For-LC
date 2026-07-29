@@ -3787,44 +3787,6 @@ def toml_insert_is_at_table_scope(text: str) -> bool:
     )
 
 
-def toml_assignment_first_key_segment(line: str) -> str | None:
-    quote: str | None = None
-    escaped = False
-    assignment = -1
-    first_dot = -1
-    for index, character in enumerate(line):
-        if quote is not None:
-            if quote == '"' and escaped:
-                escaped = False
-                continue
-            if quote == '"' and character == "\\":
-                escaped = True
-                continue
-            if character == quote:
-                quote = None
-            continue
-        if character == "#":
-            break
-        if character in {'"', "'"}:
-            quote = character
-        elif character == "." and first_dot < 0:
-            first_dot = index
-        elif character == "=":
-            assignment = index
-            break
-    if assignment < 0 or quote is not None:
-        return None
-    key_end = first_dot if 0 <= first_dot < assignment else assignment
-    segment = line[:key_end].strip()
-    if (
-        len(segment) >= 2
-        and segment[0] == segment[-1]
-        and segment[0] in {'"', "'"}
-    ):
-        segment = segment[1:-1]
-    return segment
-
-
 def toml_key_segments(text: str) -> tuple[str, ...] | None:
     parts: list[str] = []
     start = 0
@@ -3977,9 +3939,15 @@ def toml_table_has_exclude_assignment(text: str) -> bool:
         if table is not None:
             current_table = table
             continue
+        array_table = toml_array_table_key_segments(line)
+        if array_table is not None:
+            current_table = array_table
+            continue
+        key = toml_assignment_key_segments(line)
         if (
             current_table == ("tool", "ruff")
-            and toml_assignment_first_key_segment(line) == "exclude"
+            and key is not None
+            and key[:1] == ("exclude",)
         ):
             return True
     return False
@@ -4015,12 +3983,19 @@ def validate_pending_sensitive_files(
             raise HarnessError(
                 "pending Ruff exclusion is not a standalone table-scope key"
             )
-        table_headers = [
-            table
-            for line in candidate[:insertion].splitlines()
-            if (table := toml_table_key_segments(line)) is not None
-        ]
-        if not table_headers or table_headers[-1] != ("tool", "ruff"):
+        table_headers: list[tuple[str, tuple[str, ...]]] = []
+        for line in candidate[:insertion].splitlines():
+            table = toml_table_key_segments(line)
+            if table is not None:
+                table_headers.append(("table", table))
+                continue
+            array_table = toml_array_table_key_segments(line)
+            if array_table is not None:
+                table_headers.append(("array", array_table))
+        if (
+            not table_headers
+            or table_headers[-1] != ("table", ("tool", "ruff"))
+        ):
             raise HarnessError(
                 "pending Ruff exclusion is not bound to the [tool.ruff] table"
             )
