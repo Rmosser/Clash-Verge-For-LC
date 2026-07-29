@@ -138,6 +138,8 @@ behavior or claiming platform readiness.
 
 - Review rework round 21 documentation: upheld balanced-destination and autolink findings. Inline destinations now parse balanced parentheses, while URI autolinks remain valid external links rather than raw HTML.
 
+- Review rework round 23 documentation: upheld multiline inline-HTML handling. Quote-aware scanning rejects tags that cross line boundaries, so Markdown-looking attribute text cannot satisfy entrypoint coverage.
+
 ## Documentation Impact
 
 - Result: updated

@@ -199,6 +199,46 @@ def strip_inline_code_and_html_comments(text: str) -> str:
 
 
 def visible_markdown(text: str) -> str:
+    def contains_multiline_html_tag(value: str) -> bool:
+        cursor = 0
+        while cursor < len(value):
+            opening = value.find("<", cursor)
+            if opening < 0:
+                return False
+            tag = opening + 1
+            if tag < len(value) and value[tag] == "/":
+                tag += 1
+            if tag >= len(value) or not value[tag].isalpha():
+                cursor = opening + 1
+                continue
+            while tag < len(value) and (
+                value[tag].isalnum() or value[tag] == "-"
+            ):
+                tag += 1
+            if (
+                tag < len(value)
+                and value[tag] not in " \t/>"
+                and value[tag] not in "\r\n"
+            ):
+                cursor = opening + 1
+                continue
+            quote: str | None = None
+            scan = tag
+            while scan < len(value):
+                character = value[scan]
+                if character in "\r\n":
+                    return True
+                if quote is not None:
+                    if character == quote:
+                        quote = None
+                elif character in {'"', "'"}:
+                    quote = character
+                elif character == ">":
+                    break
+                scan += 1
+            cursor = scan + 1
+        return False
+
     lines: list[str] = []
     fence: tuple[str, int] | None = None
     for line in text.splitlines(keepends=True):
@@ -239,6 +279,8 @@ def visible_markdown(text: str) -> str:
     if fence is not None:
         fail("documentation contains an unterminated fenced code block")
     visible = strip_inline_code_and_html_comments("".join(lines))
+    if contains_multiline_html_tag(visible):
+        fail("documentation contains multiline inline HTML")
     if any(
         RAW_HTML_BLOCK_START_RE.match(
             strip_commonmark_container_prefixes(line)[0]
@@ -860,6 +902,14 @@ def self_test(value: dict[str, Any]) -> None:
         fail("positive self-test rejected a balanced inline destination")
     if raw_link_targets("<https://example.com>\n"):
         fail("URI autolink was treated as a repository link")
+    try:
+        raw_link_targets(
+            '<span\n title="[documentation](docs/index.md)">text</span>\n'
+        )
+    except DocsError:
+        pass
+    else:
+        fail("negative self-test accepted multiline inline HTML")
     nested_reference = (
         "[Outer [Inner][inside]](docs/index.md)\n"
         "[inside]: docs/inside.md\n"
