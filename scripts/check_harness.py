@@ -3787,6 +3787,50 @@ def toml_insert_is_at_table_scope(text: str) -> bool:
     )
 
 
+def toml_lines_with_table_scope(text: str) -> list[tuple[str, bool]]:
+    square_depth = 0
+    curly_depth = 0
+    quote: str | None = None
+    escaped = False
+    comment = False
+    result: list[tuple[str, bool]] = []
+    for line in text.splitlines(keepends=True):
+        result.append(
+            (
+                line.rstrip("\r\n"),
+                quote is None and square_depth == 0 and curly_depth == 0,
+            )
+        )
+        for character in line:
+            if comment:
+                if character in "\r\n":
+                    comment = False
+                continue
+            if quote is not None:
+                if quote == '"' and escaped:
+                    escaped = False
+                    continue
+                if quote == '"' and character == "\\":
+                    escaped = True
+                    continue
+                if character == quote:
+                    quote = None
+                continue
+            if character == "#":
+                comment = True
+            elif character in {'"', "'"}:
+                quote = character
+            elif character == "[":
+                square_depth += 1
+            elif character == "]":
+                square_depth -= 1
+            elif character == "{":
+                curly_depth += 1
+            elif character == "}":
+                curly_depth -= 1
+    return result
+
+
 def toml_basic_key_decode(text: str) -> str | None:
     if len(text) < 2 or text[0] != '"' or text[-1] != '"':
         return None
@@ -3950,8 +3994,8 @@ def toml_array_table_key_segments(line: str) -> tuple[str, ...] | None:
 
 
 def toml_has_unparsed_header(text: str) -> bool:
-    for line in text.splitlines():
-        if not line.lstrip().startswith("["):
+    for line, at_table_scope in toml_lines_with_table_scope(text):
+        if not at_table_scope or not line.lstrip().startswith("["):
             continue
         if (
             toml_table_key_segments(line) is None
@@ -3963,7 +4007,9 @@ def toml_has_unparsed_header(text: str) -> bool:
 
 def toml_has_dotted_ruff_definition(text: str) -> bool:
     current_table: tuple[str, ...] = ()
-    for line in text.splitlines():
+    for line, at_table_scope in toml_lines_with_table_scope(text):
+        if not at_table_scope:
+            continue
         table = toml_table_key_segments(line)
         if table is not None:
             current_table = table
@@ -3987,7 +4033,9 @@ def toml_has_dotted_ruff_definition(text: str) -> bool:
 
 def toml_table_has_exclude_assignment(text: str) -> bool:
     current_table: tuple[str, ...] | None = None
-    for line in text.splitlines():
+    for line, at_table_scope in toml_lines_with_table_scope(text):
+        if not at_table_scope:
+            continue
         table = toml_table_key_segments(line)
         if table is not None:
             current_table = table
@@ -4037,7 +4085,11 @@ def validate_pending_sensitive_files(
                 "pending Ruff exclusion is not a standalone table-scope key"
             )
         table_headers: list[tuple[str, tuple[str, ...]]] = []
-        for line in candidate[:insertion].splitlines():
+        for line, at_table_scope in toml_lines_with_table_scope(
+            candidate[:insertion]
+        ):
+            if not at_table_scope:
+                continue
             table = toml_table_key_segments(line)
             if table is not None:
                 table_headers.append(("table", table))
@@ -4068,13 +4120,15 @@ def validate_pending_sensitive_files(
     new_table = separator + "[tool.ruff]\n" + ruff_exclusion
     base_tables = {
         table
-        for line in base.splitlines()
-        if (table := toml_table_key_segments(line)) is not None
+        for line, at_table_scope in toml_lines_with_table_scope(base)
+        if at_table_scope
+        and (table := toml_table_key_segments(line)) is not None
     }
     base_array_tables = {
         table
-        for line in base.splitlines()
-        if (table := toml_array_table_key_segments(line)) is not None
+        for line, at_table_scope in toml_lines_with_table_scope(base)
+        if at_table_scope
+        and (table := toml_array_table_key_segments(line)) is not None
     }
     if (
         ("tool", "ruff") not in base_tables
