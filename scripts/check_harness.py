@@ -115,6 +115,7 @@ PENDING_VALIDATION_WORKFLOW_NAMES = frozenset(
             "checkpoint-ci",
             "doc-sync",
             "docs-ci",
+            "harness-evidence",
             "product-ci",
             "product-validation",
             "repository-validation",
@@ -1910,6 +1911,10 @@ def rendered_plan_text(text: str) -> str:
         content = line.rstrip("\r\n")
         container_content = strip_commonmark_container_prefixes(content)
         if container_content != content:
+            if RAW_HTML_BLOCK_START_RE.match(container_content):
+                raise HarnessError(
+                    "Active Plan contains a raw HTML block inside a Markdown container"
+                )
             if (
                 fence_parts(container_content) is not None
                 or indentation_columns(container_content) >= 4
@@ -1935,6 +1940,15 @@ def rendered_plan_text(text: str) -> str:
                 fence = (marker[0], len(marker))
                 visible_lines.append("\n" if line.endswith("\n") else "")
                 continue
+        if (
+            indentation_columns(content) >= 4
+            and re.match(r"^[ \t]+(?:[-+*]|\d{1,9}[.)])[ \t]+", content)
+        ):
+            # A list item nested under another list container is rendered
+            # prose, not an indented code block. Preserve it so the canonical
+            # Active Plan schema can reject ambiguous nested audit fields.
+            visible_lines.append(line)
+            continue
         if indentation_columns(content) >= 4:
             visible_lines.append("\n" if line.endswith("\n") else "")
             continue
@@ -1988,6 +2002,7 @@ def self_test_rendered_plan_text() -> None:
         '<strong title="\n## Metadata\n- Owner: hidden\n">x</strong>\n',
         '<strong title="a > b\n## Metadata\n- Owner: hidden\n">x</strong>\n',
         '<x title="a > b">\n## Metadata\n- Owner: hidden\n\n',
+        "- <div>\n  ## Metadata\n  - Owner: hidden\n",
     )
     for fixture in negative_cases:
         try:
@@ -2086,6 +2101,113 @@ def plan_field(section: str, key: str) -> str:
     if len(values) != 1:
         raise HarnessError(f"Active Plan has duplicate {key}")
     return values[0]
+
+
+def validate_canonical_plan_authoring(
+    text: str,
+    contract: dict[str, Any],
+) -> None:
+    """Reject rendered-equivalent variants of reserved plan schema tokens.
+
+    Harness audit metadata deliberately uses a small authoring subset rather
+    than treating every CommonMark spelling as schema. Required headings are
+    exact plain level-two headings. Required fields are exact, top-level,
+    one-line list items. A rendered-equivalent variant is rejected instead of
+    being interpreted, so formatting cannot create two visible meanings.
+    """
+    reserved_headings = {
+        heading.removeprefix("## ")
+        for heading in (
+            *PLAN_SECTIONS,
+            *active_plan_required_sections(contract),
+        )
+    }
+    reserved_fields = {
+        "Status",
+        "Task class",
+        "Model",
+        "Reasoning effort",
+        "Speed",
+        "Delegation route",
+        "Owner",
+        "Receipt",
+        "Validated commit",
+        "Revalidation required",
+        "Revalidation groups",
+        "In scope",
+        "Out of scope",
+        "Required files",
+        "Required checks",
+        "Positive tests",
+        "Negative tests",
+        "Current-head Review",
+        "Final evidence",
+        "Merge receipt",
+        "Archive destination",
+    }
+    for labels in active_plan_required_fields(contract).values():
+        reserved_fields.update(labels)
+
+    visible = rendered_plan_text(text)
+    for raw_line in visible.splitlines():
+        heading = re.match(
+            r"^[ ]{0,3}##[ \t]+(?P<label>.*?)(?:[ \t]+#+)?[ \t]*$",
+            raw_line,
+        )
+        if heading is not None:
+            normalized, unsafe = normalize_visible_plan_value(
+                heading.group("label")
+            )
+            if not unsafe and normalized in reserved_headings:
+                expected = f"## {normalized}"
+                if raw_line != expected:
+                    raise HarnessError(
+                        "Active Plan reserved heading must use canonical "
+                        f"plain syntax: {expected}"
+                    )
+
+        _, body = commonmark_container_prefixes(raw_line)
+        nested = re.match(
+            r"^[ \t]{4,}(?:[-+*]|\d{1,9}[.)])[ \t]+(?P<body>.*)$",
+            raw_line,
+        )
+        if nested is not None:
+            body = nested.group("body")
+        task = re.match(r"^\[[ xX-]\][ \t]+(?P<body>.*)$", body)
+        if task is not None:
+            body = task.group("body")
+        if ":" not in body:
+            continue
+        label_source, value = body.split(":", 1)
+        try:
+            normalized, unsafe = normalize_visible_plan_value(label_source)
+        except HarnessError:
+            # A colon may be inside an inline-HTML wrapper around the label,
+            # e.g. <strong>Owner:</strong>. Render the whole list item only
+            # for that ambiguous label shape; ordinary values remain outside
+            # the schema-label parser.
+            rendered_body = visible_inline_text(body)
+            rendered_body = re.sub(
+                r"(?<!\\)[*_~`]+",
+                "",
+                rendered_body,
+            )
+            if ":" not in rendered_body:
+                continue
+            label_source, value = rendered_body.split(":", 1)
+            normalized, unsafe = normalize_visible_plan_value(label_source)
+        if unsafe or normalized not in reserved_fields:
+            continue
+        canonical = re.fullmatch(
+            rf"^- {re.escape(normalized)}:"
+            r"[ \t]+\S.*$",
+            raw_line,
+        )
+        if canonical is None:
+            raise HarnessError(
+                "Active Plan reserved field must use canonical top-level "
+                f"one-line syntax: - {normalized}: VALUE"
+            )
 
 
 def visible_inline_text(value: str) -> str:
@@ -2829,6 +2951,7 @@ def validate_active_plan(root: Path, contract: dict[str, Any]) -> None:
         max_bytes=MAX_ACTIVE_PLAN_BYTES,
     )
     visible_text = rendered_plan_text(text)
+    validate_canonical_plan_authoring(text, contract)
     additional_sections = active_plan_required_sections(contract)
     section_positions: list[int] = []
     for section in PLAN_SECTIONS:
@@ -4201,6 +4324,27 @@ def validate_pending_sensitive_files(
     target_root: Path,
     paths: list[str],
 ) -> None:
+    workflow_paths = sorted(
+        path
+        for path in paths
+        if path.startswith(".github/workflows/")
+        and path.endswith((".yml", ".yaml"))
+    )
+    for path in workflow_paths:
+        candidate_path = target_root / path
+        if not candidate_path.exists():
+            # Deleting a recognized legacy emitter is part of migration.
+            continue
+        workflow = read_repo_regular_text(
+            target_root,
+            path,
+            max_bytes=MAX_GOVERNANCE_INSPECTION_BYTES,
+        )
+        if re.search(r"(?i)harness[ \t]*/[ \t]*evidence", workflow):
+            raise HarnessError(
+                "pending establishment workflow may not publish the reserved "
+                f"harness/evidence context: {path}"
+            )
     if "pyproject.toml" not in paths:
         return
     base = read_repo_regular_text(trusted_root, "pyproject.toml")

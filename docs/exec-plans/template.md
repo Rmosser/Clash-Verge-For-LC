@@ -1,5 +1,10 @@
 # Active Plan: TITLE
 
+Harness schema tokens use a deliberately small authoring subset: write every
+required section as an exact plain `## Heading`, and every required field as an
+exact top-level, one-line `- Key: VALUE`. Do not format, quote, nest, entity-
+encode, split, or place task markers around reserved headings or field labels.
+
 ## Metadata
 
 - Status: active

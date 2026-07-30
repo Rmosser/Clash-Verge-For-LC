@@ -17,6 +17,10 @@ from typing import Any, NamedTuple
 
 ROOT = Path(__file__).resolve().parents[1]
 RULES_PATH = "docs/doc-sync-rules.json"
+REQUIRED_DIRECTORY_PATHS = {
+    "docs/exec-plans/active",
+    "docs/exec-plans/completed",
+}
 REFERENCE_DEFINITION_RE = re.compile(
     r"^[ ]{0,3}\[(?P<label>(?:\\[^\n]|[^\\\[\]\n])+)\]:[ \t]*"
     r"(?:(?:\r\n|\r|\n)[ \t]{0,3})?"
@@ -817,6 +821,10 @@ def link_targets(source: Path, root: Path) -> set[Path]:
             root,
             relative_to_root,
             f"Markdown link target from {source.relative_to(root).as_posix()}",
+            require_file=(
+                relative_to_root.as_posix()
+                not in REQUIRED_DIRECTORY_PATHS
+            ),
         )
         targets.add(resolved)
     return targets
@@ -846,7 +854,14 @@ def validate(value: Any, root: Path = ROOT) -> None:
         fail("required_paths must be a unique non-empty string list")
     for index, raw in enumerate(required):
         relative = canonical_relative(raw, f"required_paths[{index}]")
-        bounded_path(root, relative, f"required_paths[{index}]")
+        required_path = bounded_path(
+            root,
+            relative,
+            f"required_paths[{index}]",
+            require_file=raw not in REQUIRED_DIRECTORY_PATHS,
+        )
+        if raw in REQUIRED_DIRECTORY_PATHS and not required_path.is_dir():
+            fail(f"required_paths[{index}] must be a directory: {raw}")
 
     entries = value["entrypoint_links"]
     if not isinstance(entries, list) or not entries:
@@ -903,6 +918,10 @@ def validate(value: Any, root: Path = ROOT) -> None:
                 root,
                 relative_to_root,
                 f"entrypoint_links[{index}].targets[{target_index}]",
+                require_file=(
+                    relative_to_root.as_posix()
+                    not in REQUIRED_DIRECTORY_PATHS
+                ),
             )
 
 
