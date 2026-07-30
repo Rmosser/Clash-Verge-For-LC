@@ -145,6 +145,7 @@ behavior or claiming platform readiness.
 - Review rework round 36 shared-verifier: upheld the LocalCourse2Notion Ruff exclude-subtable finding. Existing ordinary or array tables rooted at tool.ruff.exclude now block the fixed exclude assignment because TOML treats that path as a table/value collision; valid sibling subtables remain allowed.
 - Review rework round 38 shared-verifier: upheld the escaped-comment, equivalent-list-marker, DEL-in-quoted-TOML-key, and candidate-controlled Review-author findings. Rendered plan comments now honor escape parity; all CommonMark bullet markers participate in duplicate-field detection; quoted TOML keys reject U+007F; and pending establishment binds Review authors to the official Codex App allowlist.
 - Review rework round 38 documentation: upheld the multiline reference-definition finding. A single permitted line ending between the label colon and destination is parsed and regression-tested.
+- Review rework round 39 shared-verifier: upheld both Clash-One findings. Required list fields now recognize CommonMark's zero-to-three-space indentation and bounded marker padding before duplicate detection; escaped HTML-comment openers and their literal closers remain visible through repeated rendering passes without weakening malformed real-comment checks.
 - Current-head Review: pending; any finding, stale head, partial output,
   timeout, or author ambiguity blocks merge
 

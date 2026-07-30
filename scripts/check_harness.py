@@ -1774,11 +1774,14 @@ def render_inline_code_and_html_comments(text: str) -> str:
     """Remove real HTML comments while preserving bounded inline-code literals."""
     output: list[str] = []
     cursor = 0
+    escaped_comment_openers = 0
     while cursor < len(text):
-        if text.startswith("<!--", cursor) and not markdown_character_is_escaped(
-            text,
-            cursor,
-        ):
+        if text.startswith("<!--", cursor):
+            if markdown_character_is_escaped(text, cursor):
+                escaped_comment_openers += 1
+                output.append("<!--")
+                cursor += 4
+                continue
             end = text.find("-->", cursor + 4)
             if end < 0:
                 raise HarnessError("Active Plan contains a malformed HTML comment")
@@ -1787,6 +1790,11 @@ def render_inline_code_and_html_comments(text: str) -> str:
             cursor = end + 3
             continue
         if text.startswith("-->", cursor):
+            if escaped_comment_openers:
+                escaped_comment_openers -= 1
+                output.append("-->")
+                cursor += 3
+                continue
             raise HarnessError("Active Plan contains a malformed HTML comment")
         if text[cursor] == "`" and not markdown_character_is_escaped(text, cursor):
             run_end = cursor + 1
@@ -2035,7 +2043,8 @@ def plan_field(section: str, key: str) -> str:
     section = rendered_plan_text(section)
     matches = list(
         re.finditer(
-            rf"^[+*-] {re.escape(key)}:[ \t]*(\S[^\r\n]*)[ \t]*$",
+            rf"^[ ]{{0,3}}[+*-][ \t]{{1,4}}"
+            rf"{re.escape(key)}:[ \t]*(\S[^\r\n]*)[ \t]*$",
             section,
             re.MULTILINE,
         )
@@ -2050,6 +2059,7 @@ def plan_field(section: str, key: str) -> str:
 def visible_inline_text(value: str) -> str:
     code_spans: list[tuple[str, str]] = []
     autolinks: list[tuple[str, str]] = []
+    escaped_comment_literals: list[tuple[str, str]] = []
 
     def normalize_code_span_body(body: str) -> str:
         literal = body.replace("\r\n", "\n").replace("\r", "\n")
@@ -2071,11 +2081,61 @@ def visible_inline_text(value: str) -> str:
         autolinks.append((token, target))
         return token
 
+    def protect_escaped_comments(text: str) -> str:
+        output: list[str] = []
+        cursor = 0
+        escaped_openers = 0
+        while cursor < len(text):
+            if text.startswith("<!--", cursor):
+                if markdown_character_is_escaped(text, cursor):
+                    # CommonMark consumes the final escaping backslash and
+                    # renders the opener literally. Keep any earlier even
+                    # backslash pairs already emitted.
+                    if not output or output[-1] != "\\":
+                        raise HarnessError("escaped comment opener lost its escape")
+                    output.pop()
+                    token = (
+                        f"\x00ESCAPED-COMMENT-{len(escaped_comment_literals)}\x00"
+                    )
+                    while token in value:
+                        token += "\x00"
+                    # Keep one internal escape marker so repeated visibility
+                    # passes do not reinterpret the restored literal as HTML.
+                    # normalize_visible_plan_value consumes it only at the
+                    # terminal scalar boundary.
+                    escaped_comment_literals.append((token, "\\<!--"))
+                    output.append(token)
+                    escaped_openers += 1
+                    cursor += 4
+                    continue
+                end = text.find("-->", cursor + 4)
+                if end < 0:
+                    output.append(text[cursor:])
+                    break
+                output.append(text[cursor : end + 3])
+                cursor = end + 3
+                continue
+            if text.startswith("-->", cursor) and escaped_openers:
+                token = (
+                    f"\x00ESCAPED-COMMENT-{len(escaped_comment_literals)}\x00"
+                )
+                while token in value:
+                    token += "\x00"
+                escaped_comment_literals.append((token, "-->"))
+                output.append(token)
+                escaped_openers -= 1
+                cursor += 3
+                continue
+            output.append(text[cursor])
+            cursor += 1
+        return "".join(output)
+
     protected, raw_code_spans = protect_inline_code_spans(value)
     for token, raw_literal in raw_code_spans:
         delimiter_length = len(raw_literal) - len(raw_literal.lstrip("`"))
         literal = raw_literal[delimiter_length:-delimiter_length]
         code_spans.append((token, normalize_code_span_body(literal)))
+    protected = protect_escaped_comments(protected)
     protected = COMMONMARK_AUTOLINK_RE.sub(protect_autolink, protected)
     parser = _VisibleInlineTextParser()
     try:
@@ -2090,6 +2150,8 @@ def visible_inline_text(value: str) -> str:
         rendered = rendered.replace(token, literal)
     for token, target in autolinks:
         rendered = rendered.replace(token, target)
+    for token, literal in escaped_comment_literals:
+        rendered = rendered.replace(token, literal)
     return rendered
 
 
@@ -2194,7 +2256,21 @@ def normalize_visible_plan_value(value: str) -> tuple[str, bool]:
             changed = True
         if matches_placeholder_token(normalized):
             return normalized, False
+        had_escaped_comment_literal = any(
+            markdown_character_is_escaped(normalized, match.start())
+            for match in re.finditer(r"<!--", normalized)
+        )
         rendered = visible_inline_text(normalized).strip()
+        if had_escaped_comment_literal:
+            # Escaping is consumed by CommonMark. The restored literal
+            # ``<!-- ... -->`` must not be offered to HTMLParser again after
+            # the backslash has intentionally disappeared.
+            rendered = re.sub(
+                r"(?<!\\)((?:\\\\)*)\\(?=<!--)",
+                r"\1",
+                rendered,
+            )
+            return rendered, False
         if rendered != normalized:
             normalized = rendered
             changed = True
