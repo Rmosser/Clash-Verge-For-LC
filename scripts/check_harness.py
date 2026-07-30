@@ -4054,6 +4054,21 @@ def toml_table_has_exclude_assignment(text: str) -> bool:
     return False
 
 
+def toml_has_ruff_exclude_table(text: str) -> bool:
+    for line, at_table_scope in toml_lines_with_table_scope(text):
+        if not at_table_scope:
+            continue
+        table = toml_table_key_segments(line)
+        if table is None:
+            table = toml_array_table_key_segments(line)
+        if (
+            table is not None
+            and table[:3] == ("tool", "ruff", "exclude")
+        ):
+            return True
+    return False
+
+
 def validate_pending_sensitive_files(
     trusted_root: Path,
     target_root: Path,
@@ -4073,6 +4088,11 @@ def validate_pending_sensitive_files(
         raise HarnessError(
             "pending pyproject.toml migration cannot safely classify "
             "multiline TOML strings"
+        )
+    if toml_has_ruff_exclude_table(base):
+        raise HarnessError(
+            "pending Ruff exclusion conflicts with an existing "
+            "tool.ruff.exclude table"
         )
     without_exclusion = candidate.replace(ruff_exclusion, "", 1)
     if without_exclusion == base:
