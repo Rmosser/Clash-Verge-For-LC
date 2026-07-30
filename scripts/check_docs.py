@@ -169,8 +169,14 @@ def strip_code_spans(text: str) -> str:
 def strip_inline_code_and_html_comments(text: str) -> str:
     output: list[str] = []
     cursor = 0
+    escaped_comment_openers = 0
     while cursor < len(text):
         if text.startswith("<!--", cursor):
+            if markdown_character_is_escaped(text, cursor):
+                output.append("<!--")
+                escaped_comment_openers += 1
+                cursor += 4
+                continue
             end = text.find("-->", cursor + 4)
             if end < 0:
                 fail("documentation contains a malformed HTML comment")
@@ -178,6 +184,11 @@ def strip_inline_code_and_html_comments(text: str) -> str:
             cursor = end + 3
             continue
         if text.startswith("-->", cursor):
+            if escaped_comment_openers:
+                output.append("-->")
+                escaped_comment_openers -= 1
+                cursor += 3
+                continue
             fail("documentation contains a malformed HTML comment")
         if text[cursor] == "`" and not markdown_character_is_escaped(text, cursor):
             run_end = cursor + 1

@@ -115,7 +115,6 @@ PENDING_VALIDATION_WORKFLOW_NAMES = frozenset(
             "checkpoint-ci",
             "doc-sync",
             "docs-ci",
-            "harness-evidence",
             "product-ci",
             "product-validation",
             "repository-validation",
@@ -2041,19 +2040,52 @@ def plan_section(text: str, heading: str) -> str:
 
 def plan_field(section: str, key: str) -> str:
     section = rendered_plan_text(section)
-    matches = list(
-        re.finditer(
-            rf"^[ ]{{0,3}}[+*-][ \t]{{1,4}}"
-            rf"{re.escape(key)}:[ \t]*(\S[^\r\n]*)[ \t]*$",
-            section,
-            re.MULTILINE,
+    values: list[str] = []
+    for raw_line in section.splitlines():
+        line = raw_line
+        while True:
+            quote = re.match(r"^[ ]{0,3}>[ \t]?", line)
+            if quote is None:
+                break
+            line = line[quote.end() :]
+        item = re.match(
+            r"^(?P<indent>[ ]{0,3})(?P<marker>[+*-])"
+            r"(?P<padding>[ \t]+)(?P<body>.*)$",
+            line,
         )
-    )
-    if not matches:
+        if item is None:
+            continue
+        marker_column = len(item.group("indent")) + 1
+        padding_columns = (
+            indentation_columns(item.group("padding"), marker_column)
+            - marker_column
+        )
+        if not 1 <= padding_columns <= 4:
+            continue
+        raw_body = item.group("body").strip()
+        if key not in raw_body:
+            continue
+        if ":" not in raw_body:
+            continue
+        label_source, value = raw_body.split(":", 1)
+        label = re.sub(r"[*_~`]+", "", label_source).strip()
+        if label != key:
+            continue
+        value = value.strip()
+        for marker in ("**", "__", "~~", "*", "_"):
+            if (
+                label_source.lstrip().startswith(marker)
+                and value.startswith(marker)
+            ):
+                value = value[len(marker) :].lstrip()
+                break
+        if value:
+            values.append(value)
+    if not values:
         raise HarnessError(f"Active Plan has no concrete {key}")
-    if len(matches) != 1:
+    if len(values) != 1:
         raise HarnessError(f"Active Plan has duplicate {key}")
-    return matches[0].group(1).strip()
+    return values[0]
 
 
 def visible_inline_text(value: str) -> str:
@@ -2256,21 +2288,22 @@ def normalize_visible_plan_value(value: str) -> tuple[str, bool]:
             changed = True
         if matches_placeholder_token(normalized):
             return normalized, False
+        escaped_comment_plain = re.sub(
+            r"\\<!--|-->",
+            " ",
+            normalized,
+        ).strip()
+        if escaped_comment_plain != normalized and matches_placeholder_token(
+            escaped_comment_plain
+        ):
+            return escaped_comment_plain, False
         had_escaped_comment_literal = any(
             markdown_character_is_escaped(normalized, match.start())
             for match in re.finditer(r"<!--", normalized)
         )
         rendered = visible_inline_text(normalized).strip()
-        if had_escaped_comment_literal:
-            # Escaping is consumed by CommonMark. The restored literal
-            # ``<!-- ... -->`` must not be offered to HTMLParser again after
-            # the backslash has intentionally disappeared.
-            rendered = re.sub(
-                r"(?<!\\)((?:\\\\)*)\\(?=<!--)",
-                r"\1",
-                rendered,
-            )
-            return rendered, False
+        if had_escaped_comment_literal and rendered != normalized:
+            raise HarnessError("escaped comment literal changed during rendering")
         if rendered != normalized:
             normalized = rendered
             changed = True
