@@ -3787,6 +3787,50 @@ def toml_insert_is_at_table_scope(text: str) -> bool:
     )
 
 
+def toml_basic_key_decode(text: str) -> str | None:
+    if len(text) < 2 or text[0] != '"' or text[-1] != '"':
+        return None
+    decoded: list[str] = []
+    cursor = 1
+    escapes = {
+        "b": "\b",
+        "t": "\t",
+        "n": "\n",
+        "f": "\f",
+        "r": "\r",
+        '"': '"',
+        "\\": "\\",
+    }
+    while cursor < len(text) - 1:
+        character = text[cursor]
+        if character != "\\":
+            if ord(character) < 0x20 and character != "\t":
+                return None
+            decoded.append(character)
+            cursor += 1
+            continue
+        cursor += 1
+        if cursor >= len(text) - 1:
+            return None
+        escape = text[cursor]
+        if escape in escapes:
+            decoded.append(escapes[escape])
+            cursor += 1
+            continue
+        if escape not in {"u", "U"}:
+            return None
+        width = 4 if escape == "u" else 8
+        digits = text[cursor + 1 : cursor + 1 + width]
+        if len(digits) != width or re.fullmatch(r"[0-9A-Fa-f]+", digits) is None:
+            return None
+        codepoint = int(digits, 16)
+        if codepoint > 0x10FFFF or 0xD800 <= codepoint <= 0xDFFF:
+            return None
+        decoded.append(chr(codepoint))
+        cursor += 1 + width
+    return "".join(decoded)
+
+
 def toml_key_segments(text: str) -> tuple[str, ...] | None:
     parts: list[str] = []
     start = 0
@@ -3818,11 +3862,8 @@ def toml_key_segments(text: str) -> tuple[str, ...] | None:
         elif len(part) >= 2 and part[0] == part[-1] == "'":
             decoded.append(part[1:-1])
         elif len(part) >= 2 and part[0] == part[-1] == '"':
-            try:
-                value = json.loads(part)
-            except (TypeError, ValueError, json.JSONDecodeError):
-                return None
-            if not isinstance(value, str):
+            value = toml_basic_key_decode(part)
+            if value is None:
                 return None
             decoded.append(value)
         else:
@@ -3906,6 +3947,18 @@ def toml_array_table_key_segments(line: str) -> tuple[str, ...] | None:
                 return None
             return toml_key_segments(stripped[2:index].strip())
     return None
+
+
+def toml_has_unparsed_header(text: str) -> bool:
+    for line in text.splitlines():
+        if not line.lstrip().startswith("["):
+            continue
+        if (
+            toml_table_key_segments(line) is None
+            and toml_array_table_key_segments(line) is None
+        ):
+            return True
+    return False
 
 
 def toml_has_dotted_ruff_definition(text: str) -> bool:
@@ -3992,6 +4045,9 @@ def validate_pending_sensitive_files(
             array_table = toml_array_table_key_segments(line)
             if array_table is not None:
                 table_headers.append(("array", array_table))
+                continue
+            if line.lstrip().startswith("["):
+                table_headers.append(("unknown", ()))
         if (
             not table_headers
             or table_headers[-1] != ("table", ("tool", "ruff"))
@@ -4023,6 +4079,7 @@ def validate_pending_sensitive_files(
     if (
         ("tool", "ruff") not in base_tables
         and ("tool", "ruff") not in base_array_tables
+        and not toml_has_unparsed_header(base)
         and not toml_has_dotted_ruff_definition(base)
         and candidate == base + new_table
     ):
@@ -4031,6 +4088,10 @@ def validate_pending_sensitive_files(
         raise HarnessError(
             "pending Ruff table conflicts with an existing "
             "tool.ruff array-of-table declaration"
+        )
+    if toml_has_unparsed_header(base):
+        raise HarnessError(
+            "pending pyproject.toml contains an unparsed table header"
         )
     if toml_has_dotted_ruff_definition(base):
         raise HarnessError(

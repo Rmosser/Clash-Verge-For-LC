@@ -140,6 +140,7 @@ behavior or claiming platform readiness.
 - Review rework round 31 shared-verifier: upheld the equivalent Ruff table finding. Pending establishment now applies semantic TOML table segments to existing-table detection, insertion scope, and existing `exclude` checks, so quoted-equivalent `[tool."ruff"]` declarations cannot be duplicated.
 - Review rework round 32 shared-verifier: upheld the Ruff array-of-table finding. Pending establishment now rejects exact quoted or unquoted `[[tool.ruff]]` declarations and root inline `tool` assignments before appending `[tool.ruff]`, while retaining valid deeper Ruff array-of-table paths.
 - Review rework round 33 shared-verifier: completed the adjacent TOML scope audit. Existing Ruff `exclude` keys are decoded semantically, including Unicode escapes, and exclusion insertion now requires the actual final header to be the ordinary `tool.ruff` table rather than an intervening array-of-table.
+- Review rework round 34 shared-verifier: upheld the uppercase TOML Unicode-escape findings. Basic quoted keys now use TOML escape semantics for both four- and eight-digit Unicode escapes, reject invalid code points, and treat any unparsed table-like header as a fail-closed scope boundary.
 - Current-head Review: pending; any finding, stale head, partial output,
   timeout, or author ambiguity blocks merge
 
