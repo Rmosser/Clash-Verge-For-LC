@@ -19,8 +19,10 @@ ROOT = Path(__file__).resolve().parents[1]
 RULES_PATH = "docs/doc-sync-rules.json"
 REFERENCE_DEFINITION_RE = re.compile(
     r"^[ ]{0,3}\[(?P<label>(?:\\[^\n]|[^\\\[\]\n])+)\]:[ \t]*"
+    r"(?:(?:\r\n|\r|\n)[ \t]{0,3})?"
     r"(?P<destination><[^>\n]+>|[^ \t\n]+)"
-    r"(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?[ \t]*$"
+    r"(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?[ \t]*$",
+    re.MULTILINE,
 )
 REFERENCE_DEFINITION_PREFIX_RE = re.compile(
     r"^[ ]{0,3}\[(?:\\[^\n]|[^\\\[\]\n])+\]:"
@@ -522,18 +524,34 @@ def raw_link_targets(text: str) -> list[str]:
     visible = visible_markdown(text)
     definitions: dict[str, str] = {}
     content_lines: list[str] = []
-    for line in visible.splitlines():
+    lines = visible.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
         definition = REFERENCE_DEFINITION_RE.fullmatch(line)
+        consumed = 1
+        if (
+            definition is None
+            and REFERENCE_DEFINITION_PREFIX_RE.match(line)
+            and index + 1 < len(lines)
+        ):
+            definition = REFERENCE_DEFINITION_RE.fullmatch(
+                line + "\n" + lines[index + 1]
+            )
+            if definition is not None:
+                consumed = 2
         if definition:
             label = normalized_reference_label(definition.group("label"))
             if not label or label in definitions:
                 fail("documentation has an empty or duplicate reference label")
             definitions[label] = definition.group("destination")
-            content_lines.append("")
+            content_lines.extend("" for _ in range(consumed))
+            index += consumed
             continue
         if REFERENCE_DEFINITION_PREFIX_RE.match(line):
             fail("documentation has an unsupported reference definition")
         content_lines.append(line)
+        index += 1
     content = "\n".join(content_lines)
     angle_spans = sorted(
         {
@@ -932,6 +950,13 @@ def self_test(value: dict[str, Any]) -> None:
     )
     if raw_link_targets(nested_reference) != ["docs/inside.md"]:
         fail("nested full-reference link precedence self-test failed")
+    multiline_reference = (
+        "[runtime]\n"
+        "[runtime]:\n"
+        "  CURRENT_RUNTIME.md\n"
+    )
+    if raw_link_targets(multiline_reference) != ["CURRENT_RUNTIME.md"]:
+        fail("multiline reference definition self-test failed")
     nested_shortcut = (
         "[Outer [Inner]](docs/index.md)\n"
         "[Inner]: docs/inside.md\n"

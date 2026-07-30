@@ -37,6 +37,7 @@ REPOSITORY_RE = re.compile(
     r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$"
 )
 EXTERNAL_STATUS_SYSTEM_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+OFFICIAL_REVIEW_AUTHORS = ("chatgpt-codex-connector[bot]",)
 MAX_CONTRACT_BYTES = 1024 * 1024
 MAX_VERIFIER_BYTES = 4 * 1024 * 1024
 MAX_ACTIVE_PLAN_BYTES = 1024 * 1024
@@ -1380,10 +1381,11 @@ def validate_contract(
     if review.get("required_status_translation") is not False:
         raise HarnessError("Review must not be translated into a required status")
     authors = review.get("allowed_authors")
-    if not isinstance(authors, list) or not authors or not all(
-        isinstance(author, str) and author for author in authors
-    ):
-        raise HarnessError("review allowed_authors must be non-empty")
+    if authors != list(OFFICIAL_REVIEW_AUTHORS):
+        raise HarnessError(
+            "review allowed_authors must match the contract-version official "
+            "App allowlist"
+        )
     fail_closed = review.get("fail_closed_on")
     required_failures = {
         "missing",
@@ -1773,7 +1775,10 @@ def render_inline_code_and_html_comments(text: str) -> str:
     output: list[str] = []
     cursor = 0
     while cursor < len(text):
-        if text.startswith("<!--", cursor):
+        if text.startswith("<!--", cursor) and not markdown_character_is_escaped(
+            text,
+            cursor,
+        ):
             end = text.find("-->", cursor + 4)
             if end < 0:
                 raise HarnessError("Active Plan contains a malformed HTML comment")
@@ -2030,7 +2035,7 @@ def plan_field(section: str, key: str) -> str:
     section = rendered_plan_text(section)
     matches = list(
         re.finditer(
-            rf"^- {re.escape(key)}:[ \t]*(\S[^\r\n]*)[ \t]*$",
+            rf"^[+*-] {re.escape(key)}:[ \t]*(\S[^\r\n]*)[ \t]*$",
             section,
             re.MULTILINE,
         )
@@ -3848,7 +3853,10 @@ def toml_basic_key_decode(text: str) -> str | None:
     while cursor < len(text) - 1:
         character = text[cursor]
         if character != "\\":
-            if ord(character) < 0x20 and character != "\t":
+            if (
+                ord(character) < 0x20
+                and character != "\t"
+            ) or ord(character) == 0x7F:
                 return None
             decoded.append(character)
             cursor += 1
@@ -3904,7 +3912,17 @@ def toml_key_segments(text: str) -> tuple[str, ...] | None:
         if re.fullmatch(r"[A-Za-z0-9_-]+", part):
             decoded.append(part)
         elif len(part) >= 2 and part[0] == part[-1] == "'":
-            decoded.append(part[1:-1])
+            value = part[1:-1]
+            if any(
+                (
+                    ord(character) < 0x20
+                    and character != "\t"
+                )
+                or ord(character) == 0x7F
+                for character in value
+            ):
+                return None
+            decoded.append(value)
         elif len(part) >= 2 and part[0] == part[-1] == '"':
             value = toml_basic_key_decode(part)
             if value is None:
