@@ -1,50 +1,47 @@
 # Checkpoint CI Gate
 
-本文件定义本仓库的 Agent CI/CD 证据门禁。它不控制 Agent 是否能写工作区，也不替代 GitHub branch protection；它定义非平凡 PR 在进入 merge 前必须留下哪些可检查证据。
+Clash-Verge-For-LC 采用简化的 repo-native Agent CI/CD 治理：Agent 可以写候选，
+CI 提供真实测试证据，GitHub 平台门禁负责阻止不合格合并。
 
-```text
-Agent 在授权上下文内写代码。
-CI 检查证据。
-Branch protection 卡住合并。
-```
-
-## 执行权限边界
-
-- 不治理：Agent 对 worktree 的本地写入权限。
-- 不治理：PR 分支 push 权限。
-- 不治理：云端 connector、账号或 secret 权限。
-- 治理：merge eligibility、evidence completeness、claim / fact consistency、PR review loop、post-merge cleanup。
+Checkpoint CI Gate 只裁决 merge eligibility、evidence completeness 与 claim/fact
+consistency；它不控制本地写权限、PR 分支 push 权限或第三方 connector 权限。
 
 ## 四个 Claim
 
-```text
-Context Claim     -> 哪些真相源和规则适用于本次任务？
-Scope Claim       -> 哪些修改被允许、被禁止、属于非目标？
-Change Claim      -> Agent 声称改了哪些文件 / 变更类型？
-Validation Claim  -> 应该用哪些验证证明本次变更正确？
-```
+- Context Claim：本次任务适用哪些真相源与核心信念。
+- Scope Claim：允许和禁止哪些变更。
+- Change Claim：实际 diff 包含哪些文件和行为。
+- Validation Claim：哪些测试与平台事实足以证明候选。
 
-## 四类对账
+## 核心信念
 
-```text
-Context Claim     vs diff class / doc rules
-Scope Claim       vs policy / Active Plan / forbidden paths
-Change Claim      vs git diff
-Validation Claim  vs validation registry / CI result
-```
+- 当前已验证保守基线是 `MIHOMO_TUN_ENABLE=0`、`MIHOMO_DNS_ENABLE=0`。
+- Mihomo controller 保持 `172.18.0.1:9090`，只在微服 bridge 可达，不暴露 LAN/WAN。
+- 浏览器通过 LazyCat 登录后的应用路由和 `/verge-api/public-config` 获取运行时配置。
+- 真实订阅、token、secret、节点凭据与目标机配置不得进入 Git、文档或 CI 日志。
+- 普通开发 CI 不触发 host、TUN、DNS、systemd、LPK、publish 或 deploy。
 
-执行口诀：Context 对真相源，Scope 对边界，Change 对 diff，Validation 对证据。
+## 当前候选
 
-## PR1 基线状态
+候选基于默认分支 `0d3610f1353a9a0242a9c54c7fd037f2e8da37d5`，从 full-history
+clone 建立。workflow 固定 plugin-git 与 Node 22 镜像 digest、设置 `pull: false`，
+抓取 target branch；PR 检查 `origin/$CI_COMMIT_TARGET_BRANCH...HEAD` 的已提交 diff，
+push 检查当前提交。
 
-- repo_harness_ready：partial。本 PR 铺设入口、Active Plan、doc-sync 规则和 repo contract；后续 PR 才接入 verifier / CI。
-- platform_gate_ready：false。required checks、branch protection 和 bypass 状态尚未在 GitHub 平台侧验证。
-- planned_required_check：`loop/checkpoints`，仅为后续平台门禁目标；本 PR 不新增 workflow 或 required check。
+仓库基线的 `pnpm lint` 有 2 个 error 与 106 个 Prettier warning。候选只移除一个
+未使用 import、消除一个无效初始赋值，并按仓库现有 Prettier 规则格式化被报告文件；
+不改变 TUN、DNS、controller、订阅或运行配置。
 
-## 非平凡 PR 最低证据
+workflow 运行 `scripts/test.sh`，并以 exact `corepack pnpm@10.29.2` 运行 frozen install、typecheck、test:unit、lint 与 build。测试步骤固定 `TZ=Asia/Shanghai`，与包含明确 `+08:00`
+时间戳的既有 parser 单元测试语义一致；不修改产品 parser 或测试期望来迎合 Agent 的 UTC 默认值。Vite production build 使用 `NODE_OPTIONS=--max-old-space-size=3072`。只读内核证据确认原任务上限 4 GiB memory + 2 GiB swap 无法同时容纳完整 Vite build；标准 Docker backend 任务上限现为 6 GiB memory + 8 GiB memory+swap，并发仍为 1。该调整不跳过 build，也不增加 workflow 权限。
+它不声明 secret、privileged、volume、Docker socket、发布或部署步骤。负向 canary
+只允许临时 committed trailing whitespace，验证失败后删除并用同一完整检查集证明修复。
+Shell syntax gate 同时覆盖 tracked `*.sh` 与两个 tracked Bash-shebang host tools
+`infra/microserver/lzc-net-safe-apply`、`scripts/mihomo-manager`；只做 `bash -n`，不执行它们。
 
-- 当前 Active Plan 路径。
-- Context / Scope / Change / Validation 四个 claim。
-- 实际 diff 与 Change Claim 对账结果。
-- 本仓库能运行的检查命令及结果。
-- Codex Review、heartbeat、repair ledger 和 post-merge cleanup 状态。
+## 当前状态
+
+- `woodpecker_runtime_ready`：由控制面仓库另行报告，本仓库文件不作证明。
+- `repo_harness_ready=false`：候选已在 Woodpecker `/repos/22` 激活；标准 Agent 资源修复后，same context `ci/woodpecker/pr/woodpecker-harness` 已完成 pipeline 7 success、pipeline 9 intentional committed-whitespace failure、pipeline 11 repair success。`552859f` 的 `NON_CLEAN / 1` finding 已修复；`2541549b637cd03f1c429b5fae6828acea635b94` 在 pipeline 15 success 后取得独立 `CLEAN / 0`。当前只剩 Review 事实同步 head 的 pipeline/增量 Review、合并后 push 与平台门禁证明。
+- `platform_gate_ready=false`：live context 已发现并完成正负 canary，但 required context 尚未安装，也未完成 failing-PR BLOCKED 证明。
+- `actions_replacement_ready=false`：本候选不修改或停用 GitHub Actions。

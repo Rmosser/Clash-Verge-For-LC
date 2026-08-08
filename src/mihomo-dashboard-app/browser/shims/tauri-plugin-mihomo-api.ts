@@ -2,7 +2,7 @@ import {
   controllerFetch,
   controllerJson,
   getLzcConfig,
-  vergeInvoke
+  vergeInvoke,
 } from "../runtime";
 
 export type BaseConfig = IConfigData;
@@ -34,19 +34,19 @@ const put = (path: string, body?: unknown) =>
   controllerFetch(path, {
     method: "PUT",
     headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined
+    body: body ? JSON.stringify(body) : undefined,
   });
 
 const deleteReq = (path: string) =>
   controllerFetch(path, {
-    method: "DELETE"
+    method: "DELETE",
   });
 
 const wsBase = () => {
   const { mihomoBaseUrl, secret } = getLzcConfig();
   const url = new URL(
     mihomoBaseUrl.replace(/^\//, ""),
-    window.location.origin.replace(/^http/, "ws")
+    window.location.origin.replace(/^http/, "ws"),
   );
   if (secret) {
     url.searchParams.set("token", secret);
@@ -71,7 +71,7 @@ export class MihomoWebSocket {
     });
     socket.addEventListener("error", () => {
       this.listeners.forEach((listener) =>
-        listener({ type: "Text", data: "Websocket error" })
+        listener({ type: "Text", data: "Websocket error" }),
       );
     });
   }
@@ -97,9 +97,13 @@ export class MihomoWebSocket {
     const socket = new WebSocket(url.toString());
     await new Promise<void>((resolve, reject) => {
       socket.addEventListener("open", () => resolve(), { once: true });
-      socket.addEventListener("error", () => reject(new Error("websocket connection failed")), {
-        once: true
-      });
+      socket.addEventListener(
+        "error",
+        () => reject(new Error("websocket connection failed")),
+        {
+          once: true,
+        },
+      );
     });
     return new MihomoWebSocket(socket);
   }
@@ -128,7 +132,8 @@ export class MihomoWebSocket {
   }
 }
 
-export const getVersion = () => controllerJson<{ version: string; meta?: boolean }>("/version");
+export const getVersion = () =>
+  controllerJson<{ version: string; meta?: boolean }>("/version");
 export const getBaseConfig = async () => {
   const data = await controllerJson<BaseConfig>("/configs");
   return {
@@ -136,7 +141,7 @@ export const getBaseConfig = async () => {
     mixedPort: data["mixed-port"],
     socksPort: data["socks-port"],
     redirPort: data["redir-port"],
-    tproxyPort: data["tproxy-port"]
+    tproxyPort: data["tproxy-port"],
   };
 };
 export const getRules = async (): Promise<RulesResponse> => {
@@ -144,16 +149,19 @@ export const getRules = async (): Promise<RulesResponse> => {
   return { rules: data.rules ?? [] };
 };
 export const getRuleProviders = async () => {
-  const data = await controllerJson<{ providers: Record<string, RuleProvider> }>(
-    "/providers/rules"
-  );
+  const data = await controllerJson<{
+    providers: Record<string, RuleProvider>;
+  }>("/providers/rules");
   return data.providers ?? {};
 };
 export const getProxies = () =>
   controllerJson<{ proxies: Record<string, IProxyItem> }>("/proxies");
 export const getProxyProviders = () =>
-  controllerJson<{ providers: Record<string, ProxyProvider> }>("/providers/proxies");
-export const getConnections = () => controllerJson<IConnections>("/connections");
+  controllerJson<{ providers: Record<string, ProxyProvider> }>(
+    "/providers/proxies",
+  );
+export const getConnections = () =>
+  controllerJson<IConnections>("/connections");
 export const closeAllConnections = async () => {
   await deleteReq("/connections");
 };
@@ -176,7 +184,9 @@ export const updateRuleProvider = async (provider: string) => {
   }
 };
 export const healthcheckProxyProvider = async (provider: string) => {
-  const response = await put(`/providers/proxies/${encodeName(provider)}/healthcheck`);
+  const response = await put(
+    `/providers/proxies/${encodeName(provider)}/healthcheck`,
+  );
   if (!response.ok) {
     throw new Error(await response.text());
   }
@@ -184,12 +194,12 @@ export const healthcheckProxyProvider = async (provider: string) => {
 export const delayProxyByName = async (
   name: string,
   url = "http://cp.cloudflare.com",
-  timeout = 10000
+  timeout = 10000,
 ): Promise<ProxyDelay> =>
   vergeInvoke<DelayProbeResult>("clash_api_get_proxy_delay", {
     name,
     url,
-    timeout
+    timeout,
   }).then((result) => ({
     ...result,
     delay:
@@ -197,7 +207,7 @@ export const delayProxyByName = async (
         ? result.delay
         : typeof result.latencyMs === "number"
           ? result.latencyMs
-          : 1_000_000
+          : 1_000_000,
   }));
 export const delayGroup = delayProxyByName;
 export const updateGeo = async () => {

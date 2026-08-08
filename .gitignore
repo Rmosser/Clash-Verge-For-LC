@@ -34,6 +34,7 @@ dist/
 src/mihomo-dashboard-app/dist/**
 !src/mihomo-dashboard-app/dist/README.md
 .pnpm-store/
+.eslintcache
 .next/
 
 # Runtime and tooling artifacts

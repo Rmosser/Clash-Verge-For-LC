@@ -20,6 +20,18 @@
 - 不要把本文件理解为绕过 PR、review、checks 或 branch protection 的授权；合并资格由证据门禁和平台门禁共同决定。
 - 主 Agent 负责编排、范围定义和验收；subagent 只在授权范围内执行，不自行扩大 PR 阶段，不独立提交、push、merge 或关闭 heartbeat。
 
+## Woodpecker 开发与证据边界
+
+- 非平凡任务在 `docs/exec-plans/active/` 保持且仅保持一个当前 Active Plan。
+- 当前运行真相保持 `MIHOMO_TUN_ENABLE=0`、`MIHOMO_DNS_ENABLE=0`；普通开发 CI 不修改
+  host、TUN、DNS、systemd、LPK 或 deploy 状态。
+- Mihomo controller 只允许监听 `172.18.0.1:9090` 微服 bridge，不向 LAN/WAN 暴露。
+- CI 不读取真实订阅、token、secret、节点配置或目标机状态；PR workflow 不获得 secret，
+  不使用 privileged、volume、Docker socket，也不发布或部署。
+- 真实产品检查不可被语法检查替代；Woodpecker 候选运行 frozen install、typecheck、
+  unit、lint 与 build。
+- `repo_harness_ready` 与 `platform_gate_ready` 分开报告；仓库文件不能证明 GitHub 平台门禁。
+
 ## 真相入口
 
 - 文档索引：`docs/index.md`

@@ -1,9 +1,6 @@
 export {};
 
-import type {
-  RuntimeContractWarning,
-  RuntimeInfo,
-} from "./runtime";
+import type { RuntimeContractWarning, RuntimeInfo } from "./runtime";
 
 declare global {
   interface IConfigData {

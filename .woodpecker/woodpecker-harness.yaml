@@ -1,0 +1,52 @@
+clone:
+  git:
+    image: 127.0.0.1:17892/woodpecker/plugin-git@sha256:34f642370d1f0b251aa5e4bf2244ed66db8bc82e246ca5d7e957ad8d7310d61d
+    pull: false
+    settings:
+      depth: 0
+      fetch-target-branch: true
+      lfs: false
+      partial: false
+      recursive: false
+      tags: false
+      target-branch: main
+
+labels:
+  backend: docker
+  hostname: rainierdev-docker-01
+
+when:
+  - event: pull_request
+    branch: main
+  - event: push
+    branch: main
+
+steps:
+  - name: woodpecker-harness
+    image: 127.0.0.1:17892/woodpecker/node22@sha256:4583d6bdffc51884b52bade9dfdce02223c74e3986af22a1990687178b04fda7
+    pull: false
+    environment:
+      NODE_OPTIONS: --max-old-space-size=3072
+      TZ: Asia/Shanghai
+    commands:
+      - |
+        if test "$CI_PIPELINE_EVENT" = "pull_request"; then
+          test -n "$CI_COMMIT_TARGET_BRANCH"
+          git rev-parse --verify "origin/$CI_COMMIT_TARGET_BRANCH"
+          git merge-base "origin/$CI_COMMIT_TARGET_BRANCH" HEAD >/dev/null
+          git diff --check "origin/$CI_COMMIT_TARGET_BRANCH...HEAD"
+        elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+          git diff --check HEAD^ HEAD
+        else
+          git diff-tree --check --root -r HEAD
+        fi
+      - git ls-files -z -- '*.sh' | xargs -0 -r -n 1 bash -n
+      - bash -n infra/microserver/lzc-net-safe-apply scripts/mihomo-manager
+      - node -e 'JSON.parse(require("node:fs").readFileSync(".harness/repo-contract.json", "utf8"))'
+      - node -e 'JSON.parse(require("node:fs").readFileSync("docs/doc-sync-rules.json", "utf8"))'
+      - bash scripts/test.sh
+      - corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app install --frozen-lockfile
+      - corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app typecheck
+      - corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app test:unit
+      - corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app lint
+      - corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app build
