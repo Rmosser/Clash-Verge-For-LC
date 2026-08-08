@@ -32,7 +32,7 @@
     }
   },
   "development_ci": {
-    "state": "activated_canary_pending",
+    "state": "canary_validated_review_pending",
     "woodpecker_repo_id": 22,
     "activated": true,
     "workflow_installed": true,
@@ -58,11 +58,24 @@
     "agent_task_memory_swap_bytes": 8589934592,
     "node_heap_limit_mib": 3072,
     "test_timezone": "Asia/Shanghai",
-    "live_context": null,
+    "live_context": "ci/woodpecker/pr/woodpecker-harness",
     "canary_evidence": {
-      "initial_success": null,
-      "intentional_failure": null,
-      "repair_success": null
+      "initial_success": {
+        "commit_sha": "d7f2a8a531ab9730628f352f1cb5178ba7002288",
+        "pipeline_url": "https://ci.rainierlab.net/repos/22/pipeline/7/1",
+        "state": "success"
+      },
+      "intentional_failure": {
+        "commit_sha": "eff0b2123930661d42e5449540f9c13613734906",
+        "pipeline_url": "https://ci.rainierlab.net/repos/22/pipeline/9/1",
+        "state": "failure",
+        "fixture": "committed_trailing_whitespace"
+      },
+      "repair_success": {
+        "commit_sha": "62a52fdcc11178452d01b5cfd47562c260e43655",
+        "pipeline_url": "https://ci.rainierlab.net/repos/22/pipeline/11/1",
+        "state": "success"
+      }
     },
     "checks": [
       "committed_pr_or_push_diff_check",
@@ -81,9 +94,9 @@
     "review_supervision_model": "trusted_agent_interpreted"
   },
   "platform_gate": {
-    "status": "live_context_pending",
+    "status": "current_head_review_pending",
     "platform_gate_ready": false,
-    "live_context_discovered": false,
+    "live_context_discovered": true,
     "required_context_installed": false,
     "requires": [
       "github_required_checks",

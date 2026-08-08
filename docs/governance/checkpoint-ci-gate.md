@@ -40,6 +40,6 @@ workflow 运行 `scripts/test.sh`，并以 exact `corepack pnpm@10.29.2` 运行 
 ## 当前状态
 
 - `woodpecker_runtime_ready`：由控制面仓库另行报告，本仓库文件不作证明。
-- `repo_harness_ready=false`：候选已在 Woodpecker `/repos/22` 激活；前五次实际执行依次暴露 pnpm 版本、UTC 时区、Vite 默认堆上限与 4 GiB 任务资源不足，标准 Agent 资源修复已完成，尚未完成真实 success/failure/repair canary、独立 current-head Review 和合并后验证。
-- `platform_gate_ready=false`：live context 尚未完成正负 canary，且未安装 required context。
+- `repo_harness_ready=false`：候选已在 Woodpecker `/repos/22` 激活；标准 Agent 资源修复后，same context `ci/woodpecker/pr/woodpecker-harness` 已完成 pipeline 7 success、pipeline 9 intentional committed-whitespace failure、pipeline 11 repair success。独立 current-head Review 与合并后 push 尚待完成。
+- `platform_gate_ready=false`：live context 已发现并完成正负 canary，但 required context 尚未安装，也未完成 failing-PR BLOCKED 证明。
 - `actions_replacement_ready=false`：本候选不修改或停用 GitHub Actions。

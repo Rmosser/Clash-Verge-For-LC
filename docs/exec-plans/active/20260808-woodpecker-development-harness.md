@@ -48,9 +48,9 @@
 
 ## 文档影响
 
-- 当前为 `activated_canary_pending`：`repo_harness_ready=false`、
+- 当前为 `canary_validated_review_pending`：`repo_harness_ready=false`、
   `platform_gate_ready=false`、`actions_replacement_ready=false`。
-- live activation 已完成；success/failure/repair canary 与 current-head Review 仍由主 Agent执行。
+- live activation 与 success/failure/repair canary 已完成；current-head Review、合并后 push 和 required gate proof 仍由主 Agent执行。
 
 ## Verification
 
@@ -82,10 +82,10 @@
 
 ## Canary Plan
 
-- Initial success：pending。
-- Intentional failure：pending；只允许 committed trailing-whitespace fixture，不修改产品测试或运行配置。
-- Repair success：pending；删除 fixture 后重复完整真实检查。
-- Live context discovery：pending。
+- Initial success：`d7f2a8a531ab9730628f352f1cb5178ba7002288`，pipeline 7 success。
+- Intentional failure：`eff0b2123930661d42e5449540f9c13613734906`，pipeline 9 failure；唯一临时变更为 committed trailing whitespace，不修改产品测试或运行配置。
+- Repair success：`62a52fdcc11178452d01b5cfd47562c260e43655`，pipeline 11 success；fixture 已完全删除。
+- Live context discovery：三次均为 `ci/woodpecker/pr/woodpecker-harness`；GitHub commit status 与 Woodpecker URL 一致。
 
 ## Agent Delegation
 
@@ -93,13 +93,13 @@
 - Delegated scope: clean full-history clone、lint 修复、候选 workflow、治理同步、
   本地/archive 验证、签名提交、push 与 ready PR
 - Forbidden scope: activation、merge、ruleset/required context、host/runtime、TUN/DNS、LPK/deploy、真实凭据
-- Subagent result: pending main-agent diff review
-- Main agent review: `pending`
+- Subagent result: candidate preparation complete; main Agent repaired live pnpm/timezone/resource findings and completed canary
+- Main agent review: `runtime_and_canary_complete_independent_current_head_review_pending`
 
 ## Codex Review
 
 - Required: yes, at exact live PR head after canary evidence sync
-- review_target_head_sha: `pending`
+- review_target_head_sha: `pending_current_head_after_evidence_sync`
 - Review result: `pending`
 - Review supervision model: `trusted_agent_interpreted`
 
@@ -114,6 +114,7 @@
 | 4 | third pipeline passed unit and lint, then exhausted Node's default heap during real Vite build | pipeline 3 proved 27+7 unit tests and zero-warning lint, then exited 134 at about 2 GiB heap during `vite build`; host showed 15 GiB RAM and Docker inspect showed no inner Agent limit, while the enclosing cgroup was not yet observed | initially set `NODE_OPTIONS=--max-old-space-size=4096`; pipeline 4 then exposed the outer limit; no build or validation step removed; not counted as intentional canary | bound the heap to the actual enclosing cgroup |
 | 5 | fourth pipeline passed unit and lint, then hit the enclosing cgroup rather than host capacity | pipeline 4 with a 4096 MiB Node heap exited 137; kernel evidence bound its container to 4 GiB memory + 2 GiB swap and recorded the Node OOM kill near 4 GiB RSS | reduced the Node old-space ceiling to 3072 MiB to leave cgroup headroom; full build remains required; not counted as intentional canary | rerun the complete real check set |
 | 6 | fifth actual run still exceeded the explicit 4 GiB task budget | pipeline 6 passed committed diff, shell/JSON, install, typecheck, 27+7 unit tests and zero-warning lint, then received an OOM kill in the full Vite build | backed up the standard override; raised only Docker backend task memory to 6 GiB and memory+swap to 8 GiB; concurrency remains 1; Agent healthy and public service unchanged; not counted as intentional canary | rerun the complete real check set |
+| 7 | complete canary after standard resource repair | pipeline 7 success at `d7f2a8a`; pipeline 9 intentional committed-whitespace failure at `eff0b21`; pipeline 11 repair success at `62a52fd`; all use the same live context | success/failure/repair evidence complete; fixture absent | sync evidence, rerun current head, request independent Review |
 
 ## Post-Merge Cleanup
 
