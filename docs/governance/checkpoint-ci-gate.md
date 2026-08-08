@@ -36,10 +36,12 @@ workflow 运行 `scripts/test.sh`，并以 exact `corepack pnpm@10.29.2` 运行 
 时间戳的既有 parser 单元测试语义一致；不修改产品 parser 或测试期望来迎合 Agent 的 UTC 默认值。Vite production build 使用 `NODE_OPTIONS=--max-old-space-size=3072`。只读内核证据确认原任务上限 4 GiB memory + 2 GiB swap 无法同时容纳完整 Vite build；标准 Docker backend 任务上限现为 6 GiB memory + 8 GiB memory+swap，并发仍为 1。该调整不跳过 build，也不增加 workflow 权限。
 它不声明 secret、privileged、volume、Docker socket、发布或部署步骤。负向 canary
 只允许临时 committed trailing whitespace，验证失败后删除并用同一完整检查集证明修复。
+Shell syntax gate 同时覆盖 tracked `*.sh` 与两个 tracked Bash-shebang host tools
+`infra/microserver/lzc-net-safe-apply`、`scripts/mihomo-manager`；只做 `bash -n`，不执行它们。
 
 ## 当前状态
 
 - `woodpecker_runtime_ready`：由控制面仓库另行报告，本仓库文件不作证明。
-- `repo_harness_ready=false`：候选已在 Woodpecker `/repos/22` 激活；标准 Agent 资源修复后，same context `ci/woodpecker/pr/woodpecker-harness` 已完成 pipeline 7 success、pipeline 9 intentional committed-whitespace failure、pipeline 11 repair success。独立 current-head Review 与合并后 push 尚待完成。
+- `repo_harness_ready=false`：候选已在 Woodpecker `/repos/22` 激活；标准 Agent 资源修复后，same context `ci/woodpecker/pr/woodpecker-harness` 已完成 pipeline 7 success、pipeline 9 intentional committed-whitespace failure、pipeline 11 repair success。`552859f` 的独立 Review 因两个 extensionless Bash 工具未纳入语法门禁而 `NON_CLEAN / 1`；修复已实现，current-head pipeline、fresh Review 与合并后 push 尚待完成。
 - `platform_gate_ready=false`：live context 已发现并完成正负 canary，但 required context 尚未安装，也未完成 failing-PR BLOCKED 证明。
 - `actions_replacement_ready=false`：本候选不修改或停用 GitHub Actions。

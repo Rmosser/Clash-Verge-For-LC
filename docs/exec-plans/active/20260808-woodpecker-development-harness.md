@@ -48,7 +48,7 @@
 
 ## 文档影响
 
-- 当前为 `canary_validated_review_pending`：`repo_harness_ready=false`、
+- 当前为 `canary_validated_review_repair_pending`：`repo_harness_ready=false`、
   `platform_gate_ready=false`、`actions_replacement_ready=false`。
 - live activation 与 success/failure/repair canary 已完成；current-head Review、合并后 push 和 required gate proof 仍由主 Agent执行。
 
@@ -94,13 +94,14 @@
   本地/archive 验证、签名提交、push 与 ready PR
 - Forbidden scope: activation、merge、ruleset/required context、host/runtime、TUN/DNS、LPK/deploy、真实凭据
 - Subagent result: candidate preparation complete; main Agent repaired live pnpm/timezone/resource findings and completed canary
-- Main agent review: `runtime_and_canary_complete_independent_current_head_review_pending`
+- Main agent review: `extensionless_bash_coverage_repair_implemented_current_head_validation_and_fresh_review_pending`
 
 ## Codex Review
 
 - Required: yes, at exact live PR head after canary evidence sync
-- review_target_head_sha: `pending_current_head_after_evidence_sync`
-- Review result: `pending`
+- reviewed_head_sha: `552859fac00dc7670ffebdac240c11387327541d`
+- Review result: `NON_CLEAN / 1`; the workflow covered tracked `*.sh` files but omitted the tracked Bash-shebang host tools `infra/microserver/lzc-net-safe-apply` and `scripts/mihomo-manager`
+- Repair: added explicit `bash -n` coverage for both extensionless tools and aligned the machine-readable check name; current-head pipeline and fresh Review pending
 - Review supervision model: `trusted_agent_interpreted`
 
 ## Repair Ledger
@@ -115,6 +116,7 @@
 | 5 | fourth pipeline passed unit and lint, then hit the enclosing cgroup rather than host capacity | pipeline 4 with a 4096 MiB Node heap exited 137; kernel evidence bound its container to 4 GiB memory + 2 GiB swap and recorded the Node OOM kill near 4 GiB RSS | reduced the Node old-space ceiling to 3072 MiB to leave cgroup headroom; full build remains required; not counted as intentional canary | rerun the complete real check set |
 | 6 | fifth actual run still exceeded the explicit 4 GiB task budget | pipeline 6 passed committed diff, shell/JSON, install, typecheck, 27+7 unit tests and zero-warning lint, then received an OOM kill in the full Vite build | backed up the standard override; raised only Docker backend task memory to 6 GiB and memory+swap to 8 GiB; concurrency remains 1; Agent healthy and public service unchanged; not counted as intentional canary | rerun the complete real check set |
 | 7 | complete canary after standard resource repair | pipeline 7 success at `d7f2a8a`; pipeline 9 intentional committed-whitespace failure at `eff0b21`; pipeline 11 repair success at `62a52fd`; all use the same live context | success/failure/repair evidence complete; fixture absent | sync evidence, rerun current head, request independent Review |
+| 8 | exact-head Review found two extensionless Bash host tools outside the syntax gate | Review of `552859fac00dc7670ffebdac240c11387327541d` was `NON_CLEAN / 1`; both files are tracked, executable, and use a Bash shebang | added explicit `bash -n` coverage without executing the host tools; aligned contract evidence | rerun the complete current-head pipeline and request a fresh exact-head Review |
 
 ## Post-Merge Cleanup
 

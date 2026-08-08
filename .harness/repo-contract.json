@@ -32,7 +32,7 @@
     }
   },
   "development_ci": {
-    "state": "canary_validated_review_pending",
+    "state": "canary_validated_review_repair_pending",
     "woodpecker_repo_id": 22,
     "activated": true,
     "workflow_installed": true,
@@ -79,7 +79,7 @@
     },
     "checks": [
       "committed_pr_or_push_diff_check",
-      "tracked_shell_bash_syntax",
+      "tracked_shell_and_extensionless_bash_syntax",
       "governance_json_parse",
       "frozen_pnpm_install",
       "typescript_typecheck",
@@ -90,11 +90,17 @@
   },
   "codex_review": {
     "required_for_non_trivial_pr": true,
-    "latest": null,
+    "latest": {
+      "reviewed_head_sha": "552859fac00dc7670ffebdac240c11387327541d",
+      "decision": "NON_CLEAN",
+      "findings_count": 1,
+      "finding": "extensionless_bash_host_tools_missing_from_syntax_gate",
+      "repair_status": "implemented_pending_live_current_head_validation_and_fresh_review"
+    },
     "review_supervision_model": "trusted_agent_interpreted"
   },
   "platform_gate": {
-    "status": "current_head_review_pending",
+    "status": "current_head_review_repair_pending",
     "platform_gate_ready": false,
     "live_context_discovered": true,
     "required_context_installed": false,
