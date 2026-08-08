@@ -42,7 +42,7 @@
 - workflow 仅响应面向 `main` 的 pull_request 与 push。
 - plugin-git 与 Node 22 镜像固定到 digest，`pull: false`，完整 clone 并抓取 target branch。
 - PR 检查 `origin/$CI_COMMIT_TARGET_BRANCH...HEAD` 的已提交 diff；push 检查当前提交。
-- 以 exact `corepack pnpm@10.29.2` 运行 `scripts/test.sh` 之外的 frozen install、typecheck、test:unit、lint 与 build；测试环境固定 `TZ=Asia/Shanghai`，保持既有显式 `+08:00` 日志解析用例的语义。
+- 以 exact `corepack pnpm@10.29.2` 运行 `scripts/test.sh` 之外的 frozen install、typecheck、test:unit、lint 与 build；测试环境固定 `TZ=Asia/Shanghai`，保持既有显式 `+08:00` 日志解析用例的语义；Vite build 使用 4096 MiB Node heap，在宿主 15 GiB RAM、约 11 GiB available 且 Agent 无 memory limit 的边界内完整执行。
 - 不声明 secret、privileged、volume、Docker socket、publish 或 deploy。
 - 本地 worktree 与 clean `git archive` 验证均通过，不修改运行配置。
 
@@ -108,6 +108,7 @@
 | 1 | live activation | `/repos/22`; PR enabled; deploy/trusted capabilities disabled | complete | trigger the first real PR pipeline |
 | 2 | initial pipeline failed before tests | pipeline 1 invoked Corepack's default pnpm 11.20.0 while the project requires 10.29.2 | repaired workflow to invoke exact `corepack pnpm@10.29.2`; not counted as intentional canary | rerun the complete real check set |
 | 3 | second pipeline reached real unit tests, then failed on Agent timezone drift | pipeline 2 installed 597 dependencies and passed typecheck, but the Agent UTC default rendered two explicit `+08:00` log timestamps eight hours earlier | fixed the test step to `TZ=Asia/Shanghai` without changing product parser or test expectations; not counted as intentional canary | rerun the complete real check set |
+| 4 | third pipeline passed unit and lint, then exhausted Node's default heap during real Vite build | pipeline 3 proved 27+7 unit tests and zero-warning lint, then exited 134 at about 2 GiB heap during `vite build`; host had 15 GiB RAM, about 11 GiB available, and the Agent had no memory limit | set `NODE_OPTIONS=--max-old-space-size=4096`; no build or validation step removed; not counted as intentional canary | rerun the complete real check set |
 
 ## Post-Merge Cleanup
 

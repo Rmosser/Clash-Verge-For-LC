@@ -54,6 +54,7 @@
     "runtime_mutation": false,
     "test_data_policy": "source_tree_only_no_host_runtime_or_real_credentials",
     "package_manager_runtime": "corepack_pnpm_10_29_2",
+    "node_heap_limit_mib": 4096,
     "test_timezone": "Asia/Shanghai",
     "live_context": null,
     "canary_evidence": {
