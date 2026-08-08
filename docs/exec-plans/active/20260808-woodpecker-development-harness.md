@@ -42,7 +42,7 @@
 - workflow 仅响应面向 `main` 的 pull_request 与 push。
 - plugin-git 与 Node 22 镜像固定到 digest，`pull: false`，完整 clone 并抓取 target branch。
 - PR 检查 `origin/$CI_COMMIT_TARGET_BRANCH...HEAD` 的已提交 diff；push 检查当前提交。
-- 以 exact `corepack pnpm@10.29.2` 运行 `scripts/test.sh` 之外的 frozen install、typecheck、test:unit、lint 与 build。
+- 以 exact `corepack pnpm@10.29.2` 运行 `scripts/test.sh` 之外的 frozen install、typecheck、test:unit、lint 与 build；测试环境固定 `TZ=Asia/Shanghai`，保持既有显式 `+08:00` 日志解析用例的语义。
 - 不声明 secret、privileged、volume、Docker socket、publish 或 deploy。
 - 本地 worktree 与 clean `git archive` 验证均通过，不修改运行配置。
 
@@ -107,6 +107,7 @@
 | 0 | baseline lint debt | 2 errors + 106 warnings | repaired locally | run full worktree and clean archive verification |
 | 1 | live activation | `/repos/22`; PR enabled; deploy/trusted capabilities disabled | complete | trigger the first real PR pipeline |
 | 2 | initial pipeline failed before tests | pipeline 1 invoked Corepack's default pnpm 11.20.0 while the project requires 10.29.2 | repaired workflow to invoke exact `corepack pnpm@10.29.2`; not counted as intentional canary | rerun the complete real check set |
+| 3 | second pipeline reached real unit tests, then failed on Agent timezone drift | pipeline 2 installed 597 dependencies and passed typecheck, but the Agent UTC default rendered two explicit `+08:00` log timestamps eight hours earlier | fixed the test step to `TZ=Asia/Shanghai` without changing product parser or test expectations; not counted as intentional canary | rerun the complete real check set |
 
 ## Post-Merge Cleanup
 

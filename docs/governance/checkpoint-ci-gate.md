@@ -32,13 +32,14 @@ push 检查当前提交。
 未使用 import、消除一个无效初始赋值，并按仓库现有 Prettier 规则格式化被报告文件；
 不改变 TUN、DNS、controller、订阅或运行配置。
 
-workflow 运行 `scripts/test.sh`，并以 exact `corepack pnpm@10.29.2` 运行 frozen install、typecheck、test:unit、lint 与 build。
+workflow 运行 `scripts/test.sh`，并以 exact `corepack pnpm@10.29.2` 运行 frozen install、typecheck、test:unit、lint 与 build。测试步骤固定 `TZ=Asia/Shanghai`，与包含明确 `+08:00`
+时间戳的既有 parser 单元测试语义一致；不修改产品 parser 或测试期望来迎合 Agent 的 UTC 默认值。
 它不声明 secret、privileged、volume、Docker socket、发布或部署步骤。负向 canary
 只允许临时 committed trailing whitespace，验证失败后删除并用同一完整检查集证明修复。
 
 ## 当前状态
 
 - `woodpecker_runtime_ready`：由控制面仓库另行报告，本仓库文件不作证明。
-- `repo_harness_ready=false`：候选已在 Woodpecker `/repos/22` 激活，但尚未经过真实 canary、独立 current-head Review 和合并后验证。
-- `platform_gate_ready=false`：尚未发现 live context，也未安装 required context。
+- `repo_harness_ready=false`：候选已在 Woodpecker `/repos/22` 激活；前两次执行分别暴露 pnpm 版本和 UTC 时区漂移，尚未完成真实 success/failure/repair canary、独立 current-head Review 和合并后验证。
+- `platform_gate_ready=false`：live context 尚未完成正负 canary，且未安装 required context。
 - `actions_replacement_ready=false`：本候选不修改或停用 GitHub Actions。

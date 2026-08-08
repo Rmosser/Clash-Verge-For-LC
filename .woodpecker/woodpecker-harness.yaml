@@ -25,6 +25,8 @@ steps:
   - name: woodpecker-harness
     image: 127.0.0.1:17892/woodpecker/node22@sha256:4583d6bdffc51884b52bade9dfdce02223c74e3986af22a1990687178b04fda7
     pull: false
+    environment:
+      TZ: Asia/Shanghai
     commands:
       - |
         if test "$CI_PIPELINE_EVENT" = "pull_request"; then
