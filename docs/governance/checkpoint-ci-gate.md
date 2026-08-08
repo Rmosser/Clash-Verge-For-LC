@@ -39,6 +39,6 @@ workflow 运行 `scripts/test.sh`、frozen pnpm install、typecheck、test:unit�
 ## 当前状态
 
 - `woodpecker_runtime_ready`：由控制面仓库另行报告，本仓库文件不作证明。
-- `repo_harness_ready=false`：候选尚未经过真实 canary、独立 current-head Review 和合并后验证。
+- `repo_harness_ready=false`：候选已在 Woodpecker `/repos/22` 激活，但尚未经过真实 canary、独立 current-head Review 和合并后验证。
 - `platform_gate_ready=false`：尚未发现 live context，也未安装 required context。
 - `actions_replacement_ready=false`：本候选不修改或停用 GitHub Actions。

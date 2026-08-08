@@ -32,9 +32,9 @@
     }
   },
   "development_ci": {
-    "state": "candidate_canary_pending",
-    "woodpecker_repo_id": null,
-    "activated": false,
+    "state": "activated_canary_pending",
+    "woodpecker_repo_id": 22,
+    "activated": true,
     "workflow_installed": true,
     "workflow_installed_on_default_branch": false,
     "workflow_path": ".woodpecker/woodpecker-harness.yaml",

@@ -25,7 +25,7 @@
 ## Non-Goals
 
 - 不复用旧 PR #5/#6；它们只作为历史参考。
-- 不激活 Woodpecker，不修改 GitHub required context、branch protection 或 ruleset。
+- Woodpecker `/repos/22` 已由主 Agent 激活；本实现分支不再修改 activation 设置，且不修改 GitHub required context、branch protection 或 ruleset。
 - 不修改或部署 host-native 运行时，不启用 TUN/DNS，不构建或安装 LPK。
 - 不访问真实订阅、token、secret、节点配置、宿主机 controller 或目标机。
 
@@ -48,9 +48,9 @@
 
 ## 文档影响
 
-- 当前为 `candidate_canary_pending`：`repo_harness_ready=false`、
+- 当前为 `activated_canary_pending`：`repo_harness_ready=false`、
   `platform_gate_ready=false`、`actions_replacement_ready=false`。
-- live activation、success/failure/repair canary 与 current-head Review 均由主 Agent 后续执行。
+- live activation 已完成；success/failure/repair canary 与 current-head Review 仍由主 Agent执行。
 
 ## Verification
 
@@ -105,6 +105,7 @@
 | Attempt | Finding | Evidence | Result | Next action |
 | --- | --- | --- | --- | --- |
 | 0 | baseline lint debt | 2 errors + 106 warnings | repaired locally | run full worktree and clean archive verification |
+| 1 | live activation | `/repos/22`; PR enabled; deploy/trusted capabilities disabled | complete | trigger the first real PR pipeline |
 
 ## Post-Merge Cleanup
 
