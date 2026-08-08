@@ -2,14 +2,12 @@
   "contract_version": "agent-cicd-checkpoint-gate-v0",
   "repo": "Rmosser/Clash-Verge-For-LC",
   "mode": "repo-native-agent-cicd",
-  "purpose": "LazyCat-adapted Mihomo and Clash Verge management service",
+  "primary_governance_language": "zh-CN",
   "boundary": {
     "controls": [
       "merge_eligibility",
       "evidence_completeness",
-      "claim_fact_consistency",
-      "pr_review_loop",
-      "post_merge_cleanup"
+      "claim_fact_consistency"
     ],
     "does_not_control": [
       "agent_write_access_to_worktree",
@@ -17,17 +15,9 @@
       "agent_cloud_connector_access"
     ]
   },
-  "entrypoints": {
-    "agent_entrypoint": "AGENTS.md",
-    "docs_index": "docs/index.md",
-    "checkpoint_gate": "docs/governance/checkpoint-ci-gate.md",
-    "plan_template": "docs/exec-plans/template.md",
-    "active_plans": "docs/exec-plans/active",
-    "doc_sync_rules": "docs/doc-sync-rules.json"
-  },
   "checkpoint_gate": {
     "governance_doc": "docs/governance/checkpoint-ci-gate.md",
-    "planned_required_check": "loop/checkpoints",
+    "planned_required_check": "ci/woodpecker/pr/woodpecker-harness",
     "claims": [
       "context_claim",
       "scope_claim",
@@ -41,29 +31,59 @@
       "validation_claim": "validation_registry_and_ci_result"
     }
   },
-  "codex_review": {
-    "required_for_non_trivial_pr": true,
-    "active_plan_records": [
-      "review_target_head_sha",
-      "heartbeat",
-      "repair_tier",
-      "repair_attempts",
-      "repair_ledger",
-      "post_merge_cleanup"
+  "development_ci": {
+    "state": "candidate_canary_pending",
+    "woodpecker_repo_id": null,
+    "activated": false,
+    "workflow_installed": true,
+    "workflow_installed_on_default_branch": false,
+    "workflow_path": ".woodpecker/woodpecker-harness.yaml",
+    "agent_selector": {
+      "backend": "docker",
+      "hostname": "rainierdev-docker-01"
+    },
+    "events": [
+      "pull_request:main",
+      "push:main"
     ],
-    "max_attempts_per_tier": 2,
-    "escalation_path": [
-      "low",
-      "medium",
-      "high",
-      "xhigh",
-      "human"
+    "secret_access": false,
+    "privileged": false,
+    "volumes": false,
+    "docker_socket": false,
+    "publish_or_deploy": false,
+    "runtime_mutation": false,
+    "test_data_policy": "source_tree_only_no_host_runtime_or_real_credentials",
+    "live_context": null,
+    "canary_evidence": {
+      "initial_success": null,
+      "intentional_failure": null,
+      "repair_success": null
+    },
+    "checks": [
+      "committed_pr_or_push_diff_check",
+      "tracked_shell_bash_syntax",
+      "governance_json_parse",
+      "frozen_pnpm_install",
+      "typescript_typecheck",
+      "vitest_unit",
+      "eslint_zero_warning",
+      "vite_production_build"
     ]
   },
+  "codex_review": {
+    "required_for_non_trivial_pr": true,
+    "latest": null,
+    "review_supervision_model": "trusted_agent_interpreted"
+  },
   "platform_gate": {
-    "status": "not_verified",
-    "required_checks_verified": false,
-    "branch_protection_verified": false,
-    "admin_bypass_verified": false
+    "status": "live_context_pending",
+    "platform_gate_ready": false,
+    "live_context_discovered": false,
+    "required_context_installed": false,
+    "requires": [
+      "github_required_checks",
+      "branch_protection_or_ruleset",
+      "failing_pr_or_platform_read_evidence"
+    ]
   }
 }

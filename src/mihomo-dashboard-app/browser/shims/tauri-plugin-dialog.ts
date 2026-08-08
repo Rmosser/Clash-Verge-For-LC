@@ -45,9 +45,9 @@ export const open = async (options?: OpenOptions) =>
           return;
         }
         const tokens = registerFiles(files);
-        resolve(options?.multiple ? tokens : tokens[0] ?? null);
+        resolve(options?.multiple ? tokens : (tokens[0] ?? null));
       },
-      { once: true }
+      { once: true },
     );
     input.click();
   });

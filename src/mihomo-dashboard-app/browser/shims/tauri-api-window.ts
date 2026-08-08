@@ -70,7 +70,7 @@ class BrowserWindowHandle {
   async onResized(callback: (event: ResizePayload) => void) {
     const handler = () =>
       callback({
-        payload: { width: window.innerWidth, height: window.innerHeight }
+        payload: { width: window.innerWidth, height: window.innerHeight },
       });
     window.addEventListener("resize", handler);
     return () => window.removeEventListener("resize", handler);

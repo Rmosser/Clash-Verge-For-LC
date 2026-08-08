@@ -18,7 +18,14 @@
 - [docs/exec-plans/completed/](exec-plans/completed/)：已完成或被取代计划归档目录。
 - [docs/doc-sync-rules.json](doc-sync-rules.json)：文档同步和入口链接规则。
 - [.harness/repo-contract.json](../.harness/repo-contract.json)：仓库治理契约，供后续 verifier / CI 读取。
+- [当前 Active Plan](exec-plans/active/20260808-woodpecker-development-harness.md)：
+  Clash-Verge-For-LC 的 Woodpecker 开发 CI 候选与验证证据。
+- [Woodpecker workflow](../.woodpecker/woodpecker-harness.yaml)：无 secret 的 PR/push 开发检查。
 
 ## 边界
 
 仓库文件负责暴露真相、计划、证据和检查要求。GitHub required checks、branch protection 和管理员 bypass 状态必须在平台侧单独验证，不能仅由仓库文档声明为已生效。
+
+当前候选状态为 `candidate_canary_pending`：尚未激活 Woodpecker，
+`repo_harness_ready=false`、`platform_gate_ready=false`、
+`actions_replacement_ready=false`。

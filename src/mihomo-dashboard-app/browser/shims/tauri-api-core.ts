@@ -8,15 +8,14 @@ import {
   getLzcConfig,
   isWebCommandResult,
   isLzcWebRuntime,
-  readRegisteredBuffer,
   resolveAppFileUrl,
   saveBlob,
   textToBase64,
-  vergeInvoke
+  vergeInvoke,
 } from "../runtime";
 
 const maybeSerializeRegisteredPath = async (
-  value: unknown
+  value: unknown,
 ): Promise<unknown> => {
   if (typeof value === "string") {
     const file = getRegisteredFile(value);
@@ -24,7 +23,7 @@ const maybeSerializeRegisteredPath = async (
       return {
         __registeredFile: true,
         name: file.name,
-        content_b64: textToBase64(await file.text())
+        content_b64: textToBase64(await file.text()),
       };
     }
     return value;
@@ -34,10 +33,9 @@ const maybeSerializeRegisteredPath = async (
   }
   if (value && typeof value === "object") {
     const entries = await Promise.all(
-      Object.entries(value as Record<string, unknown>).map(async ([key, item]) => [
-        key,
-        await maybeSerializeRegisteredPath(item)
-      ])
+      Object.entries(value as Record<string, unknown>).map(
+        async ([key, item]) => [key, await maybeSerializeRegisteredPath(item)],
+      ),
     );
     return Object.fromEntries(entries);
   }
@@ -46,18 +44,16 @@ const maybeSerializeRegisteredPath = async (
 
 export const invoke = async <T>(
   cmd: string,
-  args?: Record<string, unknown>
+  args?: Record<string, unknown>,
 ): Promise<T> => {
   if (cmd === "notify_ui_ready" || cmd === "update_ui_stage") {
     return undefined as T;
   }
   if (cmd === "open_devtools") {
     const policy = getWebActionPolicy("devtools");
-    return createWebCommandResult(
-      "unsupported",
-      policy.reason,
-      { policy }
-    ) as T;
+    return createWebCommandResult("unsupported", policy.reason, {
+      policy,
+    }) as T;
   }
   if (cmd === "open_web_url") {
     const url = typeof args?.url === "string" ? args.url : "";
@@ -66,12 +62,16 @@ export const invoke = async <T>(
       return createWebCommandResult(
         "success",
         getWebActionPolicy("externalOpen").reason,
-        { url }
+        { url },
       ) as T;
     }
     return createWebCommandResult("error", "URL is required.") as T;
   }
-  if (cmd === "exit_app" || cmd === "restart_app" || cmd === "exit_lightweight_mode") {
+  if (
+    cmd === "exit_app" ||
+    cmd === "restart_app" ||
+    cmd === "exit_lightweight_mode"
+  ) {
     window.location.reload();
     return undefined as T;
   }
@@ -101,33 +101,33 @@ export const invoke = async <T>(
     return result as T;
   }
 
-  if (cmd === "export_local_backup" && result?.filename && result?.content_b64) {
+  if (
+    cmd === "export_local_backup" &&
+    result?.filename &&
+    result?.content_b64
+  ) {
     const buffer = Uint8Array.from(atob(result.content_b64), (char) =>
-      char.charCodeAt(0)
+      char.charCodeAt(0),
     );
     saveBlob(
       new Blob([buffer], { type: result.content_type ?? "application/gzip" }),
-      result.download_name ?? basename(result.filename)
+      result.download_name ?? basename(result.filename),
     );
-    return createWebCommandResult(
-      "success",
-      "已开始下载备份文件。",
-      { filename: result.download_name ?? basename(result.filename) }
-    ) as T;
+    return createWebCommandResult("success", "已开始下载备份文件。", {
+      filename: result.download_name ?? basename(result.filename),
+    }) as T;
   }
 
   if (cmd === "view_profile" && result?.filename && result?.content) {
     saveBlob(
       new Blob([result.content], {
-        type: result.content_type ?? "text/plain; charset=utf-8"
+        type: result.content_type ?? "text/plain; charset=utf-8",
       }),
-      basename(result.filename)
+      basename(result.filename),
     );
-    return createWebCommandResult(
-      "success",
-      "已开始下载配置文件。",
-      { filename: basename(result.filename) }
-    ) as T;
+    return createWebCommandResult("success", "已开始下载配置文件。", {
+      filename: basename(result.filename),
+    }) as T;
   }
 
   if (cmd === "copy_clash_env") {
@@ -138,18 +138,22 @@ export const invoke = async <T>(
           ? result.text
           : "";
     if (!text) {
-      return createWebCommandResult("error", "未返回可复制的环境变量内容。") as T;
+      return createWebCommandResult(
+        "error",
+        "未返回可复制的环境变量内容。",
+      ) as T;
     }
     await navigator.clipboard.writeText(text);
-    return createWebCommandResult(
-      "success",
-      "环境变量已复制到剪贴板。",
-      { text, policy: getWebActionPolicy("clipboard") }
-    ) as T;
+    return createWebCommandResult("success", "环境变量已复制到剪贴板。", {
+      text,
+      policy: getWebActionPolicy("clipboard"),
+    }) as T;
   }
 
   if (
-    (cmd === "open_app_dir" || cmd === "open_core_dir" || cmd === "open_logs_dir") &&
+    (cmd === "open_app_dir" ||
+      cmd === "open_core_dir" ||
+      cmd === "open_logs_dir") &&
     result?.path &&
     typeof result.path === "string"
   ) {
@@ -159,33 +163,43 @@ export const invoke = async <T>(
       getWebActionPolicy("directoryOpen").reason,
       {
         path: result.path,
-        policy: getWebActionPolicy("directoryOpen")
-      }
+        policy: getWebActionPolicy("directoryOpen"),
+      },
     ) as T;
   }
 
-  if (cmd === "export_diagnostic_info" && result?.filename && result?.content_b64) {
+  if (
+    cmd === "export_diagnostic_info" &&
+    result?.filename &&
+    result?.content_b64
+  ) {
     const buffer = Uint8Array.from(atob(result.content_b64), (char) =>
-      char.charCodeAt(0)
+      char.charCodeAt(0),
     );
     saveBlob(
       new Blob([buffer], {
-        type: result.content_type ?? "application/json"
+        type: result.content_type ?? "application/json",
       }),
-      result.download_name ?? basename(result.filename)
+      result.download_name ?? basename(result.filename),
     );
-    return createWebCommandResult(
-      "success",
-      "已开始下载诊断文件。",
-      { filename: result.download_name ?? basename(result.filename) }
-    ) as T;
+    return createWebCommandResult("success", "已开始下载诊断文件。", {
+      filename: result.download_name ?? basename(result.filename),
+    }) as T;
   }
 
-  if (cmd === "copy_icon_file" && result?.path && typeof result.path === "string") {
+  if (
+    cmd === "copy_icon_file" &&
+    result?.path &&
+    typeof result.path === "string"
+  ) {
     return result.path as T;
   }
 
-  if (cmd === "patch_profiles_config" && args?.profiles && typeof args.profiles === "object") {
+  if (
+    cmd === "patch_profiles_config" &&
+    args?.profiles &&
+    typeof args.profiles === "object"
+  ) {
     const profiles = args.profiles as { current?: string };
     if (profiles.current) {
       dispatchAppEvent("profile-changed", profiles.current);
@@ -201,14 +215,18 @@ export const invoke = async <T>(
       };
       mutableWindow.__LZCAPP_MIHOMO__ = {
         ...getLzcConfig(),
-        secret: result.secret
+        secret: result.secret,
       };
     }
     dispatchAppEvent("verge://refresh-clash-config", null);
     dispatchAppEvent("verge://refresh-proxy-config", null);
   }
 
-  if (cmd === "patch_verge_config" || cmd === "apply_dns_config" || cmd === "restart_core") {
+  if (
+    cmd === "patch_verge_config" ||
+    cmd === "apply_dns_config" ||
+    cmd === "restart_core"
+  ) {
     dispatchAppEvent("verge://refresh-clash-config", null);
     dispatchAppEvent("verge://refresh-proxy-config", null);
   }

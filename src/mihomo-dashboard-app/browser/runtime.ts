@@ -122,7 +122,7 @@ export const getLzcConfig = (): LzcConfig => {
     vergeApiBaseUrl: normalizeBaseUrl(raw.vergeApiBaseUrl, "/verge-api"),
     appVersion: raw.appVersion ?? EXPECTED_RUNTIME_INFO.appVersion,
     runtimeInfo,
-    runtimeWarning
+    runtimeWarning,
   };
 };
 
@@ -133,7 +133,7 @@ export const getRuntimeInfo = () => getLzcConfig().runtimeInfo;
 export const getRuntimeContractWarning = () => getLzcConfig().runtimeWarning;
 
 export const getUnsupportedWebFeatureMessage = (
-  feature: UnsupportedWebFeature
+  feature: UnsupportedWebFeature,
 ) => {
   switch (feature) {
     case "lightweight-mode":
@@ -157,7 +157,9 @@ const getCapabilityPolicies = () => {
   const runtimeInfo = getRuntimeInfo();
   const runtimeCapabilities = runtimeInfo?.capabilities;
   if (runtimeCapabilities && typeof runtimeCapabilities === "object") {
-    return runtimeCapabilities as Partial<Record<WebCapability, WebActionPolicy>>;
+    return runtimeCapabilities as Partial<
+      Record<WebCapability, WebActionPolicy>
+    >;
   }
   return {};
 };
@@ -169,7 +171,7 @@ const FORCED_SYSTEM_PROXY_POLICY: WebActionPolicy = {
 };
 
 export const getWebActionPolicy = (
-  capability: WebCapability
+  capability: WebCapability,
 ): WebActionPolicy => {
   if (capability === "systemProxy") {
     return FORCED_SYSTEM_PROXY_POLICY;
@@ -183,14 +185,14 @@ export const getWebActionPolicy = (
 };
 
 export const assessRuntimeContract = (
-  actualRuntime: RuntimeInfo | null
+  actualRuntime: RuntimeInfo | null,
 ): RuntimeContractAssessment => {
   if (!actualRuntime) {
     return {
       status: "blocked",
       reason: "未获取到运行时清单，当前部署不可安全启动。",
       expected: EXPECTED_RUNTIME_INFO,
-      actual: null
+      actual: null,
     };
   }
 
@@ -199,7 +201,7 @@ export const assessRuntimeContract = (
       status: "blocked",
       reason: `运行平台不匹配：期望 ${EXPECTED_RUNTIME_INFO.platform}，实际 ${actualRuntime.platform}。`,
       expected: EXPECTED_RUNTIME_INFO,
-      actual: actualRuntime
+      actual: actualRuntime,
     };
   }
 
@@ -212,12 +214,13 @@ export const assessRuntimeContract = (
       reason:
         "前后端运行时契约版本不匹配，请重新部署匹配的 dashboard LPK 与 mihomo-verge-api。",
       expected: EXPECTED_RUNTIME_INFO,
-      actual: actualRuntime
+      actual: actualRuntime,
     };
   }
 
   if (
-    actualRuntime.packageFingerprint !== EXPECTED_RUNTIME_INFO.packageFingerprint ||
+    actualRuntime.packageFingerprint !==
+      EXPECTED_RUNTIME_INFO.packageFingerprint ||
     actualRuntime.appVersion !== EXPECTED_RUNTIME_INFO.appVersion
   ) {
     return {
@@ -225,7 +228,7 @@ export const assessRuntimeContract = (
       reason:
         "部署包指纹不匹配，当前静态资源与宿主机 Verge API 不是同一套版本。",
       expected: EXPECTED_RUNTIME_INFO,
-      actual: actualRuntime
+      actual: actualRuntime,
     };
   }
 
@@ -243,25 +246,25 @@ export const assessRuntimeContract = (
           "检测到部署漂移：运行中的后端构建与当前前端包提交不一致，但契约仍兼容。",
         expected: {
           buildId: EXPECTED_RUNTIME_INFO.buildId,
-          gitCommit: EXPECTED_RUNTIME_INFO.gitCommit
+          gitCommit: EXPECTED_RUNTIME_INFO.gitCommit,
         },
         actual: {
           buildId: actualRuntime.buildId,
-          gitCommit: actualRuntime.gitCommit
-        }
-      }
+          gitCommit: actualRuntime.gitCommit,
+        },
+      },
     };
   }
 
   return {
     status: "ready",
     expected: EXPECTED_RUNTIME_INFO,
-    actual: actualRuntime
+    actual: actualRuntime,
   };
 };
 
 export const isRuntimeContractWarning = (
-  value: unknown
+  value: unknown,
 ): value is RuntimeContractWarning =>
   !!value &&
   typeof value === "object" &&
@@ -287,7 +290,7 @@ export const isRuntimeInfo = (value: unknown): value is RuntimeInfo => {
 };
 
 export const persistRuntimeAssessment = (
-  assessment: RuntimeContractAssessment
+  assessment: RuntimeContractAssessment,
 ) => {
   const mutableWindow = window as typeof window & {
     __LZCAPP_MIHOMO__?: Window["__LZCAPP_MIHOMO__"];
@@ -295,14 +298,14 @@ export const persistRuntimeAssessment = (
   mutableWindow.__LZCAPP_MIHOMO__ = {
     ...(mutableWindow.__LZCAPP_MIHOMO__ ?? {}),
     runtimeInfo: assessment.actual ?? null,
-    runtimeWarning: assessment.warning ?? null
+    runtimeWarning: assessment.warning ?? null,
   };
 };
 
 export const createWebCommandResult = <T>(
   kind: WebCommandResult<T>["kind"],
   message?: string,
-  data?: T
+  data?: T,
 ): WebCommandResult<T> => {
   const result: WebCommandResult<T> = { kind };
   if (message) {
@@ -330,7 +333,7 @@ type RuntimeErrorEnvelope = {
 
 const buildHeaders = (
   initHeaders: HeadersInit | undefined,
-  bearerToken: string | undefined
+  bearerToken: string | undefined,
 ) => {
   const headers = new Headers(initHeaders ?? {});
   if (bearerToken && !headers.has("Authorization")) {
@@ -341,13 +344,9 @@ const buildHeaders = (
 
 const parseJsonResponse = async <T>(response: Response): Promise<T> => {
   const contentType = response.headers.get("content-type") ?? "";
-  let payload: unknown = null;
-
-  if (contentType.includes("application/json")) {
-    payload = await response.json();
-  } else {
-    payload = await response.text();
-  }
+  const payload: unknown = contentType.includes("application/json")
+    ? await response.json()
+    : await response.text();
 
   if (!response.ok) {
     const envelope =
@@ -388,21 +387,18 @@ const parseJsonResponse = async <T>(response: Response): Promise<T> => {
   return payload as T;
 };
 
-export const controllerFetch = async (
-  input: string,
-  init?: RequestInit
-) => {
+export const controllerFetch = async (input: string, init?: RequestInit) => {
   const { mihomoBaseUrl, secret } = getLzcConfig();
   return fetch(`${mihomoBaseUrl}${input}`, {
     ...init,
     credentials: init?.credentials ?? "same-origin",
-    headers: buildHeaders(init?.headers, secret)
+    headers: buildHeaders(init?.headers, secret),
   });
 };
 
 export const controllerJson = async <T>(
   input: string,
-  init?: RequestInit
+  init?: RequestInit,
 ): Promise<T> => parseJsonResponse<T>(await controllerFetch(input, init));
 
 export const vergeFetch = async (input: string, init?: RequestInit) => {
@@ -410,41 +406,42 @@ export const vergeFetch = async (input: string, init?: RequestInit) => {
   return fetch(`${vergeApiBaseUrl}${input}`, {
     ...init,
     credentials: init?.credentials ?? "same-origin",
-    headers: buildHeaders(init?.headers, vergeApiSecret)
+    headers: buildHeaders(init?.headers, vergeApiSecret),
   });
 };
 
 export const vergeJson = async <T>(
   input: string,
-  init?: RequestInit
+  init?: RequestInit,
 ): Promise<T> => parseJsonResponse<T>(await vergeFetch(input, init));
 
 export const vergeInvoke = async <T>(
   cmd: string,
-  args: Record<string, unknown> | undefined
+  args: Record<string, unknown> | undefined,
 ): Promise<T> =>
   vergeJson<T>("/invoke", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ cmd, args: args ?? {} })
+    body: JSON.stringify({ cmd, args: args ?? {} }),
   });
 
 export const dispatchAppEvent = <T>(eventName: string, payload: T) => {
   eventTarget.dispatchEvent(
-    new CustomEvent<{ payload: T }>(eventName, { detail: { payload } })
+    new CustomEvent<{ payload: T }>(eventName, { detail: { payload } }),
   );
 };
 
 export const addAppEventListener = <T>(
   eventName: string,
-  callback: (event: { payload: T }) => void
+  callback: (event: { payload: T }) => void,
 ) => {
   const handler = (event: Event) => {
     const detail = (event as CustomEvent<{ payload: T }>).detail;
     callback({ payload: detail?.payload as T });
   };
   eventTarget.addEventListener(eventName, handler as EventListener);
-  return () => eventTarget.removeEventListener(eventName, handler as EventListener);
+  return () =>
+    eventTarget.removeEventListener(eventName, handler as EventListener);
 };
 
 const createFileToken = (file: File) =>
@@ -460,13 +457,14 @@ export const registerFiles = (files: File[] | FileList) => {
     }
     fileRegistry.set(token, {
       file,
-      objectUrl: URL.createObjectURL(file)
+      objectUrl: URL.createObjectURL(file),
     });
     return token;
   });
 };
 
-export const getRegisteredFile = (token: string) => fileRegistry.get(token)?.file ?? null;
+export const getRegisteredFile = (token: string) =>
+  fileRegistry.get(token)?.file ?? null;
 
 export const readRegisteredText = async (token: string) => {
   const file = getRegisteredFile(token);
@@ -487,7 +485,8 @@ export const readRegisteredBuffer = async (token: string) => {
 export const getRegisteredFileUrl = (token: string) =>
   fileRegistry.get(token)?.objectUrl ?? null;
 
-export const isRegisteredFileToken = (value: string) => value.startsWith("lzc-file://");
+export const isRegisteredFileToken = (value: string) =>
+  value.startsWith("lzc-file://");
 
 export const toBase64 = (bytes: Uint8Array) => {
   let binary = "";
@@ -527,7 +526,7 @@ const absoluteUrlPattern = /^https?:\/\//i;
 
 export const proxyHttpFetch = async (
   input: string | URL | Request,
-  init?: RequestInit & { connectTimeout?: number }
+  init?: RequestInit & { connectTimeout?: number },
 ) => {
   const requestUrl =
     typeof input === "string"
@@ -544,7 +543,7 @@ export const proxyHttpFetch = async (
     proxied.searchParams.set("url", requestUrl);
     return fetch(proxied.toString(), {
       ...init,
-      method: init?.method ?? "GET"
+      method: init?.method ?? "GET",
     });
   }
 
@@ -582,5 +581,7 @@ export const basename = (value: string) => {
   return segments[segments.length - 1] ?? value;
 };
 
-export const isPlainObject = (value: unknown): value is Record<string, JsonValue> =>
+export const isPlainObject = (
+  value: unknown,
+): value is Record<string, JsonValue> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);

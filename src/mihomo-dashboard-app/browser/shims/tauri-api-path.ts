@@ -1,5 +1,2 @@
 export const join = async (...segments: string[]) =>
-  segments
-    .filter(Boolean)
-    .join("/")
-    .replace(/\/+/g, "/");
+  segments.filter(Boolean).join("/").replace(/\/+/g, "/");

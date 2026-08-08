@@ -1,4 +1,8 @@
-import { getRegisteredFile, readRegisteredText, resolveAppFileUrl } from "../runtime";
+import {
+  getRegisteredFile,
+  readRegisteredText,
+  resolveAppFileUrl,
+} from "../runtime";
 
 export const readTextFile = async (path: string) => {
   if (getRegisteredFile(path)) {
