@@ -48,9 +48,9 @@
 
 ## 文档影响
 
-- 当前为 `canary_validated_review_clean_sync_pending`：`repo_harness_ready=false`、
-  `platform_gate_ready=false`、`actions_replacement_ready=false`。
-- live activation 与 success/failure/repair canary 已完成；current-head Review、合并后 push 和 required gate proof 仍由主 Agent执行。
+- 当前为 `merged_push_validated_required_gate_proven`：`repo_harness_ready=true`、
+  `platform_machine_gate_ready=true`、`platform_gate_ready=false`、`actions_replacement_ready=false`。
+- live activation、success/failure/repair canary、current-head Review、合并后 push 与 required gate proof 均已完成；GitHub 仍不能机器判定自然语言 Review，因此 aggregate `platform_gate_ready` 不抬高。
 
 ## Verification
 
@@ -86,6 +86,8 @@
 - Intentional failure：`eff0b2123930661d42e5449540f9c13613734906`，pipeline 9 failure；唯一临时变更为 committed trailing whitespace，不修改产品测试或运行配置。
 - Repair success：`62a52fdcc11178452d01b5cfd47562c260e43655`，pipeline 11 success；fixture 已完全删除。
 - Live context discovery：三次均为 `ci/woodpecker/pr/woodpecker-harness`；GitHub commit status 与 Woodpecker URL 一致。
+- Merge + push：PR #7 以 expected head `6c3ce2f0386bf8fe4878012e68d1ace4d85d2785` squash merge 为 main `02ce1f391502fa9ca2531ca58240e8b46b0ef089`；pipeline 18 push success。
+- Required gate：main strict required context 为 `ci/woodpecker/pr/woodpecker-harness`、`app_id=null`；一次性 PR #8 head `e5448e54a50b047422d119c8e65bcc42bb8f6f54` 在 pipeline 19 failure 时 live `BLOCKED`，随后关闭未合并并删除远端分支。
 
 ## Agent Delegation
 
@@ -94,14 +96,14 @@
   本地/archive 验证、签名提交、push 与 ready PR
 - Forbidden scope: activation、merge、ruleset/required context、host/runtime、TUN/DNS、LPK/deploy、真实凭据
 - Subagent result: candidate preparation complete; main Agent repaired live pnpm/timezone/resource findings and completed canary
-- Main agent review: `exact_head_clean_review_complete_fact_sync_incremental_review_pending`
+- Main agent review: `exact_head_clean_review_and_machine_gate_proof_complete`
 
 ## Codex Review
 
 - Required: yes, at exact live PR head after canary evidence sync
-- reviewed_head_sha: `2541549b637cd03f1c429b5fae6828acea635b94`
-- Review result: `CLEAN / 0`; pipeline 15 passed the same live context and the independent Review verified the extensionless Bash repair, complete product checks, and core-belief boundaries
-- Review fact sync: this governance-only sync requires its own current-head pipeline and incremental Review before platform mutation
+- reviewed_head_sha: `6c3ce2f0386bf8fe4878012e68d1ace4d85d2785`
+- Review result: `CLEAN / 0`; pipeline 17 passed the same live context and the incremental Review verified the four-file fact sync while workflow/product/core-belief bytes remained unchanged
+- Merge authority: expected-head squash merge; main and merge SHA reread exact before the push proof
 - Review supervision model: `trusted_agent_interpreted`
 
 ## Repair Ledger
@@ -118,8 +120,10 @@
 | 7 | complete canary after standard resource repair | pipeline 7 success at `d7f2a8a`; pipeline 9 intentional committed-whitespace failure at `eff0b21`; pipeline 11 repair success at `62a52fd`; all use the same live context | success/failure/repair evidence complete; fixture absent | sync evidence, rerun current head, request independent Review |
 | 8 | exact-head Review found two extensionless Bash host tools outside the syntax gate | Review of `552859fac00dc7670ffebdac240c11387327541d` was `NON_CLEAN / 1`; both files are tracked, executable, and use a Bash shebang | added explicit `bash -n` coverage without executing the host tools; aligned contract evidence | rerun the complete current-head pipeline and request a fresh exact-head Review |
 | 9 | repaired exact head passed full validation and fresh Review | pipeline 15 success at `2541549b637cd03f1c429b5fae6828acea635b94`; independent Review `CLEAN / 0` with live head unchanged | record the exact Review without changing workflow or product bytes | run the fact-sync head through the same context and obtain incremental Review, then install the live required context |
+| 10 | Review fact sync and expected-head merge | pipeline 17 success and incremental `CLEAN / 0` at `6c3ce2f0386bf8fe4878012e68d1ace4d85d2785` | installed strict required context after live reread; squash merged exact head to `02ce1f391502fa9ca2531ca58240e8b46b0ef089` | verify main push and a failing PR is blocked |
+| 11 | platform machine gate proof | pipeline 18 main push success; PR #8 pipeline 19 same-context failure and live `BLOCKED` | closed PR #8 unmerged and deleted its remote branch; required context remained strict and all other protection fields unchanged | record final facts; keep `platform_gate_ready=false` because Review is not machine-enforced |
 
 ## Post-Merge Cleanup
 
-- Main synced: pending
+- Main synced: `02ce1f391502fa9ca2531ca58240e8b46b0ef089`; push pipeline 18 success
 - Local branch deleted: pending

@@ -32,11 +32,12 @@
     }
   },
   "development_ci": {
-    "state": "canary_validated_review_clean_sync_pending",
+    "state": "merged_push_validated_required_gate_proven",
+    "repo_harness_ready": true,
     "woodpecker_repo_id": 22,
     "activated": true,
     "workflow_installed": true,
-    "workflow_installed_on_default_branch": false,
+    "workflow_installed_on_default_branch": true,
     "workflow_path": ".woodpecker/woodpecker-harness.yaml",
     "agent_selector": {
       "backend": "docker",
@@ -75,6 +76,11 @@
         "commit_sha": "62a52fdcc11178452d01b5cfd47562c260e43655",
         "pipeline_url": "https://ci.rainierlab.net/repos/22/pipeline/11/1",
         "state": "success"
+      },
+      "main_push_success": {
+        "commit_sha": "02ce1f391502fa9ca2531ca58240e8b46b0ef089",
+        "pipeline_url": "https://ci.rainierlab.net/repos/22/pipeline/18/1",
+        "state": "success"
       }
     },
     "checks": [
@@ -91,19 +97,32 @@
   "codex_review": {
     "required_for_non_trivial_pr": true,
     "latest": {
-      "reviewed_head_sha": "2541549b637cd03f1c429b5fae6828acea635b94",
+      "reviewed_head_sha": "6c3ce2f0386bf8fe4878012e68d1ace4d85d2785",
       "decision": "CLEAN",
       "findings_count": 0,
-      "pipeline_url": "https://ci.rainierlab.net/repos/22/pipeline/15/1",
-      "sync_status": "review_fact_sync_pending_current_head_validation_and_incremental_review"
+      "pipeline_url": "https://ci.rainierlab.net/repos/22/pipeline/17/1",
+      "sync_status": "complete"
     },
     "review_supervision_model": "trusted_agent_interpreted"
   },
   "platform_gate": {
-    "status": "review_clean_required_context_installation_pending",
+    "status": "required_context_failure_block_proven",
+    "platform_machine_gate_ready": true,
     "platform_gate_ready": false,
     "live_context_discovered": true,
-    "required_context_installed": false,
+    "required_context_installed": true,
+    "strict": true,
+    "required_context": "ci/woodpecker/pr/woodpecker-harness",
+    "required_context_app_id": null,
+    "failure_proof": {
+      "pull_request": 8,
+      "commit_sha": "e5448e54a50b047422d119c8e65bcc42bb8f6f54",
+      "pipeline_url": "https://ci.rainierlab.net/repos/22/pipeline/19/1",
+      "context_state": "failure",
+      "merge_state": "BLOCKED",
+      "closed_unmerged": true,
+      "remote_branch_deleted": true
+    },
     "requires": [
       "github_required_checks",
       "branch_protection_or_ruleset",
