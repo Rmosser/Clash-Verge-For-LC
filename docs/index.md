@@ -26,8 +26,8 @@
 
 仓库文件负责暴露真相、计划、证据和检查要求。GitHub required checks、branch protection 和管理员 bypass 状态必须在平台侧单独验证，不能仅由仓库文档声明为已生效。
 
-当前候选状态为 `activated_canary_pending`：Woodpecker `/repos/22` 已激活；前四次
-流水线暴露的 pnpm 版本、Agent 时区、Vite 默认堆上限和外层 cgroup 上限已经按真实测试与完整 build
-要求修复，正负 canary 仍待完成。
+当前候选状态为 `activated_canary_pending`：Woodpecker `/repos/22` 已激活；前五次实际
+执行暴露的 pnpm 版本、Agent 时区、Vite 默认堆上限和 4 GiB 任务资源不足已经按真实
+测试与完整 build 要求修复，正负 canary 仍待完成。
 `repo_harness_ready=false`、`platform_gate_ready=false`、
 `actions_replacement_ready=false`。

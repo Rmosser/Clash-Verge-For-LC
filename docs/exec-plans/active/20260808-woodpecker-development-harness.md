@@ -42,7 +42,7 @@
 - workflow 仅响应面向 `main` 的 pull_request 与 push。
 - plugin-git 与 Node 22 镜像固定到 digest，`pull: false`，完整 clone 并抓取 target branch。
 - PR 检查 `origin/$CI_COMMIT_TARGET_BRANCH...HEAD` 的已提交 diff；push 检查当前提交。
-- 以 exact `corepack pnpm@10.29.2` 运行 `scripts/test.sh` 之外的 frozen install、typecheck、test:unit、lint 与 build；测试环境固定 `TZ=Asia/Shanghai`，保持既有显式 `+08:00` 日志解析用例的语义；Vite build 使用 3072 MiB Node heap，在实际外层 4 GiB memory + 2 GiB swap cgroup 内为 Node 及构建辅助进程保留明确余量。
+- 以 exact `corepack pnpm@10.29.2` 运行 `scripts/test.sh` 之外的 frozen install、typecheck、test:unit、lint 与 build；测试环境固定 `TZ=Asia/Shanghai`，保持既有显式 `+08:00` 日志解析用例的语义；Vite build 使用 3072 MiB Node heap。标准 Docker backend 的单任务资源已从 4 GiB memory / 6 GiB memory+swap 调至 6 GiB / 8 GiB，并发仍为 1。
 - 不声明 secret、privileged、volume、Docker socket、publish 或 deploy。
 - 本地 worktree 与 clean `git archive` 验证均通过，不修改运行配置。
 
@@ -65,6 +65,9 @@
 - `corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app lint`
 - `corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app build`
 - 对 `git archive` 展开的 clean tree 重复上述治理和产品验证
+- Agent memory override backup：`/srv/woodpecker-rainierdev/backups/standard-compose-20260808T090904Z/standard-compose.override.before-agent-memory-20260808T161639Z.yaml`，SHA-256 `39ad4d3cc9be92060e7f59cd69ddb8fd6c5cc62835612d687a7b6b1a2ee3049a`
+- Root-only rollback：同目录 `rollback-agent-memory-20260808T161639Z.sh`；运行 override SHA-256 `284d8eef677194d881e2d8fb7b446d5ff0002bbee05f2d662c0b35340e1a5381`
+- Agent recreate 后 healthy；Server/Cloudflared 保持运行，公网 root 200、`/healthz` 204
 
 ## Checkpoint 证据
 
@@ -110,6 +113,7 @@
 | 3 | second pipeline reached real unit tests, then failed on Agent timezone drift | pipeline 2 installed 597 dependencies and passed typecheck, but the Agent UTC default rendered two explicit `+08:00` log timestamps eight hours earlier | fixed the test step to `TZ=Asia/Shanghai` without changing product parser or test expectations; not counted as intentional canary | rerun the complete real check set |
 | 4 | third pipeline passed unit and lint, then exhausted Node's default heap during real Vite build | pipeline 3 proved 27+7 unit tests and zero-warning lint, then exited 134 at about 2 GiB heap during `vite build`; host showed 15 GiB RAM and Docker inspect showed no inner Agent limit, while the enclosing cgroup was not yet observed | initially set `NODE_OPTIONS=--max-old-space-size=4096`; pipeline 4 then exposed the outer limit; no build or validation step removed; not counted as intentional canary | bound the heap to the actual enclosing cgroup |
 | 5 | fourth pipeline passed unit and lint, then hit the enclosing cgroup rather than host capacity | pipeline 4 with a 4096 MiB Node heap exited 137; kernel evidence bound its container to 4 GiB memory + 2 GiB swap and recorded the Node OOM kill near 4 GiB RSS | reduced the Node old-space ceiling to 3072 MiB to leave cgroup headroom; full build remains required; not counted as intentional canary | rerun the complete real check set |
+| 6 | fifth actual run still exceeded the explicit 4 GiB task budget | pipeline 6 passed committed diff, shell/JSON, install, typecheck, 27+7 unit tests and zero-warning lint, then received an OOM kill in the full Vite build | backed up the standard override; raised only Docker backend task memory to 6 GiB and memory+swap to 8 GiB; concurrency remains 1; Agent healthy and public service unchanged; not counted as intentional canary | rerun the complete real check set |
 
 ## Post-Merge Cleanup
 
