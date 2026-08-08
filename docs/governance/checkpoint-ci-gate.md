@@ -32,7 +32,7 @@ push 检查当前提交。
 未使用 import、消除一个无效初始赋值，并按仓库现有 Prettier 规则格式化被报告文件；
 不改变 TUN、DNS、controller、订阅或运行配置。
 
-workflow 运行 `scripts/test.sh`、frozen pnpm install、typecheck、test:unit、lint 与 build。
+workflow 运行 `scripts/test.sh`，并以 exact `corepack pnpm@10.29.2` 运行 frozen install、typecheck、test:unit、lint 与 build。
 它不声明 secret、privileged、volume、Docker socket、发布或部署步骤。负向 canary
 只允许临时 committed trailing whitespace，验证失败后删除并用同一完整检查集证明修复。
 

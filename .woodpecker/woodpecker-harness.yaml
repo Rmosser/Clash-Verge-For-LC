@@ -41,8 +41,8 @@ steps:
       - node -e 'JSON.parse(require("node:fs").readFileSync(".harness/repo-contract.json", "utf8"))'
       - node -e 'JSON.parse(require("node:fs").readFileSync("docs/doc-sync-rules.json", "utf8"))'
       - bash scripts/test.sh
-      - corepack pnpm --dir src/mihomo-dashboard-app install --frozen-lockfile
-      - corepack pnpm --dir src/mihomo-dashboard-app typecheck
-      - corepack pnpm --dir src/mihomo-dashboard-app test:unit
-      - corepack pnpm --dir src/mihomo-dashboard-app lint
-      - corepack pnpm --dir src/mihomo-dashboard-app build
+      - corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app install --frozen-lockfile
+      - corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app typecheck
+      - corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app test:unit
+      - corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app lint
+      - corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app build

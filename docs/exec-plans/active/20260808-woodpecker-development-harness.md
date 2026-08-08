@@ -42,7 +42,7 @@
 - workflow 仅响应面向 `main` 的 pull_request 与 push。
 - plugin-git 与 Node 22 镜像固定到 digest，`pull: false`，完整 clone 并抓取 target branch。
 - PR 检查 `origin/$CI_COMMIT_TARGET_BRANCH...HEAD` 的已提交 diff；push 检查当前提交。
-- 运行 `scripts/test.sh`、frozen install、typecheck、test:unit、lint 与 build。
+- 以 exact `corepack pnpm@10.29.2` 运行 `scripts/test.sh` 之外的 frozen install、typecheck、test:unit、lint 与 build。
 - 不声明 secret、privileged、volume、Docker socket、publish 或 deploy。
 - 本地 worktree 与 clean `git archive` 验证均通过，不修改运行配置。
 
@@ -59,11 +59,11 @@
 - `python3 -m json.tool .harness/repo-contract.json`
 - `python3 -m json.tool docs/doc-sync-rules.json`
 - `bash scripts/test.sh`
-- `pnpm --dir src/mihomo-dashboard-app install --frozen-lockfile`
-- `pnpm --dir src/mihomo-dashboard-app typecheck`
-- `pnpm --dir src/mihomo-dashboard-app test:unit`
-- `pnpm --dir src/mihomo-dashboard-app lint`
-- `pnpm --dir src/mihomo-dashboard-app build`
+- `corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app install --frozen-lockfile`
+- `corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app typecheck`
+- `corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app test:unit`
+- `corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app lint`
+- `corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app build`
 - 对 `git archive` 展开的 clean tree 重复上述治理和产品验证
 
 ## Checkpoint 证据
@@ -106,6 +106,7 @@
 | --- | --- | --- | --- | --- |
 | 0 | baseline lint debt | 2 errors + 106 warnings | repaired locally | run full worktree and clean archive verification |
 | 1 | live activation | `/repos/22`; PR enabled; deploy/trusted capabilities disabled | complete | trigger the first real PR pipeline |
+| 2 | initial pipeline failed before tests | pipeline 1 invoked Corepack's default pnpm 11.20.0 while the project requires 10.29.2 | repaired workflow to invoke exact `corepack pnpm@10.29.2`; not counted as intentional canary | rerun the complete real check set |
 
 ## Post-Merge Cleanup
 
