@@ -26,10 +26,11 @@
 
 仓库文件负责暴露真相、计划、证据和检查要求。GitHub required checks、branch protection 和管理员 bypass 状态必须在平台侧单独验证，不能仅由仓库文档声明为已生效。
 
-当前候选状态为 `canary_validated_review_clean_sync_pending`：Woodpecker `/repos/22` 已激活；pnpm、
+当前状态为 `merged_push_validated_required_gate_proven`：Woodpecker `/repos/22` 已激活；pnpm、
 时区与任务内存问题已按真实测试和完整 build 修复，同一 live context 的 success、故意失败
 与 repair success 已完成；`552859f` Review 找到的 extensionless Bash 覆盖缺口已修复，
-`2541549` 的 pipeline 15 与独立 Review 已 `CLEAN / 0`。Review 事实同步 head 的 pipeline/增量
-Review、合并后 push 和 required gate proof 仍待完成。
-`repo_harness_ready=false`、`platform_gate_ready=false`、
+`6c3ce2f` 在 pipeline 17 后独立 Review `CLEAN / 0`，PR #7 已 expected-head merge；main
+`02ce1f3` pipeline 18 push success，strict required context 经 PR #8 pipeline 19 failure +
+live `BLOCKED` 证明生效。
+`repo_harness_ready=true`、`platform_machine_gate_ready=true`、`platform_gate_ready=false`、
 `actions_replacement_ready=false`。
