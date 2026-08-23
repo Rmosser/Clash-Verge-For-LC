@@ -161,3 +161,14 @@ Woodpecker harness 建设和平台证据，避免把历史 canary 当作本次�
 
 - Main synced: `02ce1f391502fa9ca2531ca58240e8b46b0ef089`; push pipeline 18 success
 - Local branch deleted: pending
+
+## 当前任务扩展：Mihomo core v1.19.30
+
+- Baseline：当前 focused branch 从 main HEAD 创建；只读回读确认 `rainierdev` 为 Mihomo `v1.19.23`、`rainierspace` 为 `v1.19.24`，两台机器均为 x86_64，mihomo、Verge API、container proxy 均 active。
+- Goal：将 host-native Mihomo 固定升级到 `v1.19.30`，统一部署脚本、manager 和 Verge API 的升级/回滚实现。
+- Scope：只改 core updater、宿主机升级脚本、host-side API、测试与运行手册；不改前端、LPK、订阅、配置、TUN/DNS、路由或 compose。
+- Change：新增共享 `infra/microserver/mihomo_core_updater.py`，使用 GitHub release asset digest、架构/版本检查、`flock`、配置测试、原子替换、健康探活、备份和自动回滚；core-only 路径不下发配置或网络 unit。
+- Verification：最终通过 `bash scripts/test.sh`、`python3 -I -B scripts/check_docs.py --all`、dashboard frozen install、typecheck、unit（27+7）、lint 和 build；updater 测试覆盖 release digest、checksum/version/config 失败、下载瞬断重试、并发锁、原子切换、健康失败自动回滚和重复目标版本 receipt 保留。
+- Rollout：`rainierdev` 已从 `v1.19.23` 升到 `v1.19.30`，30/30 分钟探针通过，并完成回滚到 `v1.19.23` 后恢复；`rainierspace` 已从 `v1.19.24` 升到 `v1.19.30`。两台最终均通过配置测试、systemd、controller、Verge API、监听、盒子 READY、dashboard 入口和普通应用容器验收。
+- Release receipt：两台远端 `/var/lib/mihomo/rollback/latest.env` 均记录旧/新版本、asset、URL、SHA256、备份路径、时间和状态；固定 asset 为 `mihomo-linux-amd64-compatible-v1.19.30.gz`，SHA256 为 `db214c7a2517e63c150d123178d16d102e03a241ccdae4e5e07ffbe9cf56c6f9`。不记录 secret、订阅或私有配置。
+- 异常收据：生产机首次下载连接关闭时核心未切换；第二次在 API 慢启动超过原 5 秒窗口时自动回滚成功，随后增加 3 次下载重试和 30 秒 API 健康等待后发布成功。`selfcheck.sh` 同步改为远端本地读取 secret、只回显状态，并通过；TCP 直连探针为 WARN，其他 DNS/HTTPS/controller 门禁通过，未记录 secret 或 public-config 内容。

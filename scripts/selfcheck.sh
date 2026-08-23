@@ -24,14 +24,6 @@ ssh_remote() {
   ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$SSH_USER@$HOST" "$@"
 }
 
-get_secret_remote() {
-  ssh_remote "set -euo pipefail; grep -E '^[[:space:]]*secret:' /etc/mihomo/config.yaml | head -n 1 | sed -E \"s/^[[:space:]]*secret:[[:space:]]*//\" | sed -E \"s/^'(.*)'\\$|^\\\"(.*)\\\"\\$/\\1\\2/\" | tr -d '\r\n'"
-}
-
-get_verge_secret_remote() {
-  ssh_remote "set -euo pipefail; tr -d '\r\n' </etc/mihomo/verge-api.secret"
-}
-
 detect_mode() {
   if ssh_remote "systemctl list-unit-files --no-pager 2>/dev/null | awk '{print \$1}' | grep -qx mihomo.service"; then
     echo "systemd"
@@ -61,36 +53,51 @@ echo "== Config test (if host binary exists) =="
 ssh_remote "set -euo pipefail; if [[ -x /usr/local/bin/mihomo ]]; then /usr/local/bin/mihomo -t -d /var/lib/mihomo -f /etc/mihomo/config.yaml >/dev/null; echo OK; else echo SKIP: /usr/local/bin/mihomo not found; fi"
 
 echo "== Controller API (/version) =="
-secret="$(get_secret_remote)"
-if [[ -z "$secret" ]]; then
-  echo "ERROR: missing controller secret on remote microserver" >&2
-  exit 1
-fi
-ssh_remote SECRET="$secret" CONTROLLER_URL="$CONTROLLER_URL" bash -s <<'REMOTE'
+ssh_remote CONTROLLER_URL="$CONTROLLER_URL" bash -s <<'REMOTE'
 set -euo pipefail
-url="${CONTROLLER_URL%/}/version"
-curl -fsS -H "Authorization: Bearer ${SECRET}" "$url"
+python3 - "$CONTROLLER_URL" <<'PY'
+from pathlib import Path
+import sys
+import urllib.request
+
+url = sys.argv[1].rstrip("/") + "/version"
+secret = ""
+for line in Path("/etc/mihomo/config.yaml").read_text(encoding="utf-8").splitlines():
+    if line.lstrip().startswith("secret:"):
+        secret = line.split(":", 1)[1].strip().strip("'\"")
+        break
+if not secret:
+    raise SystemExit("missing controller secret on remote microserver")
+request = urllib.request.Request(url, headers={"Authorization": f"Bearer {secret}"})
+with urllib.request.urlopen(request, timeout=10) as response:
+    sys.stdout.buffer.write(response.read())
+    sys.stdout.write("\n")
+PY
 REMOTE
-echo
 
 echo "== Verge API (/public-config) =="
-verge_secret="$(get_verge_secret_remote)"
-if [[ -z "$verge_secret" ]]; then
-  echo "ERROR: missing verge-api secret on remote microserver" >&2
-  exit 1
-fi
-ssh_remote VERGE_SECRET="$verge_secret" VERGE_API_URL="$VERGE_API_URL" bash -s <<'REMOTE'
+ssh_remote VERGE_API_URL="$VERGE_API_URL" bash -s <<'REMOTE'
 set -euo pipefail
-url="${VERGE_API_URL%/}/public-config?token=${VERGE_SECRET}"
-curl -fsS "$url"
+python3 - "$VERGE_API_URL" <<'PY'
+from pathlib import Path
+import sys
+import urllib.parse
+import urllib.request
+
+token = Path("/etc/mihomo/verge-api.secret").read_text(encoding="utf-8").strip()
+if not token:
+    raise SystemExit("missing verge-api secret on remote microserver")
+url = sys.argv[1].rstrip("/") + "/public-config?token=" + urllib.parse.quote(token, safe="")
+with urllib.request.urlopen(url, timeout=10) as response:
+    print(f"HTTP {response.status}")
+PY
 REMOTE
-echo
 
 echo "== TUN bypass probes (manual review) =="
 ssh_remote "set -euo pipefail; ip route get 6.6.6.6 || true; ip -6 route get 2000::6666 || true; ip -6 route get fc03:1136:3800::1 || true"
 
 echo "== Protocol probes (use these instead of ping) =="
-ssh_remote CONTROLLER_URL="$CONTROLLER_URL" SECRET="$secret" bash -s <<'REMOTE'
+ssh_remote CONTROLLER_URL="$CONTROLLER_URL" bash -s <<'REMOTE'
 set -euo pipefail
 
 run_check() {
@@ -105,11 +112,32 @@ run_check() {
   echo
 }
 
-run_check "DNS lookup google.com" getent ahostsv4 google.com
-run_check "TCP connect google.com:443" bash -lc 'exec 3<>/dev/tcp/google.com/443'
+run_check "DNS lookup google.com" timeout 10 getent ahostsv4 google.com
+run_check "TCP connect google.com:443" timeout 10 bash -lc 'exec 3<>/dev/tcp/google.com/443'
 run_check "HTTPS via TUN https://www.gstatic.com/generate_204" curl -fsSI --max-time 10 https://www.gstatic.com/generate_204
 run_check "HTTPS via mixed-port https://api.ipify.org" curl -fsS --max-time 15 --proxy http://127.0.0.1:7890 https://api.ipify.org
-run_check "Controller health /version" curl -fsS --max-time 5 -H "Authorization: Bearer ${SECRET}" "${CONTROLLER_URL%/}/version"
+
+controller_health() {
+  python3 - "$CONTROLLER_URL" <<'PY'
+from pathlib import Path
+import sys
+import urllib.request
+
+secret = ""
+for line in Path("/etc/mihomo/config.yaml").read_text(encoding="utf-8").splitlines():
+    if line.lstrip().startswith("secret:"):
+        secret = line.split(":", 1)[1].strip().strip("'\"")
+        break
+request = urllib.request.Request(
+    sys.argv[1].rstrip("/") + "/version",
+    headers={"Authorization": f"Bearer {secret}"},
+)
+with urllib.request.urlopen(request, timeout=5) as response:
+    response.read()
+PY
+}
+
+run_check "Controller health /version" controller_health
 
 cat <<'EOF'
 NOTE:

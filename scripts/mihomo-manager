@@ -34,7 +34,7 @@ Commands:
   update-geo                POST /upgrade/geo
   version                   GET /version
   secret show               Print controller secret (local file or remote /etc/mihomo/config.yaml)
-  upgrade-core [version]    One-click core upgrade (default: latest stable)
+  upgrade-core [version]    One-click core upgrade (default: v1.19.30)
   rollback-core [target]    Rollback core from backup (default: latest)
                             target=latest or full backup path
 
@@ -211,65 +211,26 @@ REMOTE
     ;;
 
   upgrade-core)
-    version="${1:-}"
-    if [[ -n "$version" ]]; then
-      "$ROOT/scripts/deploy_microserver.sh" --upgrade-core --only-core --core-version "$version"
-    else
-      "$ROOT/scripts/deploy_microserver.sh" --upgrade-core --only-core --latest-stable
-    fi
+    version="${1:-${MIHOMO_VERSION:-v1.19.30}}"
+    "$ROOT/scripts/deploy_microserver.sh" --upgrade-core --only-core --core-version "$version"
     ;;
 
   rollback-core)
     target="${1:-latest}"
+    if [[ "$target" != "latest" && ! "$target" =~ ^/var/lib/mihomo/rollback/[A-Za-z0-9._-]+$ ]]; then
+      echo "ERROR: rollback target must be latest or a backup under /var/lib/mihomo/rollback/" >&2
+      exit 1
+    fi
     ssh_remote ROLLBACK_TARGET="$target" bash -s <<'REMOTE'
 set -euo pipefail
 
-rollback_dir=/var/lib/mihomo/rollback
-meta="$rollback_dir/latest.env"
-mihomo_bin=/usr/local/bin/mihomo
-cfg=/etc/mihomo/config.yaml
-
-target="${ROLLBACK_TARGET:-latest}"
-if [[ "$target" == "latest" ]]; then
-  if [[ ! -f "$meta" ]]; then
-    echo "ERROR: rollback metadata not found: $meta" >&2
-    exit 1
-  fi
-  # shellcheck disable=SC1090
-  . "$meta"
-  target="${BACKUP_BIN:-}"
-fi
-
-if [[ -z "$target" ]]; then
-  echo "ERROR: rollback target is empty" >&2
-  exit 1
-fi
-
-if [[ ! -f "$target" ]]; then
-  echo "ERROR: rollback backup not found: $target" >&2
-  exit 1
-fi
-
-current_version="$("$mihomo_bin" -v 2>/dev/null | head -n 1 | sed -E 's/^Mihomo Meta[[:space:]]+([^[:space:]]+).*/\1/' || true)"
-restore_version="$("$target" -v 2>/dev/null | head -n 1 | sed -E 's/^Mihomo Meta[[:space:]]+([^[:space:]]+).*/\1/' || true)"
-
-install -o root -g root -m 755 "$target" "$mihomo_bin"
-"$mihomo_bin" -t -d /var/lib/mihomo -f "$cfg" >/dev/null
-systemctl restart mihomo
-sleep 2
-systemctl is-active mihomo >/dev/null
-
-now_ts="$(date +%Y%m%d-%H%M%S)"
-cat >"$meta" <<META
-PREV_VERSION=${current_version}
-TARGET_VERSION=${restore_version}
-BACKUP_BIN=${target}
-UPGRADE_AT=${now_ts}
-STATUS=rolled_back
-META
-chmod 600 "$meta" || true
-
-echo "OK: rolled back to ${restore_version:-unknown} using ${target}"
+python3 /usr/local/lib/lzc-mihomo/mihomo_core_updater.py rollback \
+  --target "${ROLLBACK_TARGET:-latest}" \
+  --binary /usr/local/bin/mihomo \
+  --state-dir /var/lib/mihomo \
+  --config /etc/mihomo/config.yaml \
+  --service mihomo \
+  --controller-url http://172.18.0.1:9090
 REMOTE
     ;;
 

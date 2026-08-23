@@ -5,7 +5,6 @@ import base64
 import concurrent.futures
 import copy
 import datetime as dt
-import gzip
 import grp
 import json
 import mimetypes
@@ -16,6 +15,7 @@ import secrets
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -29,6 +29,11 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+
+MODULE_DIR = str(Path(__file__).resolve().parent)
+if MODULE_DIR not in sys.path:
+    sys.path.insert(0, MODULE_DIR)
+from mihomo_core_updater import DEFAULT_STABLE_TAG, upgrade_core
 
 
 APP_VERSION = os.environ.get("MIHOMO_VERGE_APP_VERSION", "2.4.7-webport.0")
@@ -2618,47 +2623,23 @@ def port_in_use(port: int) -> bool:
         return False
 
 
-def upgrade_core_release(channel: str) -> None:
-    arch = platform.machine()
-    asset_arch = {
-        "x86_64": "amd64-compatible",
-        "aarch64": "arm64",
-        "arm64": "arm64",
-        "armv7l": "armv7",
-        "i386": "386",
-        "i686": "386",
-    }.get(arch)
-    if not asset_arch:
-        raise RuntimeError(f"unsupported architecture: {arch}")
-
-    if channel == "verge-mihomo-alpha":
-        api_url = "https://api.github.com/repos/MetaCubeX/mihomo/releases"
-        request = urllib.request.Request(api_url, headers={"User-Agent": "clash-verge-webport/1.0"})
-        with urllib.request.urlopen(request, timeout=20) as response:
-            releases = json.loads(response.read().decode("utf-8"))
-        release = next((item for item in releases if item.get("prerelease")), None)
-        if not release:
-            raise RuntimeError("no prerelease mihomo release found")
-        tag = release["tag_name"]
-    else:
-        api_url = "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
-        request = urllib.request.Request(api_url, headers={"User-Agent": "clash-verge-webport/1.0"})
-        with urllib.request.urlopen(request, timeout=20) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        tag = payload["tag_name"]
-
-    asset = f"mihomo-linux-{asset_arch}-{tag}.gz"
-    url = f"https://github.com/MetaCubeX/mihomo/releases/download/{tag}/{asset}"
-    with urllib.request.urlopen(url, timeout=60) as response:
-        compressed = response.read()
-    binary = gzip.decompress(compressed)
-    rollback_dir = MIHOMO_STATE_DIR / "rollback"
-    rollback_dir.mkdir(parents=True, exist_ok=True)
-    if MIHOMO_BIN.exists():
-        shutil.copy2(MIHOMO_BIN, rollback_dir / f"mihomo.{int(time.time())}.bak")
-    atomic_write_bytes(MIHOMO_BIN, binary, 0o755)
-    run_command(["systemctl", "restart", "mihomo"])
-    wait_for_controller()
+def upgrade_core_release(channel: str) -> dict[str, str]:
+    release_channel = "alpha" if channel == "verge-mihomo-alpha" else "stable"
+    tag = None if release_channel == "alpha" else DEFAULT_STABLE_TAG
+    result = upgrade_core(
+        channel=release_channel,
+        tag=tag,
+        binary=MIHOMO_BIN,
+        state_dir=MIHOMO_STATE_DIR,
+        config=MIHOMO_CONFIG_PATH,
+        service="mihomo",
+        controller_url=CONTROLLER_URL,
+    )
+    append_operation_log(
+        f"mihomo core {result.get('STATUS', 'unknown')}: "
+        f"{result.get('PREV_VERSION', 'none')} -> {result.get('TARGET_VERSION', 'unknown')}"
+    )
+    return result
 
 
 def update_geo_data() -> None:
@@ -3067,8 +3048,9 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
         return None
 
     if cmd == "upgrade_core":
-        upgrade_core_release(str(get_verge_config_state().get("clash_core") or "verge-mihomo"))
-        return None
+        return upgrade_core_release(
+            str(get_verge_config_state().get("clash_core") or "verge-mihomo")
+        )
 
     if cmd == "update_geo":
         update_geo_data()

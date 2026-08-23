@@ -25,6 +25,7 @@ UNIT_LOCAL="$ROOT/infra/mihomo/mihomo.service"
 CONTAINER_PROXY_SOCKET_LOCAL="$ROOT/infra/microserver/mihomo-container-proxy.socket"
 CONTAINER_PROXY_SERVICE_LOCAL="$ROOT/infra/microserver/mihomo-container-proxy.service"
 VERGE_API_LOCAL="$ROOT/infra/microserver/mihomo-verge-api.py"
+CORE_UPDATER_LOCAL="$ROOT/infra/microserver/mihomo_core_updater.py"
 VERGE_API_UNIT_LOCAL="$ROOT/infra/microserver/mihomo-verge-api.service"
 RESOLVED_SYNC_LOCAL="$ROOT/infra/microserver/mihomo-resolved-sync.sh"
 RESOLVED_SYNC_UNIT_LOCAL="$ROOT/infra/microserver/mihomo-resolved-sync.service"
@@ -39,12 +40,12 @@ AUTO_TEST_URL="${MIHOMO_AUTO_TEST_URL-https://api.openai.com/v1/models}"
 DOH_PROXY_RULES_ENABLE="${MIHOMO_DOH_PROXY_RULES_ENABLE:-1}" # 1=enabled (default), 0=disabled
 INSTALL_NET_SAFE_APPLY="${LZC_NET_SAFE_APPLY_INSTALL:-1}" # 1=install (default), 0=skip
 CONTAINER_PROXY_ENABLE="${MIHOMO_CONTAINER_PROXY_ENABLE:-1}" # 1=enabled (default), 0=disabled
+DEFAULT_CORE_VERSION="${MIHOMO_VERSION:-v1.19.30}"
 
 UPGRADE_CORE=0
 ONLY_CORE=0
 NO_ROLLBACK=0
 CORE_VERSION_ARG=""
-FORCE_LATEST_STABLE=0
 
 ssh_remote() {
   ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$SSH_USER@$HOST" "$@"
@@ -56,15 +57,15 @@ Usage: scripts/deploy_microserver.sh [options]
 
 Options:
   --upgrade-core            Upgrade mihomo core even if already installed
-  --core-version <tag>      Upgrade/install specific version (e.g. v1.19.20, Prerelease-Alpha)
-  --latest-stable           Force GitHub stable latest tag
+  --core-version <tag>      Upgrade/install exact release tag (default: v1.19.30)
   --only-core               Upgrade core only (skip config/unit/mmdb deploy)
   --no-rollback             Disable automatic rollback on upgrade failure
   -h, --help                Show this help
 
 Notes:
   - Default behavior keeps backward compatibility: deploy config/unit and only install core if missing.
-  - Use --upgrade-core --only-core for one-click in-place core upgrade.
+  - The default core release is pinned to v1.19.30; use --core-version to override it.
+  - Use --upgrade-core --only-core --core-version <tag> for a core-only upgrade.
 USAGE
 }
 
@@ -80,9 +81,6 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       CORE_VERSION_ARG="$1"
-      ;;
-    --latest-stable)
-      FORCE_LATEST_STABLE=1
       ;;
     --only-core)
       ONLY_CORE=1
@@ -120,6 +118,7 @@ TMP_UNIT="/tmp/mihomo.service.$TS"
 TMP_CONTAINER_PROXY_SOCKET="/tmp/mihomo-container-proxy.socket.$TS"
 TMP_CONTAINER_PROXY_SERVICE="/tmp/mihomo-container-proxy.service.$TS"
 TMP_VERGE_API="/tmp/mihomo-verge-api.py.$TS"
+TMP_CORE_UPDATER="/tmp/mihomo_core_updater.py.$TS"
 TMP_VERGE_API_UNIT="/tmp/mihomo-verge-api.service.$TS"
 TMP_RESOLVED_SYNC="/tmp/mihomo-resolved-sync.sh.$TS"
 TMP_RESOLVED_SYNC_UNIT="/tmp/mihomo-resolved-sync.service.$TS"
@@ -226,22 +225,23 @@ fi
 
 echo "Deploying to $SSH_USER@$HOST ..."
 
-# Compute mihomo download URL for the remote architecture.
+# Compute the exact Mihomo asset and digest for the remote architecture.
 REMOTE_UNAME="$(ssh_remote uname -m)"
 
 MIHOMO_TAG="$CORE_VERSION_ARG"
 if [[ -z "$MIHOMO_TAG" ]]; then
-  MIHOMO_TAG="${MIHOMO_VERSION:-}"
+  MIHOMO_TAG="$DEFAULT_CORE_VERSION"
 fi
-if [[ "$FORCE_LATEST_STABLE" == "1" ]]; then
-  MIHOMO_TAG=""
+if [[ "$MIHOMO_TAG" == "latest" || -z "$MIHOMO_TAG" ]]; then
+  echo "ERROR: Mihomo core version must resolve to an exact release tag; use --core-version v1.19.30." >&2
+  exit 1
 fi
-if [[ -z "$MIHOMO_TAG" || "$MIHOMO_TAG" == "latest" ]]; then
-  if command -v jq >/dev/null 2>&1; then
-    MIHOMO_TAG="$(curl -fsSL https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | jq -r '.tag_name')"
-  else
-    MIHOMO_TAG="$(curl -fsSL https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
-  fi
+if [[ "$MIHOMO_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  MIHOMO_TAG="v$MIHOMO_TAG"
+fi
+if [[ ! "$MIHOMO_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+  echo "ERROR: Mihomo core version contains unsupported characters: $MIHOMO_TAG" >&2
+  exit 1
 fi
 
 case "$REMOTE_UNAME" in
@@ -264,7 +264,44 @@ case "$REMOTE_UNAME" in
 esac
 
 MIHOMO_URL="https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_TAG}/${MIHOMO_ASSET}"
+if ! command -v curl >/dev/null 2>&1; then
+  echo "ERROR: curl is required to resolve Mihomo release metadata" >&2
+  exit 1
+fi
+MIHOMO_SHA256="$(
+  curl --retry 3 --retry-delay 1 --retry-all-errors --connect-timeout 10 --max-time 60 -fsSL \
+    "https://api.github.com/repos/MetaCubeX/mihomo/releases/tags/${MIHOMO_TAG}" |
+    python3 -c '
+import json
+import sys
+
+asset_name = sys.argv[1]
+payload = json.load(sys.stdin)
+for asset in payload.get("assets", []):
+    if asset.get("name") != asset_name:
+        continue
+    digest = str(asset.get("digest") or "")
+    if not digest.startswith("sha256:") or len(digest.split(":", 1)[1]) != 64:
+        raise SystemExit(f"asset {asset_name} has no valid SHA256 digest")
+    print(digest.split(":", 1)[1])
+    break
+else:
+    raise SystemExit(f"release has no verified asset {asset_name}")
+' "$MIHOMO_ASSET"
+)"
 MMDB_URL="https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb"
+echo "Selected Mihomo ${MIHOMO_TAG}: ${MIHOMO_ASSET} sha256=${MIHOMO_SHA256}"
+
+if [[ ! -f "$CORE_UPDATER_LOCAL" || ! -f "$VERGE_API_LOCAL" ]]; then
+  echo "ERROR: missing core updater or Verge API source:" >&2
+  echo "  - $CORE_UPDATER_LOCAL" >&2
+  echo "  - $VERGE_API_LOCAL" >&2
+  exit 1
+fi
+scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+  "$CORE_UPDATER_LOCAL" "$SSH_USER@$HOST:$TMP_CORE_UPDATER" >/dev/null
+scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+  "$VERGE_API_LOCAL" "$SSH_USER@$HOST:$TMP_VERGE_API" >/dev/null
 
 if [[ "$ONLY_CORE" != "1" ]]; then
   scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
@@ -288,8 +325,6 @@ if [[ "$ONLY_CORE" != "1" ]]; then
     exit 1
   fi
 
-  scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
-    "$VERGE_API_LOCAL" "$SSH_USER@$HOST:$TMP_VERGE_API" >/dev/null
   scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
     "$VERGE_API_UNIT_LOCAL" "$SSH_USER@$HOST:$TMP_VERGE_API_UNIT" >/dev/null
   scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
@@ -328,7 +363,7 @@ NETSAFE
   fi
 fi
 
-if [[ "$CONTAINER_PROXY_ENABLE" == "1" ]]; then
+if [[ "$CONTAINER_PROXY_ENABLE" == "1" && "$ONLY_CORE" != "1" ]]; then
   if [[ ! -f "$CONTAINER_PROXY_SOCKET_LOCAL" || ! -f "$CONTAINER_PROXY_SERVICE_LOCAL" ]]; then
     echo "ERROR: missing container proxy unit(s):" >&2
     echo "  - $CONTAINER_PROXY_SOCKET_LOCAL" >&2
@@ -352,12 +387,14 @@ ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
   TMP_CONTAINER_PROXY_SOCKET="$TMP_CONTAINER_PROXY_SOCKET" \
   TMP_CONTAINER_PROXY_SERVICE="$TMP_CONTAINER_PROXY_SERVICE" \
   TMP_VERGE_API="$TMP_VERGE_API" \
+  TMP_CORE_UPDATER="$TMP_CORE_UPDATER" \
   TMP_VERGE_API_UNIT="$TMP_VERGE_API_UNIT" \
   TMP_RESOLVED_SYNC="$TMP_RESOLVED_SYNC" \
   TMP_RESOLVED_SYNC_UNIT="$TMP_RESOLVED_SYNC_UNIT" \
   TMP_RUNTIME_CONTRACT="$TMP_RUNTIME_CONTRACT" \
   TMP_VERGE_SECRET="$TMP_VERGE_SECRET" \
   MIHOMO_URL="$MIHOMO_URL" \
+  MIHOMO_SHA256="$MIHOMO_SHA256" \
   MIHOMO_TAG="$MIHOMO_TAG" \
   MMDB_URL="$MMDB_URL" \
   UPGRADE_CORE="$UPGRADE_CORE" \
@@ -378,6 +415,7 @@ container_proxy_service=/etc/systemd/system/mihomo-container-proxy.service
 verge_api_service=/etc/systemd/system/mihomo-verge-api.service
 verge_api_secret=/etc/mihomo/verge-api.secret
 verge_api_bin=/usr/local/lib/lzc-mihomo/mihomo-verge-api.py
+core_updater=/usr/local/lib/lzc-mihomo/mihomo_core_updater.py
 resolved_sync_service=/etc/systemd/system/mihomo-resolved-sync.service
 resolved_sync_bin=/usr/local/lib/lzc-mihomo/mihomo-resolved-sync.sh
 resolved_sync_dropin_dir=/etc/systemd/system/mihomo-resolved-sync.service.d
@@ -386,21 +424,29 @@ runtime_contract=/usr/local/lib/lzc-mihomo/runtime-contract.json
 mihomo_bin=/usr/local/bin/mihomo
 rollback_dir=/var/lib/mihomo/rollback
 log_file="$rollback_dir/upgrade-${TS}.log"
-latest_meta="$rollback_dir/latest.env"
 
 bak_cfg=""
 bak_unit=""
-backup_bin=""
+verge_api_backup=""
 prev_version=""
 new_version=""
-status="pending"
 core_attempted=0
 core_changed=0
 
 command -v curl >/dev/null 2>&1 || { echo "ERROR: curl not found on microserver" >&2; exit 1; }
 command -v gzip >/dev/null 2>&1 || { echo "ERROR: gzip not found on microserver" >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 not found on microserver" >&2; exit 1; }
 
 install -d -o root -g root -m 755 "$rollback_dir"
+install -d -o root -g root -m 755 "$(dirname "$core_updater")"
+install -o root -g root -m 755 "$TMP_CORE_UPDATER" "$core_updater"
+if [[ -f "$verge_api_bin" ]]; then
+  verge_api_backup="$rollback_dir/mihomo-verge-api.${TS}.bak"
+  cp -a "$verge_api_bin" "$verge_api_backup"
+  chmod 700 "$verge_api_backup"
+fi
+install -o root -g root -m 755 "$TMP_VERGE_API" "$verge_api_bin"
+rm -f "$TMP_CORE_UPDATER" "$TMP_VERGE_API"
 
 touch "$log_file"
 chmod 600 "$log_file" || true
@@ -519,43 +565,56 @@ run_dns_validation() {
   fi
 }
 
+run_verge_api_validation() {
+  if [[ ! -f "$verge_api_service" || ! -f "$verge_api_secret" ]]; then
+    return 0
+  fi
+  local verge_secret
+  local verge_ok=0
+  verge_secret="$(tr -d '\r\n' <"$verge_api_secret" 2>/dev/null || true)"
+  for _ in $(seq 1 30); do
+    if [[ -n "$verge_secret" ]] && curl -fsS \
+      -H "Authorization: Bearer ${verge_secret}" \
+      "http://172.18.0.1:9091/healthz" >/dev/null 2>&1; then
+      verge_ok=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$verge_ok" != "1" ]]; then
+    log "Verge API /healthz probe failed after restart"
+    return 1
+  fi
+}
+
 extract_version() {
   local bin="$1"
   "$bin" -v 2>/dev/null | head -n 1 | sed -E 's/^Mihomo Meta[[:space:]]+([^[:space:]]+).*/\1/'
 }
 
-write_meta() {
-  cat >"$latest_meta" <<META
-PREV_VERSION=${prev_version}
-TARGET_VERSION=${MIHOMO_TAG}
-BACKUP_BIN=${backup_bin}
-UPGRADE_AT=${TS}
-STATUS=${status}
-META
-  chmod 600 "$latest_meta" || true
-}
-
 rollback_core() {
   if [[ "$NO_ROLLBACK" == "1" ]]; then
-    status="failed"
-    write_meta
     log "Rollback skipped because --no-rollback is enabled."
     return
   fi
+  log "Rolling back core through the shared updater."
+  python3 "$core_updater" rollback \
+    --target latest \
+    --binary "$mihomo_bin" \
+    --state-dir /var/lib/mihomo \
+    --config "$cfg" \
+    --service mihomo \
+    --controller-url http://172.18.0.1:9090 \
+    || log "ERROR: shared Mihomo core rollback failed"
+}
 
-  if [[ -n "$backup_bin" && -f "$backup_bin" ]]; then
-    log "Rolling back core using backup: $backup_bin"
-    install -o root -g root -m 755 "$backup_bin" "$mihomo_bin"
-    systemctl daemon-reload || true
-    systemctl restart mihomo || true
-    status="rolled_back"
-    write_meta
-    log "Rollback finished."
-  else
-    status="failed"
-    write_meta
-    log "Rollback unavailable: backup binary missing."
+restore_verge_api_if_needed() {
+  if [[ "$ONLY_CORE" != "1" || -z "$verge_api_backup" || ! -f "$verge_api_backup" ]]; then
+    return 0
   fi
+  install -o root -g root -m 755 "$verge_api_backup" "$verge_api_bin"
+  systemctl restart mihomo-verge-api >/dev/null 2>&1 || true
+  log "Restored previous Verge API after core-only failure."
 }
 
 err_handler() {
@@ -567,11 +626,10 @@ err_handler() {
     if [[ "$core_changed" == "1" ]]; then
       rollback_core
     else
-      status="rolled_back"
-      write_meta
       log "Core was not switched before failure; keeping previous binary."
     fi
   fi
+  restore_verge_api_if_needed
   exit "$rc"
 }
 trap 'err_handler "$LINENO"' ERR
@@ -582,31 +640,43 @@ fi
 
 if [[ "$UPGRADE_CORE" == "1" || ! -x "$mihomo_bin" ]]; then
   core_attempted=1
-  log "Downloading mihomo: $MIHOMO_URL"
-  tmp_gz="/tmp/mihomo.${TS}.gz"
-  tmp_new="/tmp/mihomo.${TS}.new"
-  curl --retry 3 --retry-delay 1 --retry-all-errors --connect-timeout 10 --max-time 300 -fsSL "$MIHOMO_URL" -o "$tmp_gz"
-  gzip -d -c "$tmp_gz" >"$tmp_new"
-  chmod 755 "$tmp_new"
-
-  log "Verifying downloaded binary executable"
-  "$tmp_new" -v >/dev/null
-
-  if [[ -x "$mihomo_bin" ]]; then
-    backup_bin="$rollback_dir/mihomo.${TS}.bak"
-    cp -a "$mihomo_bin" "$backup_bin"
-    chmod 700 "$backup_bin" || true
-    log "Backup created: $backup_bin"
+  log "Upgrading mihomo through the shared updater: $MIHOMO_TAG"
+  core_upgrade_args=(
+    python3 "$core_updater" upgrade
+    --tag "$MIHOMO_TAG"
+    --asset-url "$MIHOMO_URL"
+    --asset-sha256 "$MIHOMO_SHA256"
+    --binary "$mihomo_bin"
+    --state-dir /var/lib/mihomo
+    --config "$cfg"
+    --service mihomo
+    --controller-url http://172.18.0.1:9090
+  )
+  if [[ "$NO_ROLLBACK" == "1" ]]; then
+    core_upgrade_args+=(--no-rollback)
   fi
-
-  install -o root -g root -m 755 "$tmp_new" "$mihomo_bin"
-  rm -f "$tmp_gz" "$tmp_new"
+  "${core_upgrade_args[@]}" \
+    | tee -a "$log_file"
   core_changed=1
   new_version="$(extract_version "$mihomo_bin" || true)"
+  if [[ -n "$prev_version" && "$prev_version" == "$new_version" ]]; then
+    core_changed=0
+  fi
   log "Core switched to: ${new_version:-unknown}"
 else
   new_version="$prev_version"
   log "Core upgrade skipped (existing binary retained)."
+fi
+
+if [[ "$ONLY_CORE" == "1" ]]; then
+  if [[ -f "$verge_api_service" ]]; then
+    systemctl restart mihomo-verge-api
+    systemctl is-active mihomo-verge-api >/dev/null
+    run_verge_api_validation
+  fi
+  trap - ERR
+  log "OK: Mihomo core-only upgrade completed without changing config, units, TUN, DNS, or container proxy."
+  exit 0
 fi
 
 if [[ "$ONLY_CORE" != "1" ]]; then
@@ -629,13 +699,12 @@ if [[ "$ONLY_CORE" != "1" ]]; then
   # Install config + unit
   install -o root -g mihomo -m 640 "$TMP_CFG" "$cfg"
   install -o root -g root -m 644 "$TMP_UNIT" "$unit"
-  install -o root -g root -m 755 "$TMP_VERGE_API" "$verge_api_bin"
   install -o root -g root -m 644 "$TMP_VERGE_API_UNIT" "$verge_api_service"
   install -o root -g root -m 755 "$TMP_RESOLVED_SYNC" "$resolved_sync_bin"
   install -o root -g root -m 644 "$TMP_RESOLVED_SYNC_UNIT" "$resolved_sync_service"
   install -o root -g root -m 644 "$TMP_RUNTIME_CONTRACT" "$runtime_contract"
   install -o root -g root -m 600 "$TMP_VERGE_SECRET" "$verge_api_secret"
-  rm -f "$TMP_CFG" "$TMP_UNIT" "$TMP_VERGE_API" "$TMP_VERGE_API_UNIT" "$TMP_RESOLVED_SYNC" "$TMP_RESOLVED_SYNC_UNIT" "$TMP_RUNTIME_CONTRACT" "$TMP_VERGE_SECRET"
+  rm -f "$TMP_CFG" "$TMP_UNIT" "$TMP_VERGE_API_UNIT" "$TMP_RESOLVED_SYNC" "$TMP_RESOLVED_SYNC_UNIT" "$TMP_RUNTIME_CONTRACT" "$TMP_VERGE_SECRET"
 
   # Optional mmdb
   if [[ -f "/tmp/Country.mmdb.${TS}" ]]; then
@@ -701,23 +770,7 @@ if [[ "$version_ok" != "1" ]]; then
   false
 fi
 
-if [[ -f "$verge_api_service" && -f "$verge_api_secret" ]]; then
-  verge_secret="$(tr -d '\r\n' <"$verge_api_secret" 2>/dev/null || true)"
-  verge_ok=0
-  for _ in 1 2 3 4 5; do
-    if [[ -n "$verge_secret" ]]; then
-      if curl -fsS -H "Authorization: Bearer ${verge_secret}" "http://172.18.0.1:9091/healthz" >/dev/null; then
-        verge_ok=1
-        break
-      fi
-    fi
-    sleep 1
-  done
-  if [[ "$verge_ok" != "1" ]]; then
-    log "Verge API /healthz probe failed after restart"
-    false
-  fi
-fi
+run_verge_api_validation
 
 if [[ "$DNS_ENABLE" == "1" && "$RESOLVED_VIA_MIHOMO" == "1" ]]; then
   ensure_mihomo_dns_ready
@@ -725,11 +778,6 @@ if [[ "$DNS_ENABLE" == "1" && "$RESOLVED_VIA_MIHOMO" == "1" ]]; then
   run_dns_validation
 else
   disable_resolved_via_mihomo
-fi
-
-if [[ "$core_attempted" == "1" ]]; then
-  status="success"
-  write_meta
 fi
 
 trap - ERR

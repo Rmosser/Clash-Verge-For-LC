@@ -25,6 +25,11 @@
 | `build_dashboard_release.sh` | 只出可分发 LPK | 在 `output/release/<version>/` 生成版本化安装包 |
 | `install_host_native_bootstrap.sh` | 给 `rainierdev` / `rainierspace` 安装开机自举 | 采样当前 live host-native 部署并安装 root user-systemd bootstrap |
 
+Mihomo core 更新默认固定为 `v1.19.30`。升级时使用
+`deploy_microserver.sh --upgrade-core --only-core --core-version <tag>`；
+它会校验 GitHub release asset digest、候选二进制版本/架构、现有配置，
+并把备份和非敏感 release receipt 保存在远端 `/var/lib/mihomo/rollback/`。
+
 ## 诊断与恢复
 
 | 脚本 | 什么时候用 | 输出或效果 |
