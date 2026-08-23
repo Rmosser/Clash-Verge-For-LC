@@ -263,7 +263,8 @@ ssh root@rainierdev.heiyu.space '
 ```bash
 cd src/mihomo-dashboard-app
 lzc-cli project lint -f lzc-build.yml
-LPK_OUT="$(mktemp -d)"+bash ../../scripts/build_dashboard_release.sh "$LPK_OUT"
+LPK_OUT="$(mktemp -d)"
+bash ../../scripts/build_dashboard_release.sh "$LPK_OUT"
 LPK_FILE="$(find "$LPK_OUT" -name '*.lpk' -type f | head -n 1)"
 lzc-cli lpk lint "$LPK_FILE"
 lzc-cli lpk install "$LPK_FILE" --apk n
