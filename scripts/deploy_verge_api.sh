@@ -14,6 +14,7 @@ API_LOCAL="$ROOT/infra/microserver/mihomo-verge-api.py"
 UNIT_LOCAL="$ROOT/infra/microserver/mihomo-verge-api.service"
 CONTRACT_LOCAL="$ROOT/src/mihomo-dashboard-app/runtime-contract.json"
 REMOTE_HELPER="$ROOT/scripts/lib/deploy_verge_api_readiness.sh"
+CONTRACT_VALIDATOR="$ROOT/scripts/lib/validate_verge_api_contract.sh"
 
 REMOTE_API="/usr/local/lib/lzc-mihomo/mihomo-verge-api.py"
 REMOTE_UNIT="/etc/systemd/system/mihomo-verge-api.service"
@@ -95,43 +96,16 @@ if [[ "$ACTION" == "rollback" ]]; then
   exit 0
 fi
 
+command -v git >/dev/null 2>&1 || { echo "ERROR: git is required" >&2; exit 1; }
+[[ -x "$CONTRACT_VALIDATOR" ]] || { echo "ERROR: missing local contract validator" >&2; exit 1; }
 [[ -f "$API_LOCAL" && -f "$UNIT_LOCAL" && -f "$CONTRACT_LOCAL" ]] || {
   echo "ERROR: missing API/runtime-contract source files" >&2
   exit 1
 }
 
 python3 -m py_compile "$API_LOCAL"
-python3 - "$CONTRACT_LOCAL" <<'PY'
-import json
-import re
-import sys
-from pathlib import Path
-
-payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-required = {
-    "appVersion": "2.5.2-webport.0",
-    "apiSchemaVersion": "2026.08-lzc-v2",
-    "uiSchemaVersion": "2026.08-lzc-v2",
-    "packageFingerprint": "cloud.lazycat.app.clash-verge-for-lc/2.5.2-webport.0",
-}
-for key, expected in required.items():
-    if payload.get(key) != expected:
-        raise SystemExit(f"ERROR: runtime contract {key} is not the v2.5.2 WebPort value")
-if payload.get("capabilities", {}).get("systemProxy", {}).get("mode") != "disabled":
-    raise SystemExit("ERROR: runtime contract must keep systemProxy disabled")
-if not re.fullmatch(r"[0-9a-f]{40}", str(payload.get("gitCommit") or "")):
-    raise SystemExit("ERROR: runtime contract must bind an exact candidate gitCommit")
-PY
-
 read -r EXPECTED_BUILD_ID EXPECTED_GIT_COMMIT < <(
-  python3 - "$CONTRACT_LOCAL" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-print(payload["buildId"], payload["gitCommit"])
-PY
+  "$CONTRACT_VALIDATOR" "$CONTRACT_LOCAL" "$ROOT"
 )
 
 [[ ${#EXPECTED_BUILD_ID} -le 128 &&

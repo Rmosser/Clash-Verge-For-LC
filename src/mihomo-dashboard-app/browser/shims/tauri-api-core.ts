@@ -1,3 +1,4 @@
+import { normalizeDnsValidationOutcome } from "../dns-config";
 import {
   basename,
   createWebCommandResult,
@@ -96,7 +97,11 @@ export const invoke = async <T>(
     string,
     unknown
   >;
-  const result = await vergeInvoke<any>(cmd, payload);
+  const rawResult = await vergeInvoke<any>(cmd, payload);
+  const result =
+    cmd === "validate_dns_config"
+      ? normalizeDnsValidationOutcome(rawResult)
+      : rawResult;
   if (isWebCommandResult(result)) {
     return result as T;
   }

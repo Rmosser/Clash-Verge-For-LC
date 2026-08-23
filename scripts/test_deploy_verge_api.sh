@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 HELPER="$ROOT/scripts/lib/deploy_verge_api_readiness.sh"
+CONTRACT_VALIDATOR="$ROOT/scripts/lib/validate_verge_api_contract.sh"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/clash-verge-webport-readiness.XXXXXX")"
 FAKE_BIN="$TEST_ROOT/bin"
 mkdir -p "$FAKE_BIN"
@@ -182,6 +183,32 @@ cat "${FAKE_STATE:?}/mihomo_version"
 FAKE_MIHOMO
 
 chmod 755 "$FAKE_BIN"/*
+
+contract_fixture="$TEST_ROOT/runtime-contract.json"
+cp "$ROOT/src/mihomo-dashboard-app/runtime-contract.json" "$contract_fixture"
+set +e
+contract_output="$($CONTRACT_VALIDATOR "$contract_fixture" "$ROOT" 2>&1)"
+contract_status=$?
+set -e
+[[ "$contract_status" == 0 ]]
+[[ "$contract_output" == *"9bd7956fa17a61b3a6c34649d47ce8cd708bf69f"* ]]
+
+python3 - "$contract_fixture" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+payload = json.loads(path.read_text(encoding="utf-8"))
+payload["gitCommit"] = "0000000000000000000000000000000000000000"
+path.write_text(json.dumps(payload), encoding="utf-8")
+PY
+set +e
+contract_output="$($CONTRACT_VALIDATOR "$contract_fixture" "$ROOT" 2>&1)"
+contract_status=$?
+set -e
+[[ "$contract_status" != 0 ]]
+[[ "$contract_output" == *"not present in the local repository"* ]]
 
 write_fixture() {
   local case_root="$1"

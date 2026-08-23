@@ -26,6 +26,10 @@ import {
 } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import {
+  assignOptionalDnsString,
+  readOptionalDnsString,
+} from '@root/browser/dns-config'
 import { BaseDialog, DialogRef, MonacoEditor, Switch } from '@/components/base'
 import { useClash } from '@/hooks/use-clash'
 import { showNotice } from '@/services/notice-service'
@@ -133,7 +137,6 @@ const DEFAULT_DNS_CONFIG = {
   listen: ':53',
   'enhanced-mode': 'fake-ip' as 'fake-ip' | 'redir-host',
   'fake-ip-range': '198.18.0.1/16',
-  'fake-ip-range6': 'fdfe:dcba:9876::1/64',
   'fake-ip-filter-mode': 'blacklist' as 'blacklist' | 'whitelist',
   'prefer-h3': false,
   'respect-rules': false,
@@ -220,7 +223,7 @@ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
     listen: DEFAULT_DNS_CONFIG.listen,
     enhancedMode: DEFAULT_DNS_CONFIG['enhanced-mode'],
     fakeIpRange: DEFAULT_DNS_CONFIG['fake-ip-range'],
-    fakeIpRange6: DEFAULT_DNS_CONFIG['fake-ip-range6'],
+    fakeIpRange6: '',
     fakeIpFilterMode: DEFAULT_DNS_CONFIG['fake-ip-filter-mode'],
     preferH3: DEFAULT_DNS_CONFIG['prefer-h3'],
     respectRules: DEFAULT_DNS_CONFIG['respect-rules'],
@@ -281,8 +284,7 @@ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
         enhancedMode: validEnhancedMode,
         fakeIpRange:
           dnsConfig['fake-ip-range'] ?? DEFAULT_DNS_CONFIG['fake-ip-range'],
-        fakeIpRange6:
-          dnsConfig['fake-ip-range6'] ?? DEFAULT_DNS_CONFIG['fake-ip-range6'],
+        fakeIpRange6: readOptionalDnsString(dnsConfig['fake-ip-range6']),
         fakeIpFilterMode: validFakeIpFilterMode,
         preferH3: dnsConfig['prefer-h3'] ?? DEFAULT_DNS_CONFIG['prefer-h3'],
         respectRules:
@@ -339,8 +341,6 @@ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
       listen: values.listen,
       'enhanced-mode': values.enhancedMode,
       'fake-ip-range': values.fakeIpRange,
-      'fake-ip-range6':
-        values.fakeIpRange6 || DEFAULT_DNS_CONFIG['fake-ip-range6'],
       'fake-ip-filter-mode': values.fakeIpFilterMode,
       'prefer-h3': values.preferH3,
       'respect-rules': values.respectRules,
@@ -362,6 +362,7 @@ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
       'proxy-server-nameserver': parseList(values.proxyServerNameserver),
       'direct-nameserver': parseList(values.directNameserver),
     }
+    assignOptionalDnsString(dnsConfig, 'fake-ip-range6', values.fakeIpRange6)
 
     const policy = parseNameserverPolicy(values.nameserverPolicy)
     if (Object.keys(policy).length > 0) {
@@ -394,7 +395,7 @@ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
       listen: DEFAULT_DNS_CONFIG.listen,
       enhancedMode: DEFAULT_DNS_CONFIG['enhanced-mode'],
       fakeIpRange: DEFAULT_DNS_CONFIG['fake-ip-range'],
-      fakeIpRange6: DEFAULT_DNS_CONFIG['fake-ip-range6'],
+      fakeIpRange6: '',
       fakeIpFilterMode: DEFAULT_DNS_CONFIG['fake-ip-filter-mode'],
       preferH3: DEFAULT_DNS_CONFIG['prefer-h3'],
       respectRules: DEFAULT_DNS_CONFIG['respect-rules'],

@@ -1221,12 +1221,34 @@ def profile_url_credentials(url: str) -> tuple[str, str | None, str | None]:
     parsed = urllib.parse.urlsplit(str(url))
     username = parsed.username
     password = parsed.password
+
+    hostname = parsed.hostname or ""
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    port = ""
+    try:
+        if parsed.port is not None:
+            port = f":{parsed.port}"
+    except ValueError:
+        pass
+
+    # Keep the complete query for tokenized subscriptions, while removing
+    # userinfo from the URL because credentials are sent explicitly below.
+    transport_url = urllib.parse.urlunsplit(
+        (
+            parsed.scheme.lower(),
+            f"{hostname}{port}",
+            parsed.path or "/",
+            parsed.query,
+            "",
+        )
+    )
     if username is None:
-        return sanitize_profile_url(url), None, None
+        return transport_url, None, None
 
     username = urllib.parse.unquote(username)
     password = urllib.parse.unquote(password or "")
-    return sanitize_profile_url(url), username, password
+    return transport_url, username, password
 
 
 def profile_url_origin(url: str) -> tuple[str, str, int | None]:
@@ -1270,15 +1292,25 @@ def profile_tls_context() -> ssl.SSLContext:
 
 
 def read_profile_response_payload(response: Any) -> str:
-    raw = response.read()
+    read_limit = max(0, PROFILE_MAX_BYTES) + 1
+    raw = response.read(read_limit)
     if not isinstance(raw, (bytes, bytearray)):
         raw = str(raw).encode("utf-8")
     payload_bytes = bytes(raw)
+    if len(payload_bytes) > PROFILE_MAX_BYTES:
+        raise ApiError(
+            "PROFILE_CONTENT_TOO_LARGE",
+            "订阅内容超过大小限制。",
+            status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+            layer="profile-import",
+            recoverable=True,
+        )
+
     encoding = str(response.headers.get("Content-Encoding", "")).lower()
     if "gzip" in encoding or payload_bytes.startswith(b"\x1f\x8b"):
         try:
             with gzip.GzipFile(fileobj=io.BytesIO(payload_bytes)) as stream:
-                payload_bytes = stream.read(PROFILE_MAX_BYTES + 1)
+                payload_bytes = stream.read(read_limit)
         except (OSError, EOFError) as exc:
             raise ApiError(
                 "PROFILE_CONTENT_INVALID",
@@ -2381,6 +2413,7 @@ def fetch_remote_profile(
     timeout = int(option.get("timeout_seconds") or 20)
     transport = profile_import_transport(option)
     request_url, username, password = profile_url_credentials(url)
+    diagnostic_url = sanitize_profile_url(request_url)
     handlers: list[Any] = []
     if option.get("self_proxy"):
         verge = get_verge_config_state()
@@ -2427,7 +2460,7 @@ def fetch_remote_profile(
             name_hint = resolve_remote_profile_name_hint(request_url, headers)
             elapsed_ms = max(0, now_ms() - started)
             metadata = {
-                "url": request_url,
+                "url": diagnostic_url,
                 "transport": transport,
                 "timeoutSeconds": timeout,
                 "elapsedMs": elapsed_ms,
@@ -2451,7 +2484,7 @@ def fetch_remote_profile(
             layer="profile-import",
             recoverable=True,
             warning={
-                "url": request_url,
+                "url": diagnostic_url,
                 "transport": transport,
                 "statusCode": status_code,
             },
@@ -2463,7 +2496,7 @@ def fetch_remote_profile(
             status=HTTPStatus.GATEWAY_TIMEOUT,
             layer="profile-import",
             recoverable=True,
-            warning={"url": request_url, "transport": transport},
+            warning={"url": diagnostic_url, "transport": transport},
         ) from exc
     except ssl.SSLError as exc:
         raise ApiError(
@@ -2472,7 +2505,7 @@ def fetch_remote_profile(
             status=HTTPStatus.BAD_GATEWAY,
             layer="profile-import",
             recoverable=True,
-            warning={"url": request_url, "transport": transport},
+            warning={"url": diagnostic_url, "transport": transport},
         ) from exc
     except urllib.error.URLError as exc:
         reason_text = str(exc.reason or "").lower()
@@ -2485,7 +2518,7 @@ def fetch_remote_profile(
                 status=HTTPStatus.BAD_GATEWAY,
                 layer="profile-import",
                 recoverable=True,
-                warning={"url": request_url, "transport": transport},
+                warning={"url": diagnostic_url, "transport": transport},
             ) from exc
         if isinstance(exc.reason, (socket.timeout, TimeoutError)) or (
             "timed out" in reason_text
@@ -2496,7 +2529,7 @@ def fetch_remote_profile(
                 status=HTTPStatus.GATEWAY_TIMEOUT,
                 layer="profile-import",
                 recoverable=True,
-                warning={"url": request_url, "transport": transport},
+                warning={"url": diagnostic_url, "transport": transport},
             ) from exc
         raise ApiError(
             "PROFILE_FETCH_NETWORK_ERROR",
@@ -2504,7 +2537,7 @@ def fetch_remote_profile(
             status=HTTPStatus.BAD_GATEWAY,
             layer="profile-import",
             recoverable=True,
-            warning={"url": request_url, "transport": transport},
+            warning={"url": diagnostic_url, "transport": transport},
         ) from exc
     except ApiError:
         raise
@@ -2515,7 +2548,7 @@ def fetch_remote_profile(
             status=HTTPStatus.BAD_GATEWAY,
             layer="profile-import",
             recoverable=True,
-            warning={"url": request_url, "transport": transport},
+            warning={"url": diagnostic_url, "transport": transport},
         ) from exc
 
 

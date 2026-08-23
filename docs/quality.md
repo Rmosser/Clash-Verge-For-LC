@@ -27,8 +27,8 @@ bash scripts/test.sh
 - `python3 -m unittest -v infra/microserver/test_mihomo_verge_api.py`：微服 API 单元测试；
 - `python3 -m unittest -v infra/microserver/test_mihomo_core_updater.py`：核心更新器的纯 mock
   单元测试，不触碰运行中的 Mihomo；
-- `bash scripts/test_deploy_verge_api.sh`：Verge API 配对部署的有界 readiness、失败恢复、
-  restart storm 与 Mihomo invariant 故障注入测试；
+- `bash scripts/test_deploy_verge_api.sh`：本地 runtime-contract Git object identity、Verge API
+  配对部署的有界 readiness、失败恢复、restart storm 与 Mihomo invariant 故障注入测试；
 - dashboard 的安装、单元测试、typecheck、lint 和 build 在下方单独运行；这样脚本在依赖尚未安装的 clean checkout 中仍能直接给出仓库级反馈。
 
 其余质量门：

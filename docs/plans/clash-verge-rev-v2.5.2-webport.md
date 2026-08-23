@@ -2,10 +2,11 @@
 
 ### 状态与结论
 
-- Status：`rainierdev_candidate_restored_pending_current_head_review`。方案 1 强化版、LPK v2
-  打包迁移、exact-head 本地/Woodpecker、`rainierdev` API/UI 前向部署、LPK 验收、配对回滚
-  演练与最终候选恢复均已通过；尚待本文件当前态提交后的 exact-head 复验、独立 Review、
-  expected-head merge、main push 验证与分支清理。
+- Status：`review_findings_fixed_pending_exact_head_validation`。方案 1 强化版、LPK v2
+  打包迁移、`rainierdev` API/UI 前向部署、LPK 验收、配对回滚演练与最终候选恢复均已通过；
+  独立 Review 的五项 finding 已在唯一一次集中修复中关闭，尚待形成新 exact HEAD 后重新执行
+  本地/Woodpecker、`rainierdev` 配对验收、finding closure、expected-head merge、main push
+  验证与分支清理。
 - 当前只读基线：`main` / `origin/main` 均为
   `ab1331e0cd8120ca41e6c015a285b9c66b23721f`；实施开始前已重新 fetch/prune，worktree
   当时干净且只有一个 worktree。后续 PR/merge 前仍须重新 fetch/prune 并复核 exact head，
@@ -36,7 +37,7 @@
   opaque backup 回滚脚本；Gate 0 只读回读确认 host-native Mihomo `v1.19.30`、相关服务
   active、controller `172.18.0.1:9090`、Verge API `172.18.0.1:9091` 和 proxy
   `172.18.0.1:17890`，未执行生产或核心变更。
-- 2026-08-23：functional candidate 提交为 `9bd79564bfe70214b4d0423f51e0d03e5bcc4f86`；
+- 2026-08-23：functional candidate 提交为 `9bd7956fa17a61b3a6c34649d47ce8cd708bf69f`；
   release metadata 已绑定该 exact candidate，metadata commit 后必须重新执行全部本地门禁。
 - 2026-08-23：PR #13 exact head `4da60740f6aaa0fef9be8ac192439e6174ce382a` 的 Woodpecker
   pipeline 39 成功，GitHub required context 为
@@ -101,6 +102,16 @@
   计数与 TUN interface 计数均未漂移；没有重启/升级核心，没有修改 TUN、DNS、路由、Compose
   或 bootstrap。浏览器会话不可用，因此不声明 selector/视觉 UI smoke；UI 证据限定为 CLI、
   project/container status、静态入口、route、health 与 runtime contract 检查。
+- 2026-08-23：独立 current-head Review 在 exact head
+  `13f175967f5ad57b9daaff342aec4bdb695da8c6` 返回五项 finding：runtime contract 指向不存在
+  的 Git object、DNS validation tuple 未在 command boundary 归一化、缺失的 `fake-ip-range6`
+  被默认写入、订阅 URL query 在 transport 前被剥离，以及 profile body 在 size gate 前无界读取。
+- 2026-08-23：按 Review 预算完成唯一一次集中修复：runtime contract 改绑真实 functional
+  commit `9bd7956fa17a61b3a6c34649d47ce8cd708bf69f`，部署在任何 SSH 前验证本地 commit object；
+  DNS tuple 统一为 `ValidationOutcome`，可选 IPv6 fake-IP range 缺失时保持空白并在保存时省略；
+  subscription transport 保留 query 而诊断输出继续脱敏，raw/gzip payload 均以
+  `PROFILE_MAX_BYTES + 1` 有界读取。新增 fault-injection、frontend 与 API 单元测试；新 exact
+  HEAD 形成后必须重跑全部门禁、配对部署/回滚及 finding closure。
 
 ### Goal
 

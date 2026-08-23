@@ -557,7 +557,7 @@ rules:
         class FakeOpener:
             def open(self, *_args, **_kwargs):
                 raise urllib.error.HTTPError(
-                    "https://example.com/sub.yaml",
+                    "https://user:password@example.com/sub.yaml?token=synthetic",
                     403,
                     "Forbidden",
                     hdrs={},
@@ -566,9 +566,15 @@ rules:
 
         with patch.object(MODULE.urllib.request, "build_opener", return_value=FakeOpener()):
             with self.assertRaises(MODULE.ApiError) as ctx:
-                MODULE.fetch_remote_profile("https://example.com/sub.yaml", {})
+                MODULE.fetch_remote_profile(
+                    "https://user:password@example.com/sub.yaml?token=synthetic",
+                    {},
+                )
 
         self.assertEqual(ctx.exception.code, "PROFILE_FETCH_HTTP_ERROR")
+        self.assertEqual(ctx.exception.warning["url"], "https://example.com/sub.yaml")
+        self.assertNotIn("synthetic", repr(ctx.exception.warning))
+        self.assertNotIn("password", repr(ctx.exception.warning))
 
     def test_fetch_remote_profile_maps_timeout_error(self) -> None:
         class FakeOpener:
@@ -693,7 +699,7 @@ rules:
             def getcode(self):
                 return self.status
 
-            def read(self):
+            def read(self, _size=-1):
                 return gzip.compress(profile)
 
         class FakeOpener:
@@ -714,12 +720,19 @@ rules:
         self.assertIn("proxy-groups:", payload)
         self.assertEqual(metadata["url"], "https://example.test/profile.yaml")
         self.assertEqual(
+            opener.request.full_url,
+            "https://example.test/profile.yaml?token=synthetic",
+        )
+        self.assertEqual(
             opener.request.headers["Authorization"],
             "Basic " + base64.b64encode(b"user:").decode("ascii"),
         )
-        self.assertNotIn("synthetic", opener.request.full_url)
 
     def test_fetch_remote_profile_rejects_decompressed_payload_over_limit(self) -> None:
+        max_bytes = 64
+        compressed_payload = gzip.compress(b"x" * 256)
+        self.assertLessEqual(len(compressed_payload), max_bytes + 1)
+
         class FakeResponse:
             headers = {"Content-Encoding": "gzip", "Content-Type": "application/x-yaml"}
 
@@ -732,12 +745,50 @@ rules:
             def getcode(self):
                 return 200
 
-            def read(self):
-                return gzip.compress(b"x" * 32)
+            def read(self, size=-1):
+                self.read_size = size
+                return compressed_payload
+
+        response = FakeResponse()
 
         class FakeOpener:
             def open(self, *_args, **_kwargs):
-                return FakeResponse()
+                return response
+
+        with patch.object(MODULE, "PROFILE_MAX_BYTES", max_bytes), patch.object(
+            MODULE.urllib.request, "build_opener", return_value=FakeOpener()
+        ):
+            with self.assertRaises(MODULE.ApiError) as ctx:
+                MODULE.fetch_remote_profile("https://example.test/profile.yaml", {})
+
+        self.assertEqual(ctx.exception.code, "PROFILE_CONTENT_TOO_LARGE")
+        self.assertEqual(response.read_size, max_bytes + 1)
+
+    def test_fetch_remote_profile_rejects_raw_payload_without_unbounded_read(self) -> None:
+        class FakeResponse:
+            headers = {"Content-Type": "application/x-yaml"}
+
+            def __init__(self):
+                self.read_sizes = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def getcode(self):
+                return 200
+
+            def read(self, size=-1):
+                self.read_sizes.append(size)
+                return b"x" * 9
+
+        response = FakeResponse()
+
+        class FakeOpener:
+            def open(self, *_args, **_kwargs):
+                return response
 
         with patch.object(MODULE, "PROFILE_MAX_BYTES", 8), patch.object(
             MODULE.urllib.request, "build_opener", return_value=FakeOpener()
@@ -746,6 +797,19 @@ rules:
                 MODULE.fetch_remote_profile("https://example.test/profile.yaml", {})
 
         self.assertEqual(ctx.exception.code, "PROFILE_CONTENT_TOO_LARGE")
+        self.assertEqual(response.read_sizes, [9])
+
+    def test_profile_url_credentials_preserves_query_without_transport_userinfo(self) -> None:
+        transport_url, username, password = MODULE.profile_url_credentials(
+            "https://user:p%40ss@example.test/profile.yaml?token=synthetic&foo=a%2Bb"
+        )
+
+        self.assertEqual(
+            transport_url,
+            "https://example.test/profile.yaml?token=synthetic&foo=a%2Bb",
+        )
+        self.assertEqual(username, "user")
+        self.assertEqual(password, "p@ss")
 
     def test_profile_redirect_handler_removes_authorization_across_origins(self) -> None:
         request = urllib.request.Request("https://example.test/profile.yaml")
@@ -762,6 +826,7 @@ rules:
         self.assertIsNotNone(redirected)
         assert redirected is not None
         self.assertNotIn("Authorization", redirected.headers)
+        self.assertNotIn("Authorization", redirected.unredirected_hdrs)
 
     def test_fetch_remote_profile_maps_tls_error_to_stable_code(self) -> None:
         class FakeOpener:
