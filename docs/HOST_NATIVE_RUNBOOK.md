@@ -64,6 +64,39 @@ MIHOMO_DASHBOARD_URL=https://clash.<boxname>.heiyu.space \
 bash scripts/deploy_dashboard.sh
 ```
 
+## Mihomo core-only 升级
+
+core-only 路径不重写配置、systemd unit、TUN、DNS 或 container proxy，只更新
+共享 updater、Verge API 和 Mihomo 二进制。当前固定 stable 版本为 `v1.19.30`。
+
+先升级开发机：
+
+```bash
+MICROSERVER_HOST=rainierdev.heiyu.space \
+MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 \
+bash scripts/deploy_microserver.sh \
+  --upgrade-core --only-core --core-version v1.19.30
+```
+
+通过开发机验收后，对 `rainierspace` 使用相同的显式版本命令。updater 会在
+`/var/lib/mihomo/rollback/` 保存旧二进制、asset SHA256 和状态；下载校验、
+`mihomo -t`、systemd active 或 controller `/version` 失败时自动回滚。
+
+手动回滚：
+
+```bash
+bash scripts/mihomo-manager rollback-core
+```
+
+升级后至少检查：
+
+```bash
+systemctl is-active mihomo.service mihomo-verge-api.service mihomo-container-proxy.socket
+curl -fsS -H "Authorization: Bearer <secret>" http://172.18.0.1:9090/version
+curl -fsS http://172.18.0.1:9091/healthz
+bash scripts/selfcheck.sh
+```
+
 ## 开机自举
 
 ### 开发机

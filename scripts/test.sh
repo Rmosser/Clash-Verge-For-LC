@@ -9,3 +9,4 @@ bash scripts/lint.sh
 
 echo "==> microservice unit tests"
 python3 -m unittest -v infra/microserver/test_mihomo_verge_api.py
+python3 -m unittest -v infra/microserver/test_mihomo_core_updater.py
