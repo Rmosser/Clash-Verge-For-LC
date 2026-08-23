@@ -22,7 +22,7 @@
 
 | 文档 | 目标读者 | 用途 |
 | --- | --- | --- |
-| [docs/index.md](docs/index.md) | Agent/评审者 | 文档索引与 Harness governance 入口 |
+| [docs/index.md](docs/index.md) | Agent/评审者 | 文档索引、上下文路由与质量入口 |
 | [docs/CURRENT_RUNTIME.md](docs/CURRENT_RUNTIME.md) | 所有人 | 当前运行 contract；先读这份 |
 | [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | 最终用户 | 登录、导入订阅、切节点、看状态 |
 | [docs/CONTAINER_PROXY_GUIDE.md](docs/CONTAINER_PROXY_GUIDE.md) | 开发者 | Docker/容器显式代理与 Node.js 注意事项 |

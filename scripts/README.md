@@ -2,6 +2,20 @@
 
 这份文档只回答三个问题：什么时候用哪个脚本、它会改什么、哪些是当前默认路径。
 
+## 质量入口
+
+| 命令 | 覆盖范围 |
+| --- | --- |
+| `bash scripts/test.sh` | shell/Python 语法和微服 API 单元测试 |
+| `bash scripts/lint.sh` | shell 语法和 Python 编译检查 |
+| `python3 -I -B scripts/check_docs.py --all` | 文档入口、必需路径和本地链接 |
+| `pnpm --dir src/mihomo-dashboard-app test:unit` | dashboard 单元测试 |
+| `pnpm --dir src/mihomo-dashboard-app typecheck` | dashboard TypeScript 类型检查 |
+| `pnpm --dir src/mihomo-dashboard-app lint` | dashboard ESLint |
+| `pnpm --dir src/mihomo-dashboard-app build` | dashboard 生产构建 |
+
+前端命令需要先在 `src/mihomo-dashboard-app/` 执行 `pnpm install --frozen-lockfile`。完整说明和 CI 对应关系见 [../docs/quality.md](../docs/quality.md)。
+
 ## 当前默认路径
 
 | 脚本 | 什么时候用 | 会改什么 |

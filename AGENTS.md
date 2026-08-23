@@ -8,17 +8,13 @@
 - 启用 TUN 透明代理，但必须绕行懒猫内网穿透/控制面相关流量
 - 提供可视化 Web 控制台（作为懒猫应用）用于手动切换节点/分组
 
-## Skills
-
-- **lazycat-dev**: 懒猫微服应用开发/部署流程、lzc-cli、manifest/build 配置等。 (file: skills/lazycat-dev/SKILL.md)
-
 ## 关键约束
 
 - 不要破坏懒猫内网穿透/控制面：任何透明代理/TUN 变更前先看 `docs/LAZYCAT_NETWORK_REPORT.md`。
 - 不要把 Mihomo 控制端口暴露到局域网：当前对外只通过懒猫登录后的应用路由访问。
-- 非平凡变更必须从当前提供的 baseline / worktree HEAD 开新分支，并维护当前唯一 Active Plan；旧分支和旧 PR 只能作为参考，除非用户明确要求继续它们。
-- 不要把本文件理解为绕过 PR、review、checks 或 branch protection 的授权；合并资格由证据门禁和平台门禁共同决定。
-- 主 Agent 负责编排、范围定义和验收；subagent 只在授权范围内执行，不自行扩大 PR 阶段，不独立提交、push、merge 或关闭 heartbeat。
+- 非平凡变更从当前 baseline / worktree HEAD 开 focused branch；保留已有工作树改动，不把旧分支或旧 PR 当成当前真相。
+- 不要把本文件理解为绕过 review、checks、branch protection 或运行态验收的授权；仓库检查、平台门禁和远端状态分别核实。
+- 不提交订阅、controller secret、私有配置、LPK 或运行态数据。
 
 ## Woodpecker 开发与证据边界
 
@@ -32,14 +28,22 @@
   unit、lint 与 build。
 - `repo_harness_ready` 与 `platform_gate_ready` 分开报告；仓库文件不能证明 GitHub 平台门禁。
 
-## 真相入口
+## Context Map
 
-- 文档索引：`docs/index.md`
-- Harness checkpoint gate：`docs/governance/checkpoint-ci-gate.md`
-- Active Plan 模板：`docs/exec-plans/template.md`
-- 当前 Active Plan：`docs/exec-plans/active/`
-- 文档同步规则：`docs/doc-sync-rules.json`
-- 仓库治理契约：`.harness/repo-contract.json`
+- 文档索引：[docs/index.md](docs/index.md)，治理契约：[.harness/repo-contract.json](.harness/repo-contract.json)
+- 质量命令与 CI：[docs/quality.md](docs/quality.md)
+- 脚本用途：[scripts/README.md](scripts/README.md)
+- 网络变更约束：[docs/LAZYCAT_NETWORK_REPORT.md](docs/LAZYCAT_NETWORK_REPORT.md)
+- 安全边界：[docs/SECURITY.md](docs/SECURITY.md)
+- Active Plan 模板：[docs/exec-plans/template.md](docs/exec-plans/template.md)
+- 当前 Active Plan：[docs/exec-plans/active/](docs/exec-plans/active/)
+- 文档同步规则：[docs/doc-sync-rules.json](docs/doc-sync-rules.json)
+
+只读取当前任务所需的领域文档；历史事故和复盘默认不作为当前运行 contract。
+
+## Standard Quality
+
+本地仓库级质量入口是 `bash scripts/test.sh`，覆盖 shell/Python 检查和微服 API 单元测试；dashboard 的 install、unit、typecheck、lint、build、文档检查和远端 smoke 命令见 [docs/quality.md](docs/quality.md)。
 
 ## 常用命令
 
