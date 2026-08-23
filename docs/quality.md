@@ -5,10 +5,13 @@
 ## 依赖准备
 
 ```bash
-pnpm --dir src/mihomo-dashboard-app install --frozen-lockfile
+corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app install --frozen-lockfile
 ```
 
 CI 使用锁文件安装依赖。仓库没有把 `pytest` 当作必需依赖；Python 服务测试使用标准库 `unittest`。
+如果本机没有 Corepack，用
+`npm exec --yes --package=pnpm@10.29.2 -- pnpm <args>` 运行下列同版本命令；
+不要省略 `--frozen-lockfile` 或改用浮动 pnpm。
 
 ## 本地命令
 
@@ -28,11 +31,11 @@ bash scripts/test.sh
 
 ```bash
 python3 -I -B scripts/check_docs.py --all
-pnpm --dir src/mihomo-dashboard-app install --frozen-lockfile
-pnpm --dir src/mihomo-dashboard-app typecheck
-pnpm --dir src/mihomo-dashboard-app test:unit
-pnpm --dir src/mihomo-dashboard-app lint
-pnpm --dir src/mihomo-dashboard-app build
+corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app install --frozen-lockfile
+corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app typecheck
+corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app test:unit
+corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app lint
+corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app build
 ```
 
 `build` 已经包含一次 TypeScript 检查；单独运行 `typecheck` 是为了让 CI 和本地失败信息更快定位。
@@ -54,6 +57,6 @@ pnpm --dir src/mihomo-dashboard-app build
 2. 安装 dashboard 锁定依赖；
 3. dashboard 单元测试、typecheck、ESLint 和生产构建。
 
-CI 镜像、插件 digest、内存约束和无 secret 边界以 workflow 与 `.harness/repo-contract.json` 为准；GitHub required check 和运行态 smoke 仍须分别核实。
+CI 镜像、插件 digest、内存约束和无 secret 边界以 workflow 为准；GitHub required check 和运行态 smoke 仍须分别实时核实。
 
 质量命令失败时，先报告第一个失败命令的完整错误、文件位置和是否属于依赖/环境问题；不要把远端 smoke 未执行写成通过。

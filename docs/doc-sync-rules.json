@@ -8,11 +8,9 @@
     "docs/CURRENT_RUNTIME.md",
     "docs/LAZYCAT_NETWORK_REPORT.md",
     "docs/SECURITY.md",
-    "docs/governance/checkpoint-ci-gate.md",
-    "docs/exec-plans/template.md",
-    "docs/exec-plans/active",
-    "docs/exec-plans/active/20260808-woodpecker-development-harness.md",
-    "docs/exec-plans/completed",
+    "docs/governance/development-change-evidence.md",
+    "docs/plans",
+    "docs/plans/template.md",
     "docs/doc-sync-rules.json",
     "scripts/README.md",
     "scripts/check_docs.py",
@@ -20,7 +18,6 @@
     "scripts/test.sh",
     "src/mihomo-dashboard-app/package.json",
     "src/mihomo-dashboard-app/pnpm-lock.yaml",
-    ".harness/repo-contract.json",
     ".woodpecker/woodpecker-harness.yaml"
   ],
   "markdown_paths": [
@@ -29,7 +26,8 @@
     "docs/index.md",
     "docs/README.md",
     "docs/quality.md",
-    "docs/exec-plans/active/20260808-woodpecker-development-harness.md",
+    "docs/governance/development-change-evidence.md",
+    "docs/plans/template.md",
     "scripts/README.md"
   ],
   "entrypoint_links": [
@@ -39,12 +37,10 @@
         "docs/index.md",
         "docs/quality.md",
         "scripts/README.md",
+        "docs/CURRENT_RUNTIME.md",
         "docs/LAZYCAT_NETWORK_REPORT.md",
         "docs/SECURITY.md",
-        "docs/exec-plans/template.md",
-        "docs/exec-plans/active",
-        "docs/doc-sync-rules.json",
-        ".harness/repo-contract.json"
+        "docs/plans"
       ]
     },
     {
@@ -56,11 +52,9 @@
         "CURRENT_RUNTIME.md",
         "LAZYCAT_NETWORK_REPORT.md",
         "SECURITY.md",
-        "governance/checkpoint-ci-gate.md",
-        "exec-plans/template.md",
-        "exec-plans/active/20260808-woodpecker-development-harness.md",
+        "governance/development-change-evidence.md",
+        "plans/template.md",
         "doc-sync-rules.json",
-        "../.harness/repo-contract.json",
         "../.woodpecker/woodpecker-harness.yaml"
       ]
     },

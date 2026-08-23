@@ -9,12 +9,14 @@
 | `bash scripts/test.sh` | shell/Python 语法和微服 API 单元测试 |
 | `bash scripts/lint.sh` | shell 语法和 Python 编译检查 |
 | `python3 -I -B scripts/check_docs.py --all` | 文档入口、必需路径和本地链接 |
-| `pnpm --dir src/mihomo-dashboard-app test:unit` | dashboard 单元测试 |
-| `pnpm --dir src/mihomo-dashboard-app typecheck` | dashboard TypeScript 类型检查 |
-| `pnpm --dir src/mihomo-dashboard-app lint` | dashboard ESLint |
-| `pnpm --dir src/mihomo-dashboard-app build` | dashboard 生产构建 |
+| `corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app test:unit` | dashboard 单元测试 |
+| `corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app typecheck` | dashboard TypeScript 类型检查 |
+| `corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app lint` | dashboard ESLint |
+| `corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app build` | dashboard 生产构建 |
 
-前端命令需要先在 `src/mihomo-dashboard-app/` 执行 `pnpm install --frozen-lockfile`。完整说明和 CI 对应关系见 [../docs/quality.md](../docs/quality.md)。
+前端命令需要先执行同版本的 frozen install；本机缺少 Corepack 时使用
+`npm exec --yes --package=pnpm@10.29.2 -- pnpm <args>`。完整命令和 CI 对应关系见
+[../docs/quality.md](../docs/quality.md)。
 
 ## 当前默认路径
 
