@@ -34,6 +34,8 @@
   opaque backup 回滚脚本；Gate 0 只读回读确认 host-native Mihomo `v1.19.30`、相关服务
   active、controller `172.18.0.1:9090`、Verge API `172.18.0.1:9091` 和 proxy
   `172.18.0.1:17890`，未执行生产或核心变更。
+- 2026-08-23：functional candidate 提交为 `9bd79564bfe70214b4d0423f51e0d03e5bcc4f86`；
+  release metadata 已绑定该 exact candidate，metadata commit 后必须重新执行全部本地门禁。
 
 ### Goal
 
