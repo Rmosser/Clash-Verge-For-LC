@@ -2,9 +2,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
 
 echo "==> repository lint"
-bash "$ROOT/scripts/lint.sh"
+bash scripts/lint.sh
 
 echo "==> microservice unit tests"
-python3 -m unittest -v "$ROOT/infra/microserver/test_mihomo_verge_api.py"
+python3 -m unittest -v infra/microserver/test_mihomo_verge_api.py

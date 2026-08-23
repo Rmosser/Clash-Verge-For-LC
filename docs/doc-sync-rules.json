@@ -11,6 +11,7 @@
     "docs/governance/checkpoint-ci-gate.md",
     "docs/exec-plans/template.md",
     "docs/exec-plans/active",
+    "docs/exec-plans/active/20260808-woodpecker-development-harness.md",
     "docs/exec-plans/completed",
     "docs/doc-sync-rules.json",
     "scripts/README.md",
@@ -28,6 +29,7 @@
     "docs/index.md",
     "docs/README.md",
     "docs/quality.md",
+    "docs/exec-plans/active/20260808-woodpecker-development-harness.md",
     "scripts/README.md"
   ],
   "entrypoint_links": [

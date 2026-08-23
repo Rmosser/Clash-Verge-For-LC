@@ -20,7 +20,7 @@ bash scripts/test.sh
 
 它执行：
 
-- `bash scripts/lint.sh`：所有仓库 shell 语法和 Python 编译检查；
+- `bash scripts/lint.sh`：仓库内 `.sh` 文件的 shell 语法和 Python 编译检查；
 - `python3 -m unittest -v infra/microserver/test_mihomo_verge_api.py`：微服 API 单元测试；
 - dashboard 的安装、单元测试、typecheck、lint 和 build 在下方单独运行；这样脚本在依赖尚未安装的 clean checkout 中仍能直接给出仓库级反馈。
 
