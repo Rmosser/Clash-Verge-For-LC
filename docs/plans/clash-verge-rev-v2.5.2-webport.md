@@ -2,9 +2,10 @@
 
 ### 状态与结论
 
-- Status：`focused_fix_validated_locally`。Gate A 失败后的方案 1 强化版与 LPK v2
-  打包迁移已在本地通过，历史 baseline LPK 身份也已重建并证明；新的 exact HEAD 尚未形成，
-  因此尚未执行本轮 Woodpecker、API/UI 前向部署、回滚演练、Review 或 merge。
+- Status：`rainierdev_candidate_restored_pending_current_head_review`。方案 1 强化版、LPK v2
+  打包迁移、exact-head 本地/Woodpecker、`rainierdev` API/UI 前向部署、LPK 验收、配对回滚
+  演练与最终候选恢复均已通过；尚待本文件当前态提交后的 exact-head 复验、独立 Review、
+  expected-head merge、main push 验证与分支清理。
 - 当前只读基线：`main` / `origin/main` 均为
   `ab1331e0cd8120ca41e6c015a285b9c66b23721f`；实施开始前已重新 fetch/prune，worktree
   当时干净且只有一个 worktree。后续 PR/merge 前仍须重新 fetch/prune 并复核 exact head，
@@ -76,6 +77,30 @@
   `b758f1c4cb593343526f9c5d6a8565d9b2156a900deeb1241dade661f8eddeff`；project/lpk lint、
   frozen install 和 build 全通过，包内只有静态 Web 文件，不含 Mihomo、配置、订阅、密钥、
   数据库或运行态数据。
+- 2026-08-23：exact head `d07187b8bfb3087af1a65723c9808b89352748a0` 重新通过全部本地
+  门禁：docs、overlay verify、39 个 API 与 10 个 core updater Python tests、readiness
+  故障注入、frozen install、typecheck、36 个前端 unit tests、lint、production build、
+  shellcheck、静态边界扫描与候选 LPK build/lint/content audit。Woodpecker pipeline 42
+  同一 exact head 的 required context `ci/woodpecker/pr/woodpecker-harness` 为 success。
+- 2026-08-23：只在 `rainierdev` 完成 Gate A API-first 配对部署与 UI release deploy；部署后的
+  API、unit、runtime contract 文件身份匹配候选，project `0.3.0`、app/fetchproxy health、
+  静态入口、fetch health、Verge API health、四条既有 route 与 runtime contract 均通过。
+  LazyCat 外部入口的四条路径均按预期由登录层保护；未连接生产环境。
+- 2026-08-23：完成 Gate B exact candidate LPK 验收，候选 SHA-256 为
+  `bf403c270d36e5b1bcbc669119e18416ab452545c9fe75c21382dfde187dc229`，大小
+  `21797888` bytes，LPK v2 lint 通过；包内 295 个条目均为静态 Web 内容，不含 Mihomo、
+  配置、订阅、密钥、数据库、native binary 或运行态数据。安装后 project `0.3.0` 与两个
+  容器均 healthy。
+- 2026-08-23：严格按版本对完成回滚演练：先用 opaque backup 恢复旧 API/unit/runtime
+  contract 并确认 API health 与旧 contract 行为，再安装已证明身份的 baseline LPK
+  `b758f1c4cb593343526f9c5d6a8565d9b2156a900deeb1241dade661f8eddeff`；project
+  `0.2.0`、app/fetchproxy 与 API/fetch health 均通过。随后再次 API-first 部署候选配对版本，
+  再安装 exact candidate LPK，最终恢复 project `0.3.0` 与候选 runtime contract。
+- 2026-08-23：回滚与最终恢复前后，host-native Mihomo 始终为 `v1.19.30`，
+  `ActiveEnterTimestampMonotonic=129115776897`、`NRestarts=0`，固定 listener、DNS listener
+  计数与 TUN interface 计数均未漂移；没有重启/升级核心，没有修改 TUN、DNS、路由、Compose
+  或 bootstrap。浏览器会话不可用，因此不声明 selector/视觉 UI smoke；UI 证据限定为 CLI、
+  project/container status、静态入口、route、health 与 runtime contract 检查。
 
 ### Goal
 
