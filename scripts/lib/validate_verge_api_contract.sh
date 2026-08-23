@@ -67,5 +67,10 @@ if ! git -C "$REPOSITORY_ROOT" cat-file -e "${EXPECTED_GIT_COMMIT}^{commit}" >/d
   printf 'ERROR: runtime contract gitCommit object is not present in the local repository\n' >&2
   exit 1
 fi
+if ! git -C "$REPOSITORY_ROOT" merge-base --is-ancestor \
+    "$EXPECTED_GIT_COMMIT" HEAD >/dev/null 2>&1; then
+  printf 'ERROR: runtime contract gitCommit is not an ancestor of the candidate HEAD\n' >&2
+  exit 1
+fi
 
 printf '%s %s\n' "$EXPECTED_BUILD_ID" "$EXPECTED_GIT_COMMIT"

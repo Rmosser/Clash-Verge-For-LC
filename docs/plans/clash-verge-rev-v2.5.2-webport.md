@@ -2,15 +2,15 @@
 
 ### 状态与结论
 
-- Status：`review_findings_fixed_pending_exact_head_validation`。方案 1 强化版、LPK v2
-  打包迁移、`rainierdev` API/UI 前向部署、LPK 验收、配对回滚演练与最终候选恢复均已通过；
-  独立 Review 的五项 finding 已在唯一一次集中修复中关闭，尚待形成新 exact HEAD 后重新执行
-  本地/Woodpecker、`rainierdev` 配对验收、finding closure、expected-head merge、main push
-  验证与分支清理。
-- 当前只读基线：`main` / `origin/main` 均为
-  `ab1331e0cd8120ca41e6c015a285b9c66b23721f`；实施开始前已重新 fetch/prune，worktree
-  当时干净且只有一个 worktree。后续 PR/merge 前仍须重新 fetch/prune 并复核 exact head，
-  不能把本记录当成未来远端真相。
+- Status：`main_ci_release_identity_hotfix_pending_validation`。PR #13 的方案 1 强化版、LPK v2、
+  `rainierdev` API/UI/回滚、独立 Review 与 expected-head merge 均已完成；main push pipeline 45
+  证明 squash 后原 functional commit 不再可达，当前从 merge commit 建立最小 release-identity
+  hotfix。尚待新 exact HEAD 的本地/Woodpecker、`rainierdev` 配对验收、窄 Review、merge、main
+  push 验证与两个任务分支清理。
+- PR #13 的原始 base 为 `ab1331e0cd8120ca41e6c015a285b9c66b23721f`，已 squash merge 为
+  `cac1a6d2daae7587413d4cccf56e3c83dbdecb4f`；hotfix 分支
+  `codex/clash-verge-v2.5.2-main-ci-fix` 从该 exact merge commit 创建。后续 PR/merge 前仍须
+  fetch/prune 并复核 exact head，不能把本记录当成未来远端真相。
 - 迁移结论：`需要适配后迁移`，不得用官方源码直接覆盖当前 vendor。
 - 官方目标固定为 release tag `v2.5.2`、commit
   `28f2efc504059b1dc75c793618b775c8e1b2a5f1`；拒绝 `dev`、`2.5.4` 或其他浮动 ref。
@@ -112,6 +112,17 @@
   subscription transport 保留 query 而诊断输出继续脱敏，raw/gzip payload 均以
   `PROFILE_MAX_BYTES + 1` 有界读取。新增 fault-injection、frontend 与 API 单元测试；新 exact
   HEAD 形成后必须重跑全部门禁、配对部署/回滚及 finding closure。
+- 2026-08-23：修复后 exact head `b101135bcf5835afae18b3d8cf7682a33acddebf` 的本地完整门禁、
+  Woodpecker pipeline 44、候选 LPK `caec1de9643bce69e219c66bfb85230aae67e3f3d88bff437b4ffa192dcb3caa`、
+  `rainierdev` Gate A/B、API/UI 配对回滚与最终候选恢复全部通过；finding closure 返回
+  `CLEAN / 0 open findings`。PR #13 随后以 expected head squash merge 为
+  `cac1a6d2daae7587413d4cccf56e3c83dbdecb4f`。
+- 2026-08-23：main push pipeline 45 的 clone、41 个 API tests 与 10 个 updater tests 通过，
+  但 readiness suite 在 clean squash-main clone 中 fail-closed：runtime contract 仍指向 PR 分支
+  functional commit `9bd7956...`，该 object 不是 squash main 的祖先且不在 clean clone 中。
+  hotfix 将 `buildId` / `gitCommit` 改绑已合并功能快照 `cac1a6d...`，并把本地 validator 加强为
+  “object 存在且是 candidate HEAD 祖先”；新增 unrelated-but-present commit 拒绝测试。新 exact
+  HEAD 形成后必须重跑全部门禁和 `rainierdev` 配对验收。
 
 ### Goal
 

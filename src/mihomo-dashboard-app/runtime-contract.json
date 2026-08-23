@@ -1,8 +1,8 @@
 {
   "platform": "lazycat-web",
   "appVersion": "2.5.2-webport.0",
-  "buildId": "20260823.9bd7956.v2.5.2-webport",
-  "gitCommit": "9bd7956fa17a61b3a6c34649d47ce8cd708bf69f",
+  "buildId": "20260823.cac1a6d.v2.5.2-webport",
+  "gitCommit": "cac1a6d2daae7587413d4cccf56e3c83dbdecb4f",
   "apiSchemaVersion": "2026.08-lzc-v2",
   "uiSchemaVersion": "2026.08-lzc-v2",
   "packageFingerprint": "cloud.lazycat.app.clash-verge-for-lc/2.5.2-webport.0",

@@ -186,12 +186,20 @@ chmod 755 "$FAKE_BIN"/*
 
 contract_fixture="$TEST_ROOT/runtime-contract.json"
 cp "$ROOT/src/mihomo-dashboard-app/runtime-contract.json" "$contract_fixture"
+expected_contract_commit="$(python3 - "$contract_fixture" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["gitCommit"])
+PY
+)"
 set +e
 contract_output="$($CONTRACT_VALIDATOR "$contract_fixture" "$ROOT" 2>&1)"
 contract_status=$?
 set -e
 [[ "$contract_status" == 0 ]]
-[[ "$contract_output" == *"9bd7956fa17a61b3a6c34649d47ce8cd708bf69f"* ]]
+[[ "$contract_output" == *"$expected_contract_commit"* ]]
 
 python3 - "$contract_fixture" <<'PY'
 import json
@@ -209,6 +217,38 @@ contract_status=$?
 set -e
 [[ "$contract_status" != 0 ]]
 [[ "$contract_output" == *"not present in the local repository"* ]]
+
+identity_repo="$TEST_ROOT/identity-repo"
+git init -q "$identity_repo"
+empty_tree="$(git -C "$identity_repo" hash-object -w -t tree --stdin </dev/null)"
+candidate_commit="$({
+  printf '%s\n' candidate
+} | GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.invalid \
+    GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid \
+    git -C "$identity_repo" commit-tree "$empty_tree")"
+unrelated_commit="$({
+  printf '%s\n' unrelated
+} | GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.invalid \
+    GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid \
+    git -C "$identity_repo" commit-tree "$empty_tree")"
+git -C "$identity_repo" update-ref refs/heads/main "$candidate_commit"
+git -C "$identity_repo" symbolic-ref HEAD refs/heads/main
+python3 - "$contract_fixture" "$unrelated_commit" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+payload = json.loads(path.read_text(encoding="utf-8"))
+payload["gitCommit"] = sys.argv[2]
+path.write_text(json.dumps(payload), encoding="utf-8")
+PY
+set +e
+contract_output="$($CONTRACT_VALIDATOR "$contract_fixture" "$identity_repo" 2>&1)"
+contract_status=$?
+set -e
+[[ "$contract_status" != 0 ]]
+[[ "$contract_output" == *"not an ancestor of the candidate HEAD"* ]]
 
 write_fixture() {
   local case_root="$1"
