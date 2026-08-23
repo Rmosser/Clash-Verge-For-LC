@@ -2,16 +2,116 @@
 
 ### 状态与结论
 
-- Status：`planned_not_started`。本节只记录后续实施方案；当前 session 未修改产品代码、
-  未创建分支或提交、未部署、未改变运行态。
+- Status：`review_findings_fixed_pending_exact_head_validation`。方案 1 强化版、LPK v2
+  打包迁移、`rainierdev` API/UI 前向部署、LPK 验收、配对回滚演练与最终候选恢复均已通过；
+  独立 Review 的五项 finding 已在唯一一次集中修复中关闭，尚待形成新 exact HEAD 后重新执行
+  本地/Woodpecker、`rainierdev` 配对验收、finding closure、expected-head merge、main push
+  验证与分支清理。
 - 当前只读基线：`main` / `origin/main` 均为
-  `4abb82305bca6ab93d658cff03206c9809a1afbe`，worktree 干净且只有一个 worktree。
-  后续实施开始时仍须重新 fetch/prune 并复核 exact baseline，不能把本记录当成未来远端真相。
+  `ab1331e0cd8120ca41e6c015a285b9c66b23721f`；实施开始前已重新 fetch/prune，worktree
+  当时干净且只有一个 worktree。后续 PR/merge 前仍须重新 fetch/prune 并复核 exact head，
+  不能把本记录当成未来远端真相。
 - 迁移结论：`需要适配后迁移`，不得用官方源码直接覆盖当前 vendor。
 - 官方目标固定为 release tag `v2.5.2`、commit
   `28f2efc504059b1dc75c793618b775c8e1b2a5f1`；拒绝 `dev`、`2.5.4` 或其他浮动 ref。
 - 建议实施分支：`codex/clash-verge-rev-v2.5.2-webport`。
 - 本文件是该迁移任务的按需实施计划，不承担全局 Active Plan 或机器 schema 职责。
+
+### Progress
+
+- 2026-08-23：执行 `git fetch --prune origin`；确认 `origin/main`、本地 `main` 和
+  HEAD 均为 `ab1331e0cd8120ca41e6c015a285b9c66b23721f`，工作区干净且只有当前 worktree；
+  已从该 exact head 创建 `codex/clash-verge-rev-v2.5.2-webport`。
+- 2026-08-23：重新核对官方 release 页面与 `v2.5.2` tag，确认 exact commit 为
+  `28f2efc504059b1dc75c793618b775c8e1b2a5f1`；未采用 `dev`、`v2.5.4` 或浮动 ref。
+- 2026-08-23：在临时 staging 取得官方 `v2.4.7`（resolved commit
+  `520a7ed83fda06b6507c46e51e16f737c58c7ddc`）和 `v2.5.2`（exact commit
+  `28f2efc504059b1dc75c793618b775c8e1b2a5f1`），并完成临时 staging、固定 patch
+  series 和 overlay-safe vendor 同步；最终 committed vendor 通过 `--verify`，未含
+  `src-tauri`、`v1.19.29` 或 node_modules。
+- 2026-08-23：完成 v2.5.2 WebPort 工具链：pnpm 11.3.0、Vite 8、TypeScript 6、React
+  19.2.7、browser shims、runtime contract、system-proxy lock、profile health/last-good
+  和合成 API/UI 测试；frozen install、typecheck、36 个前端 unit tests、49 个 Python
+  tests、lint 和 production build 已通过。
+- 2026-08-23：完成只允许 `rainierdev.heiyu.space` 的 API/runtime-contract 配对部署与
+  opaque backup 回滚脚本；Gate 0 只读回读确认 host-native Mihomo `v1.19.30`、相关服务
+  active、controller `172.18.0.1:9090`、Verge API `172.18.0.1:9091` 和 proxy
+  `172.18.0.1:17890`，未执行生产或核心变更。
+- 2026-08-23：functional candidate 提交为 `9bd7956fa17a61b3a6c34649d47ce8cd708bf69f`；
+  release metadata 已绑定该 exact candidate，metadata commit 后必须重新执行全部本地门禁。
+- 2026-08-23：PR #13 exact head `4da60740f6aaa0fef9be8ac192439e6174ce382a` 的 Woodpecker
+  pipeline 39 成功，GitHub required context 为
+  `ci/woodpecker/pr/woodpecker-harness`；同一 head 的 overlay verify、仓库测试、文档检查、
+  pnpm 11.3.0 frozen install、typecheck、36 个前端 unit tests、lint、production build 和
+  `git diff --check` 全部通过。workflow 中 Node 版本断言的 template literal 解析问题已修为
+  字符串拼接后验证通过。
+- 2026-08-23：Gate 0 在 `rainierdev` 再次确认 Mihomo `v1.19.30`、Mihomo
+  `ActiveEnterTimestampMonotonic=129115776897`、Verge API health `200` 和相关 listener。
+  首次 Gate A API/runtime-contract 配对部署时，远端 health probe 在 API 重启后连接被拒绝；
+  专用脚本已自动恢复原 API、unit、runtime-contract 配对版本。回滚后 API health 为 `200`，
+  Mihomo 版本和启动时间未变；按 Stop Condition 停止前向迁移，未部署 UI 或执行 LPK 安装。
+- 2026-08-23：本 session 只读重验 `rainierdev`：Mihomo 完整版本仍为 `v1.19.30`，
+  `ActiveEnterTimestampMonotonic=129115776897`，Verge API `NRestarts=0`，固定 listener
+  `127.0.0.1:7890`、`172.18.0.1:9090/9091/17890` 均在，API health 为 `200`。
+  API unit 是 `Type=simple`，而 Python 在 bind 前执行状态准备；结合上次“systemd 已 active、
+  立即 curl connection refused、随后旧版本恢复健康”且没有 restart storm 的证据，最强解释是
+  listener readiness window，而不是 Mihomo、bind 地址或持续 API crash。
+- 2026-08-23：按方案 1 强化版把 API 配对部署改为最多 30 秒的 monotonic deadline：先验证
+  `ActiveState` / `NRestarts`，再等待精确 `172.18.0.1:9091` listener，最后只做一次无 body
+  health probe；candidate、显式回滚和自动恢复都拒绝 restart storm，并在成功/失败路径复核
+  Mihomo binary 与启动时间。opaque backup 只接受脚本生成的 `backup.<8 alnum>`，远程参数采用
+  有限字符集。故障注入覆盖 delayed readiness、timeout、service failure、health 后不稳定、
+  rollback/restore restart storm、Mihomo drift、回滚失败和路径穿越。
+- 2026-08-23：exact head `547cf03bd15a46969b525911f3d6788a9732911a` 的本地完整门禁与
+  候选 LPK build/lint 通过；Woodpecker pipeline 41 在 readiness 用例已经输出 `deploy_ok`
+  后因最小 CI 镜像没有测试断言所用的 `rg` 而失败。该失败不在 clone、产品代码或部署逻辑，
+  仅把测试断言改用镜像已有的 `grep -E`；新 head 必须重新通过全部本地门禁和 required context。
+- 2026-08-23：当前 `lzc-cli 2.0.9` 要求 LPK v2 package metadata；新增相邻
+  `package.yml` 与 `en`/`zh` locale，把四条 routes/services 留在原 manifest，并把 icon 缩为
+  `512x512` / `180768` bytes。`project lint` 无 warning，运行契约 hash
+  `6daa4597d3e7751a6f86625b6335b2415c5d9ce09c1cff1d8c5e3b7dd6680f94` 与当前 HEAD、
+  `origin/main` 相同；候选 LPK build/lint 通过，内层只含 295 个静态 Web 条目。
+- 2026-08-23：拒绝安装旧 `output/release/0.2.0` 未知产物，因为它无法证明 source identity
+  且不通过当前 LPK lint。改从 exact repo commit
+  `e4a3db6644a5623143eadc1db5c41a34f4ed3838` 隔离重建 v2.4.7 baseline，产物为
+  `output/rollback-baseline/e4a3db6-lpkv2/clash-verge-for-lc-0.2.0.lpk`，SHA-256
+  `b758f1c4cb593343526f9c5d6a8565d9b2156a900deeb1241dade661f8eddeff`；project/lpk lint、
+  frozen install 和 build 全通过，包内只有静态 Web 文件，不含 Mihomo、配置、订阅、密钥、
+  数据库或运行态数据。
+- 2026-08-23：exact head `d07187b8bfb3087af1a65723c9808b89352748a0` 重新通过全部本地
+  门禁：docs、overlay verify、39 个 API 与 10 个 core updater Python tests、readiness
+  故障注入、frozen install、typecheck、36 个前端 unit tests、lint、production build、
+  shellcheck、静态边界扫描与候选 LPK build/lint/content audit。Woodpecker pipeline 42
+  同一 exact head 的 required context `ci/woodpecker/pr/woodpecker-harness` 为 success。
+- 2026-08-23：只在 `rainierdev` 完成 Gate A API-first 配对部署与 UI release deploy；部署后的
+  API、unit、runtime contract 文件身份匹配候选，project `0.3.0`、app/fetchproxy health、
+  静态入口、fetch health、Verge API health、四条既有 route 与 runtime contract 均通过。
+  LazyCat 外部入口的四条路径均按预期由登录层保护；未连接生产环境。
+- 2026-08-23：完成 Gate B exact candidate LPK 验收，候选 SHA-256 为
+  `bf403c270d36e5b1bcbc669119e18416ab452545c9fe75c21382dfde187dc229`，大小
+  `21797888` bytes，LPK v2 lint 通过；包内 295 个条目均为静态 Web 内容，不含 Mihomo、
+  配置、订阅、密钥、数据库、native binary 或运行态数据。安装后 project `0.3.0` 与两个
+  容器均 healthy。
+- 2026-08-23：严格按版本对完成回滚演练：先用 opaque backup 恢复旧 API/unit/runtime
+  contract 并确认 API health 与旧 contract 行为，再安装已证明身份的 baseline LPK
+  `b758f1c4cb593343526f9c5d6a8565d9b2156a900deeb1241dade661f8eddeff`；project
+  `0.2.0`、app/fetchproxy 与 API/fetch health 均通过。随后再次 API-first 部署候选配对版本，
+  再安装 exact candidate LPK，最终恢复 project `0.3.0` 与候选 runtime contract。
+- 2026-08-23：回滚与最终恢复前后，host-native Mihomo 始终为 `v1.19.30`，
+  `ActiveEnterTimestampMonotonic=129115776897`、`NRestarts=0`，固定 listener、DNS listener
+  计数与 TUN interface 计数均未漂移；没有重启/升级核心，没有修改 TUN、DNS、路由、Compose
+  或 bootstrap。浏览器会话不可用，因此不声明 selector/视觉 UI smoke；UI 证据限定为 CLI、
+  project/container status、静态入口、route、health 与 runtime contract 检查。
+- 2026-08-23：独立 current-head Review 在 exact head
+  `13f175967f5ad57b9daaff342aec4bdb695da8c6` 返回五项 finding：runtime contract 指向不存在
+  的 Git object、DNS validation tuple 未在 command boundary 归一化、缺失的 `fake-ip-range6`
+  被默认写入、订阅 URL query 在 transport 前被剥离，以及 profile body 在 size gate 前无界读取。
+- 2026-08-23：按 Review 预算完成唯一一次集中修复：runtime contract 改绑真实 functional
+  commit `9bd7956fa17a61b3a6c34649d47ce8cd708bf69f`，部署在任何 SSH 前验证本地 commit object；
+  DNS tuple 统一为 `ValidationOutcome`，可选 IPv6 fake-IP range 缺失时保持空白并在保存时省略；
+  subscription transport 保留 query 而诊断输出继续脱敏，raw/gzip payload 均以
+  `PROFILE_MAX_BYTES + 1` 有界读取。新增 fault-injection、frontend 与 API 单元测试；新 exact
+  HEAD 形成后必须重跑全部门禁、配对部署/回滚及 finding closure。
 
 ### Goal
 
@@ -40,7 +140,7 @@
 ### 固定版本与运行契约
 
 - Dashboard app version：`2.5.2-webport.0`。
-- LazyCat manifest version：`0.3.0`。
+- LazyCat package version：`0.3.0`。
 - `apiSchemaVersion` / `uiSchemaVersion`：`2026.08-lzc-v2`。
 - `packageFingerprint`：
   `cloud.lazycat.app.clash-verge-for-lc/2.5.2-webport.0`。

@@ -1,136 +1,96 @@
-import { useLockFn } from "ahooks";
-import { useCallback, useEffect } from "react";
-import { useTranslation } from "react-i18next";
-import useSWR, { mutate } from "swr";
-import { closeAllConnections } from "tauri-plugin-mihomo-api";
+import { useRef } from 'react'
+import { closeAllConnections } from 'tauri-plugin-mihomo-api'
 
-import { resolveSystemProxyLockState } from "@/hooks/system-proxy-lock";
-import { useVerge } from "@/hooks/use-verge";
-import { useAppData } from "@/providers/app-data-context";
-import { getAutotemProxy } from "@/services/cmds";
-import { getWebActionPolicy } from "@root/browser/runtime";
+import { getWebActionPolicy } from '@root/browser/runtime'
+import { useVerge } from '@/hooks/use-verge'
+import { useClashConfigData, useSystemData } from '@/providers/app-data-context'
+import { getAutotemProxy } from '@/services/cmds'
+import { revalidateQueries, useQuery } from '@/services/query-client'
+import { resolveSystemProxyLockState } from './system-proxy-lock'
 
 // 系统代理状态检测统一逻辑
 export const useSystemProxyState = () => {
-  const { t } = useTranslation();
-  const { verge, mutateVerge, patchVerge } = useVerge();
-  const { sysproxy } = useAppData();
-  const { data: autoproxy } = useSWR("getAutotemProxy", getAutotemProxy, {
-    revalidateOnFocus: true,
-    revalidateOnReconnect: true,
-  });
+  const { verge, mutateVerge, patchVerge } = useVerge()
+  const { sysproxy } = useSystemData()
+  const { clashConfig } = useClashConfigData()
+  const { data: autoproxy } = useQuery({
+    queryKey: ['getAutotemProxy'],
+    queryFn: getAutotemProxy,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+  })
 
-  const { enable_system_proxy, proxy_auto_config, enable_tun_mode } = verge ?? {};
-  const systemProxyPolicy = getWebActionPolicy("systemProxy");
+  const {
+    enable_system_proxy,
+    proxy_auto_config,
+    proxy_host,
+    verge_mixed_port,
+  } = verge ?? {}
+
   const { systemProxyDisabled, systemProxyDisabledReason } =
     resolveSystemProxyLockState({
-      policy: systemProxyPolicy,
-      tunEnabled: !!enable_tun_mode,
-      tunReason: t("settings.sections.proxyControl.tooltips.tunMode"),
-    });
+      policy: getWebActionPolicy('systemProxy'),
+      tunEnabled: false,
+      tunReason: '',
+    })
 
-  const getSystemProxyActualState = () => {
-    const userEnabled = enable_system_proxy ?? false;
-
-    // 用户配置状态应该与系统实际状态一致
-    // 如果用户启用了系统代理，检查实际的系统状态
-    if (userEnabled) {
-      if (proxy_auto_config) {
-        return autoproxy?.enable ?? false;
-      } else {
-        return sysproxy?.enable ?? false;
-      }
-    }
-
-    // 用户没有启用时，返回 false
-    return false;
-  };
-
-  const getSystemProxyIndicator = () => {
+  // OS 实际状态：enable + 地址匹配本应用
+  const indicator = systemProxyDisabled
+    ? false
+    : (() => {
+    const host = proxy_host || '127.0.0.1'
     if (proxy_auto_config) {
-      return autoproxy?.enable ?? false;
+      if (!autoproxy?.enable) return false
+      const pacPort = import.meta.env.DEV ? 11233 : 33331
+      return autoproxy.url === `http://${host}:${pacPort}/commands/pac`
     } else {
-      return sysproxy?.enable ?? false;
+      if (!sysproxy?.enable) return false
+      const port = verge_mixed_port || clashConfig?.mixedPort || 7897
+      return sysproxy.server === `${host}:${port}`
     }
-  };
+      })()
 
-  const updateProxyStatus = useCallback(async (isEnabling: boolean) => {
-    // 关闭时更快响应，开启时等待系统确认
-    const delay = isEnabling ? 20 : 10;
-    await new Promise((resolve) => setTimeout(resolve, delay));
-    await mutate("getSystemProxy");
-    await mutate("getAutotemProxy");
-  }, []);
+  // "最后一次生效"模式：快速连续点击时，只执行最终状态
+  const pendingRef = useRef<boolean | null>(null)
+  const busyRef = useRef(false)
 
-  useEffect(() => {
-    if (!enable_tun_mode || !enable_system_proxy) return;
-
-    let cancelled = false;
-    const disableSystemProxyForTun = async () => {
-      mutateVerge({ ...verge, enable_system_proxy: false }, false);
-      try {
-        if (verge?.auto_close_connection) {
-          await closeAllConnections();
-        }
-        await patchVerge({ enable_system_proxy: false });
-        if (!cancelled) {
-          await updateProxyStatus(false);
-        }
-      } catch (error) {
-        console.warn(
-          "[useSystemProxyState] failed to disable system proxy when TUN is enabled:",
-          error,
-        );
-        if (!cancelled) {
-          mutateVerge({ ...verge, enable_system_proxy: true }, false);
-          await updateProxyStatus(true);
-        }
-      }
-    };
-
-    void disableSystemProxyForTun();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    enable_tun_mode,
-    enable_system_proxy,
-    mutateVerge,
-    patchVerge,
-    updateProxyStatus,
-    verge,
-  ]);
-
-  const toggleSystemProxy = useLockFn(async (enabled: boolean) => {
+  const toggleSystemProxy = async (enabled: boolean) => {
     if (systemProxyDisabled) {
-      throw new Error(systemProxyDisabledReason || systemProxyPolicy.reason);
+      throw new Error(systemProxyDisabledReason)
     }
-    mutateVerge({ ...verge, enable_system_proxy: enabled }, false);
+    mutateVerge(
+      (prev) => (prev ? { ...prev, enable_system_proxy: enabled } : prev),
+      false,
+    )
+    pendingRef.current = enabled
+
+    if (busyRef.current) return
+    busyRef.current = true
 
     try {
-      if (!enabled && verge?.auto_close_connection) {
-        await closeAllConnections();
+      while (pendingRef.current !== null) {
+        const target = pendingRef.current
+        pendingRef.current = null
+        await patchVerge({ enable_system_proxy: target })
+        if (!target && verge?.auto_close_connection) {
+          await closeAllConnections().catch(() => {})
+        }
       }
-      await patchVerge({ enable_system_proxy: enabled });
-      await updateProxyStatus(enabled);
-    } catch (error) {
-      console.warn("[useSystemProxyState] toggleSystemProxy failed:", error);
-      mutateVerge({ ...verge, enable_system_proxy: !enabled }, false);
-      await updateProxyStatus(!enabled);
-      throw error;
+    } finally {
+      busyRef.current = false
+      await revalidateQueries([['getSystemProxy'], ['getAutotemProxy']])
     }
-  });
+  }
+
+  const invalidateProxyState = () =>
+    revalidateQueries([['getSystemProxy'], ['getAutotemProxy']])
 
   return {
-    actualState: getSystemProxyActualState(),
-    indicator: getSystemProxyIndicator(),
-    configState: enable_system_proxy ?? false,
-    sysproxy,
-    autoproxy,
-    proxy_auto_config,
+    indicator,
+    configState: systemProxyDisabled ? false : (enable_system_proxy ?? false),
+    toggleSystemProxy,
+    invalidateProxyState,
     systemProxyDisabled,
     systemProxyDisabledReason,
-    toggleSystemProxy,
-  };
-};
+  }
+}

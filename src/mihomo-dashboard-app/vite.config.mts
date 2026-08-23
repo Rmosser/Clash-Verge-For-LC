@@ -1,6 +1,7 @@
 import path from "node:path";
+
 import legacy from "@vitejs/plugin-legacy";
-import react from "@vitejs/plugin-react-swc";
+import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import svgr from "vite-plugin-svgr";
 
@@ -23,31 +24,29 @@ export default defineConfig({
     react(),
     {
       name: "lzcapp-config-inject",
-      transformIndexHtml(html) {
+      transformIndexHtml(html: string) {
         return {
           html,
           tags: [
             {
               tag: "script",
               attrs: { src: "./lzcapp-config.js" },
-              injectTo: "head-prepend"
-            }
-          ]
+              injectTo: "head-prepend",
+            },
+          ],
         };
-      }
+      },
     },
     legacy({
-      targets: ["edge>=109", "safari>=13"],
+      modernTargets: ["edge>=109", "safari>=14"],
       renderLegacyChunks: false,
-      modernPolyfills: true,
+      modernPolyfills: ["es.object.has-own", "web.structured-clone"],
       additionalModernPolyfills: [
-        "core-js/modules/es.object.has-own.js",
-        "core-js/modules/web.structured-clone.js",
         resolveVendor("src/polyfills/matchMedia.js"),
         resolveVendor("src/polyfills/WeakRef.js"),
-        resolveVendor("src/polyfills/RegExp.js")
-      ]
-    })
+        resolveVendor("src/polyfills/RegExp.js"),
+      ],
+    }),
   ],
   build: {
     outDir: resolveApp("dist"),
@@ -64,12 +63,12 @@ export default defineConfig({
         drop_debugger: true,
         pure_funcs: ["console.debug", "console.trace"],
         dead_code: true,
-        unused: true
+        unused: true,
       },
       mangle: {
-        safari10: true
-      }
-    }
+        safari10: true,
+      },
+    },
   },
   resolve: {
     alias: [
@@ -80,43 +79,37 @@ export default defineConfig({
       exactAlias(/^@tauri-apps\/api\/path$/, resolveApp("browser/shims/tauri-api-path.ts")),
       exactAlias(
         /^@tauri-apps\/api\/webviewWindow$/,
-        resolveApp("browser/shims/tauri-api-webviewWindow.ts")
+        resolveApp("browser/shims/tauri-api-webviewWindow.ts"),
       ),
       exactAlias(/^@tauri-apps\/api\/window$/, resolveApp("browser/shims/tauri-api-window.ts")),
       exactAlias(
         /^@tauri-apps\/plugin-clipboard-manager$/,
-        resolveApp("browser/shims/tauri-plugin-clipboard-manager.ts")
+        resolveApp("browser/shims/tauri-plugin-clipboard-manager.ts"),
       ),
       exactAlias(
         /^@tauri-apps\/plugin-dialog$/,
-        resolveApp("browser/shims/tauri-plugin-dialog.ts")
+        resolveApp("browser/shims/tauri-plugin-dialog.ts"),
       ),
       exactAlias(/^@tauri-apps\/plugin-fs$/, resolveApp("browser/shims/tauri-plugin-fs.ts")),
       exactAlias(/^@tauri-apps\/plugin-http$/, resolveApp("browser/shims/tauri-plugin-http.ts")),
       exactAlias(
         /^@tauri-apps\/plugin-process$/,
-        resolveApp("browser/shims/tauri-plugin-process.ts")
+        resolveApp("browser/shims/tauri-plugin-process.ts"),
       ),
       exactAlias(/^@tauri-apps\/plugin-shell$/, resolveApp("browser/shims/tauri-plugin-shell.ts")),
       exactAlias(
         /^@tauri-apps\/plugin-updater$/,
-        resolveApp("browser/shims/tauri-plugin-updater.ts")
+        resolveApp("browser/shims/tauri-plugin-updater.ts"),
       ),
       exactAlias(
         /^tauri-plugin-mihomo-api$/,
-        resolveApp("browser/shims/tauri-plugin-mihomo-api.ts")
+        resolveApp("browser/shims/tauri-plugin-mihomo-api.ts"),
       ),
-      {
-        find: "@",
-        replacement: VENDOR_SRC
-      },
-      {
-        find: "@root",
-        replacement: APP_ROOT
-      }
-    ]
+      { find: "@", replacement: VENDOR_SRC },
+      { find: "@root", replacement: APP_ROOT },
+    ],
   },
   define: {
-    OS_PLATFORM: "\"linux\""
-  }
+    OS_PLATFORM: '"linux"',
+  },
 });

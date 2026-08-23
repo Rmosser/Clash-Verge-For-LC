@@ -47,12 +47,12 @@
         "importFailedInvalidContent": "Subscription content is invalid or missing required sections (proxy-groups/rules/proxies).",
         "importFailedApply": "Subscription was saved, but applying runtime config failed. Check logs and retry.",
         "importNodesTimeout": "Subscription applied, but proxy nodes were not ready in time. Check provider URLs or refresh later.",
-        "importSavedNotActive": "Subscription {{name}} imported (not active yet; switch profile to apply)",
+        "importSavedNotActive": "Profile {{name}} imported (not active yet; switch profile to apply)",
         "importNeedsRefresh": "Profile imported but may need manual refresh",
         "importSuccess": "Profile imported successfully, please restart if not visible",
         "profileSwitched": "Profile Switched",
         "profileReactivated": "Profile Reactivated",
-        "switchInterrupted": "Profile switch interrupted by new selection",
+        "switchBusy": "Profile switch is already in progress",
         "batchDeleted": "Selected profiles deleted successfully"
       },
       "notices": {
@@ -74,6 +74,7 @@
     "menu": {
       "home": "Home",
       "select": "Select",
+      "shareQrCode": "Share QR Code",
       "editInfo": "Edit Info",
       "editFile": "Edit File",
       "editRules": "Edit Rules",
@@ -192,6 +193,9 @@
     },
     "logViewer": {
       "title": "Script Console"
+    },
+    "qrViewer": {
+      "title": "Subscription QR Code"
     }
   }
 }

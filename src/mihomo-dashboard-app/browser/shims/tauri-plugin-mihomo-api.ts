@@ -15,7 +15,12 @@ export type Rule = {
   size?: number;
 };
 export type RulesResponse = { rules: Rule[] };
-export type Traffic = { up: number; down: number };
+export type Traffic = {
+  up: number;
+  down: number;
+  upTotal: number;
+  downTotal: number;
+};
 export type DelayProbeResult = {
   target: string;
   status: "success" | "timeout" | "network_error" | "target_unreachable";
@@ -25,7 +30,7 @@ export type DelayProbeResult = {
   errorMessage?: string;
 };
 export type ProxyDelay = DelayProbeResult;
-export type LogLevel = "debug" | "info" | "warning" | "error" | "silent";
+export type LogLevel = "DEBUG" | "INFO" | "WARNING" | "ERROR" | "SILENT";
 export type Message = { type: "Text"; data: string };
 
 const encodeName = (value: string) => encodeURIComponent(value);
@@ -56,6 +61,22 @@ const wsBase = () => {
 
 type Listener = (msg: Message) => void;
 
+export const normalizeTraffic = (value: unknown): Traffic => {
+  const candidate = value && typeof value === "object" ? value : {};
+  const record = candidate as Record<string, unknown>;
+  const numberOrZero = (key: string) =>
+    typeof record[key] === "number" && Number.isFinite(record[key])
+      ? (record[key] as number)
+      : 0;
+
+  return {
+    up: numberOrZero("up"),
+    down: numberOrZero("down"),
+    upTotal: numberOrZero("upTotal"),
+    downTotal: numberOrZero("downTotal"),
+  };
+};
+
 export class MihomoWebSocket {
   private listeners = new Set<Listener>();
   private static all = new Set<MihomoWebSocket>();
@@ -78,10 +99,15 @@ export class MihomoWebSocket {
 
   addListener(listener: Listener) {
     this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
 
   async close() {
-    this.socket.close();
+    this.listeners.clear();
+    MihomoWebSocket.all.delete(this);
+    if (this.socket.readyState === WebSocket.OPEN) {
+      this.socket.close();
+    }
   }
 
   private static async connect(pathWithQuery: string) {
@@ -121,7 +147,9 @@ export class MihomoWebSocket {
   }
 
   static connect_logs(level: LogLevel) {
-    return MihomoWebSocket.connect(`/logs?level=${encodeURIComponent(level)}`);
+    return MihomoWebSocket.connect(
+      `/logs?level=${encodeURIComponent(level.toLowerCase())}`,
+    );
   }
 
   static cleanupAll() {
@@ -190,6 +218,27 @@ export const healthcheckProxyProvider = async (provider: string) => {
   if (!response.ok) {
     throw new Error(await response.text());
   }
+};
+export const healthcheckNodeInProvider = async (
+  provider: string,
+  name: string,
+  url = "http://cp.cloudflare.com",
+  timeout = 10000,
+): Promise<ProxyDelay> => {
+  const result = await vergeInvoke<ProxyDelay>(
+    "clash_api_get_provider_proxy_delay",
+    { provider, name, url, timeout },
+  );
+  return {
+    ...result,
+    target: result.target || name,
+    delay:
+      typeof result.delay === "number"
+        ? result.delay
+        : typeof result.latencyMs === "number"
+          ? result.latencyMs
+          : 1_000_000,
+  };
 };
 export const delayProxyByName = async (
   name: string,

@@ -5,7 +5,9 @@ import base64
 import concurrent.futures
 import copy
 import datetime as dt
+import gzip
 import grp
+import io
 import json
 import mimetypes
 import os
@@ -14,9 +16,11 @@ import re
 import secrets
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -36,7 +40,7 @@ if MODULE_DIR not in sys.path:
 from mihomo_core_updater import DEFAULT_STABLE_TAG, upgrade_core
 
 
-APP_VERSION = os.environ.get("MIHOMO_VERGE_APP_VERSION", "2.4.7-webport.0")
+APP_VERSION = os.environ.get("MIHOMO_VERGE_APP_VERSION", "2.5.2-webport.0")
 BUILD_ID = os.environ.get("MIHOMO_VERGE_BUILD_ID", "")
 GIT_COMMIT = os.environ.get("MIHOMO_VERGE_GIT_COMMIT", "")
 PACKAGE_FINGERPRINT = os.environ.get("MIHOMO_VERGE_PACKAGE_FINGERPRINT", "")
@@ -44,6 +48,10 @@ RUNTIME_CONTRACT_ENV_PATH = os.environ.get("MIHOMO_VERGE_RUNTIME_CONTRACT_PATH",
 APP_START = time.time()
 ENSURING_EMPTY_RUNTIME = False
 RUNTIME_CONTRACT_CACHE: dict[str, Any] | None = None
+PROFILE_MAX_BYTES = int(
+    os.environ.get("MIHOMO_VERGE_PROFILE_MAX_BYTES", str(12 * 1024 * 1024))
+)
+PROFILE_MUTATION_LOCK = threading.Lock()
 
 BIND = os.environ.get("VERGE_API_BIND", "172.18.0.1:9091")
 if ":" in BIND:
@@ -240,8 +248,8 @@ DEFAULT_RUNTIME_CONTRACT = {
     "appVersion": APP_VERSION,
     "buildId": BUILD_ID or APP_VERSION,
     "gitCommit": GIT_COMMIT or "unknown",
-    "apiSchemaVersion": "2026.03-lzc-v1",
-    "uiSchemaVersion": "2026.03-lzc-v1",
+    "apiSchemaVersion": "2026.08-lzc-v2",
+    "uiSchemaVersion": "2026.08-lzc-v2",
     "packageFingerprint": PACKAGE_FINGERPRINT
     or f"cloud.lazycat.app.clash-verge-for-lc/{APP_VERSION}",
     "capabilities": {
@@ -540,6 +548,27 @@ class ApiError(RuntimeError):
         self.layer = layer
         self.recoverable = recoverable
         self.warning = warning
+
+
+def validation_valid(data: Any = None) -> dict[str, Any]:
+    result: dict[str, Any] = {"status": "valid"}
+    if data is not None:
+        result["data"] = data
+    return result
+
+
+def validation_invalid(exc: Exception, *, fallback_code: str) -> dict[str, Any]:
+    if isinstance(exc, ApiError):
+        kind = exc.code
+        message = exc.message
+    else:
+        kind = fallback_code
+        message = str(exc)
+    return {
+        "status": "invalid",
+        "kind": kind,
+        "message": message,
+    }
 
 
 def error_envelope(
@@ -938,6 +967,57 @@ def load_overlay() -> dict[str, Any]:
     return load_json(OVERLAY_JSON_PATH, {})
 
 
+def get_clash_mode() -> str | None:
+    overlay_mode = load_overlay().get("mode")
+    if isinstance(overlay_mode, str) and overlay_mode.strip():
+        return overlay_mode.strip()
+    try:
+        runtime = controller_request("GET", "/configs", timeout=6)
+    except Exception:
+        return None
+    if isinstance(runtime, dict):
+        mode = runtime.get("mode")
+        if isinstance(mode, str) and mode.strip():
+            return mode.strip()
+    return None
+
+
+def get_runtime_proxy_group_order() -> list[str]:
+    try:
+        runtime = controller_request("GET", "/configs", timeout=6)
+    except Exception:
+        runtime = {}
+
+    if isinstance(runtime, dict):
+        groups = runtime.get("proxy-groups")
+        if isinstance(groups, list):
+            names = [
+                str(item.get("name")).strip()
+                for item in groups
+                if isinstance(item, dict) and str(item.get("name") or "").strip()
+            ]
+            if names:
+                return unique_preserve_order(names)
+
+    if not MIHOMO_CONFIG_PATH.exists():
+        return []
+    names: list[str] = []
+    in_group_block = False
+    for line in MIHOMO_CONFIG_PATH.read_text(encoding="utf-8").splitlines():
+        if line == "proxy-groups:" or line.startswith("proxy-groups:"):
+            in_group_block = True
+            continue
+        if in_group_block and line and not line.startswith((" ", "\t")):
+            break
+        if in_group_block:
+            match = re.match(r"^\s*-\s+name:\s*(.*?)\s*$", line)
+            if match:
+                name = parse_yaml_scalar(match.group(1))
+                if name:
+                    names.append(name)
+    return unique_preserve_order(names)
+
+
 def load_dns_config() -> dict[str, Any]:
     return load_dns_state()["dns"]
 
@@ -1116,6 +1196,148 @@ def profile_import_transport(option: dict[str, Any]) -> str:
     return "system"
 
 
+def sanitize_profile_url(url: str) -> str:
+    """Keep diagnostics useful without retaining userinfo or query secrets."""
+    try:
+        parsed = urllib.parse.urlsplit(str(url))
+        hostname = parsed.hostname or ""
+        if ":" in hostname and not hostname.startswith("["):
+            hostname = f"[{hostname}]"
+        port = ""
+        try:
+            if parsed.port is not None:
+                port = f":{parsed.port}"
+        except ValueError:
+            port = ""
+        netloc = f"{hostname}{port}"
+        return urllib.parse.urlunsplit(
+            (parsed.scheme.lower(), netloc, parsed.path or "/", "", "")
+        )
+    except Exception:
+        return "<invalid-profile-url>"
+
+
+def profile_url_credentials(url: str) -> tuple[str, str | None, str | None]:
+    parsed = urllib.parse.urlsplit(str(url))
+    username = parsed.username
+    password = parsed.password
+
+    hostname = parsed.hostname or ""
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    port = ""
+    try:
+        if parsed.port is not None:
+            port = f":{parsed.port}"
+    except ValueError:
+        pass
+
+    # Keep the complete query for tokenized subscriptions, while removing
+    # userinfo from the URL because credentials are sent explicitly below.
+    transport_url = urllib.parse.urlunsplit(
+        (
+            parsed.scheme.lower(),
+            f"{hostname}{port}",
+            parsed.path or "/",
+            parsed.query,
+            "",
+        )
+    )
+    if username is None:
+        return transport_url, None, None
+
+    username = urllib.parse.unquote(username)
+    password = urllib.parse.unquote(password or "")
+    return transport_url, username, password
+
+
+def profile_url_origin(url: str) -> tuple[str, str, int | None]:
+    parsed = urllib.parse.urlsplit(str(url))
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if port is None:
+        port = 443 if parsed.scheme.lower() == "https" else 80
+    return parsed.scheme.lower(), (parsed.hostname or "").lower(), port
+
+
+class ProfileRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is None:
+            return None
+        if profile_url_origin(req.full_url) != profile_url_origin(newurl):
+            for key in list(redirected.headers):
+                if key.lower() == "authorization":
+                    del redirected.headers[key]
+            for key in list(redirected.unredirected_hdrs):
+                if key.lower() == "authorization":
+                    del redirected.unredirected_hdrs[key]
+        return redirected
+
+
+def profile_tls_context() -> ssl.SSLContext:
+    context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
+def read_profile_response_payload(response: Any) -> str:
+    read_limit = max(0, PROFILE_MAX_BYTES) + 1
+    raw = response.read(read_limit)
+    if not isinstance(raw, (bytes, bytearray)):
+        raw = str(raw).encode("utf-8")
+    payload_bytes = bytes(raw)
+    if len(payload_bytes) > PROFILE_MAX_BYTES:
+        raise ApiError(
+            "PROFILE_CONTENT_TOO_LARGE",
+            "订阅内容超过大小限制。",
+            status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+            layer="profile-import",
+            recoverable=True,
+        )
+
+    encoding = str(response.headers.get("Content-Encoding", "")).lower()
+    if "gzip" in encoding or payload_bytes.startswith(b"\x1f\x8b"):
+        try:
+            with gzip.GzipFile(fileobj=io.BytesIO(payload_bytes)) as stream:
+                payload_bytes = stream.read(read_limit)
+        except (OSError, EOFError) as exc:
+            raise ApiError(
+                "PROFILE_CONTENT_INVALID",
+                "订阅 gzip 内容无法解压。",
+                status=HTTPStatus.BAD_REQUEST,
+                layer="profile-import",
+                recoverable=True,
+            ) from exc
+
+    if len(payload_bytes) > PROFILE_MAX_BYTES:
+        raise ApiError(
+            "PROFILE_CONTENT_TOO_LARGE",
+            "订阅内容超过大小限制。",
+            status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+            layer="profile-import",
+            recoverable=True,
+        )
+
+    content_type = str(response.headers.get("Content-Type", "")).lower()
+    charset_match = re.search(r"charset=\s*['\"]?([\w.-]+)", content_type)
+    charset = charset_match.group(1) if charset_match else "utf-8"
+    try:
+        return payload_bytes.decode(charset, errors="replace")
+    except LookupError:
+        return payload_bytes.decode("utf-8", errors="replace")
+
+
 def looks_like_html_payload(payload: str) -> bool:
     sample = payload.lstrip().lower()
     return sample.startswith("<!doctype html") or sample.startswith("<html")
@@ -1153,6 +1375,7 @@ def validate_remote_profile_payload(
     content_type: str,
     source_url: str,
 ) -> dict[str, Any]:
+    source_url = sanitize_profile_url(source_url)
     normalized = payload.lstrip("\ufeff")
     lowered_ct = content_type.lower()
     if "text/html" in lowered_ct or looks_like_html_payload(normalized):
@@ -1583,6 +1806,33 @@ def classify_delay_error(exc: Exception) -> tuple[str, str]:
     return "network_error", "延迟测试失败"
 
 
+def controller_delay_result(
+    path: str,
+    target: str,
+    url: str,
+    timeout: int,
+) -> dict[str, Any]:
+    query = urllib.parse.urlencode({"timeout": timeout, "url": url})
+    try:
+        result = controller_request("GET", f"{path}?{query}", timeout=max(1, timeout // 1000 + 2))
+        delay = int((result or {}).get("delay") or 0)
+        return {
+            "target": target,
+            "status": "success",
+            "latencyMs": delay,
+            "delay": delay,
+        }
+    except Exception as exc:
+        error_code, error_message = classify_delay_error(exc)
+        return {
+            "target": target,
+            "status": error_code,
+            "delay": timeout if error_code == "timeout" else 1_000_000,
+            "errorCode": error_code,
+            "errorMessage": error_message,
+        }
+
+
 def classify_probe_error(exc: Exception) -> tuple[str, str]:
     message = str(exc).lower()
     if isinstance(exc, urllib.error.HTTPError):
@@ -1717,6 +1967,34 @@ def runtime_info_payload() -> dict[str, Any]:
         "capabilities": capabilities,
         "probeHealth": runtime_probe_health(),
         "profileHealth": profile_health,
+    }
+
+
+def runtime_contract_probe_payload() -> dict[str, Any]:
+    """Return only non-sensitive contract fields for deployment validation."""
+    contract = load_runtime_contract()
+    capabilities = contract.get("capabilities") or DEFAULT_RUNTIME_CONTRACT["capabilities"]
+    system_proxy = capabilities.get("systemProxy") if isinstance(capabilities, dict) else {}
+    return {
+        "platform": str(contract.get("platform") or DEFAULT_RUNTIME_CONTRACT["platform"]),
+        "appVersion": str(contract.get("appVersion") or APP_VERSION),
+        "buildId": str(contract.get("buildId") or APP_VERSION),
+        "gitCommit": str(contract.get("gitCommit") or "unknown"),
+        "apiSchemaVersion": str(
+            contract.get("apiSchemaVersion")
+            or DEFAULT_RUNTIME_CONTRACT["apiSchemaVersion"]
+        ),
+        "uiSchemaVersion": str(
+            contract.get("uiSchemaVersion")
+            or DEFAULT_RUNTIME_CONTRACT["uiSchemaVersion"]
+        ),
+        "packageFingerprint": str(
+            contract.get("packageFingerprint")
+            or DEFAULT_RUNTIME_CONTRACT["packageFingerprint"]
+        ),
+        "systemProxy": {
+            "mode": str((system_proxy or {}).get("mode") or "disabled"),
+        },
     }
 
 
@@ -2134,6 +2412,8 @@ def fetch_remote_profile(
     option = option or {}
     timeout = int(option.get("timeout_seconds") or 20)
     transport = profile_import_transport(option)
+    request_url, username, password = profile_url_credentials(url)
+    diagnostic_url = sanitize_profile_url(request_url)
     handlers: list[Any] = []
     if option.get("self_proxy"):
         verge = get_verge_config_state()
@@ -2144,18 +2424,29 @@ def fetch_remote_profile(
         )
     elif option.get("with_proxy") is False:
         handlers.append(urllib.request.ProxyHandler({}))
+    handlers.extend(
+        [
+            ProfileRedirectHandler(),
+            urllib.request.HTTPSHandler(context=profile_tls_context()),
+        ]
+    )
 
     opener = urllib.request.build_opener(*handlers)
     request = urllib.request.Request(
-        url,
+        request_url,
         headers={
             "User-Agent": str(option.get("user_agent") or "clash-verge-webport/1.0")
         },
     )
+    if username is not None:
+        basic = base64.b64encode(
+            f"{username}:{password or ''}".encode("utf-8")
+        ).decode("ascii")
+        request.add_header("Authorization", f"Basic {basic}")
     started = now_ms()
     try:
         with opener.open(request, timeout=timeout) as response:
-            payload = response.read().decode("utf-8", errors="replace")
+            payload = read_profile_response_payload(response)
             info = parse_subscription_userinfo(
                 response.headers.get("subscription-userinfo", "")
             )
@@ -2164,12 +2455,12 @@ def fetch_remote_profile(
             validation = validate_remote_profile_payload(
                 payload,
                 content_type=content_type,
-                source_url=url,
+                source_url=request_url,
             )
-            name_hint = resolve_remote_profile_name_hint(url, headers)
+            name_hint = resolve_remote_profile_name_hint(request_url, headers)
             elapsed_ms = max(0, now_ms() - started)
             metadata = {
-                "url": url,
+                "url": diagnostic_url,
                 "transport": transport,
                 "timeoutSeconds": timeout,
                 "elapsedMs": elapsed_ms,
@@ -2181,11 +2472,6 @@ def fetch_remote_profile(
             return payload, info, metadata
     except urllib.error.HTTPError as exc:
         status_code = int(exc.code or 0)
-        response_body = ""
-        try:
-            response_body = exc.read().decode("utf-8", errors="replace")
-        except Exception:
-            response_body = ""
         api_status = (
             HTTPStatus.BAD_REQUEST
             if 400 <= status_code < 500
@@ -2198,10 +2484,9 @@ def fetch_remote_profile(
             layer="profile-import",
             recoverable=True,
             warning={
-                "url": url,
+                "url": diagnostic_url,
                 "transport": transport,
                 "statusCode": status_code,
-                "bodyPreview": response_body[:200] if response_body else "",
             },
         ) from exc
     except (socket.timeout, TimeoutError) as exc:
@@ -2211,10 +2496,30 @@ def fetch_remote_profile(
             status=HTTPStatus.GATEWAY_TIMEOUT,
             layer="profile-import",
             recoverable=True,
-            warning={"url": url, "transport": transport},
+            warning={"url": diagnostic_url, "transport": transport},
+        ) from exc
+    except ssl.SSLError as exc:
+        raise ApiError(
+            "PROFILE_FETCH_TLS_ERROR",
+            "订阅服务器 TLS 握手失败。",
+            status=HTTPStatus.BAD_GATEWAY,
+            layer="profile-import",
+            recoverable=True,
+            warning={"url": diagnostic_url, "transport": transport},
         ) from exc
     except urllib.error.URLError as exc:
         reason_text = str(exc.reason or "").lower()
+        if isinstance(exc.reason, ssl.SSLError) or any(
+            token in reason_text for token in ("ssl", "tls", "handshake", "certificate")
+        ):
+            raise ApiError(
+                "PROFILE_FETCH_TLS_ERROR",
+                "订阅服务器 TLS 握手失败。",
+                status=HTTPStatus.BAD_GATEWAY,
+                layer="profile-import",
+                recoverable=True,
+                warning={"url": diagnostic_url, "transport": transport},
+            ) from exc
         if isinstance(exc.reason, (socket.timeout, TimeoutError)) or (
             "timed out" in reason_text
         ):
@@ -2224,26 +2529,26 @@ def fetch_remote_profile(
                 status=HTTPStatus.GATEWAY_TIMEOUT,
                 layer="profile-import",
                 recoverable=True,
-                warning={"url": url, "transport": transport},
+                warning={"url": diagnostic_url, "transport": transport},
             ) from exc
         raise ApiError(
             "PROFILE_FETCH_NETWORK_ERROR",
-            f"订阅拉取失败: {exc.reason}",
+            "订阅拉取失败，请检查网络或订阅链接。",
             status=HTTPStatus.BAD_GATEWAY,
             layer="profile-import",
             recoverable=True,
-            warning={"url": url, "transport": transport},
+            warning={"url": diagnostic_url, "transport": transport},
         ) from exc
     except ApiError:
         raise
     except Exception as exc:
         raise ApiError(
             "PROFILE_FETCH_NETWORK_ERROR",
-            f"订阅拉取失败: {exc}",
+            "订阅拉取失败，请检查网络或订阅链接。",
             status=HTTPStatus.BAD_GATEWAY,
             layer="profile-import",
             recoverable=True,
-            warning={"url": url, "transport": transport},
+            warning={"url": diagnostic_url, "transport": transport},
         ) from exc
 
 
@@ -2713,6 +3018,12 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
     if cmd == "get_profiles":
         return get_profiles_state()
 
+    if cmd == "get_clash_mode":
+        return get_clash_mode()
+
+    if cmd == "get_runtime_proxy_group_order":
+        return get_runtime_proxy_group_order()
+
     if cmd == "create_profile":
         item = args.get("item") or {}
         file_data = args.get("fileData")
@@ -2720,28 +3031,37 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
         return None
 
     if cmd == "import_profile":
+        if not PROFILE_MUTATION_LOCK.acquire(blocking=False):
+            return {"status": "busy"}
         url = str(args.get("url") or "")
         option = args.get("option") or default_profile_option()
-        profiles_before = get_profiles_state()
-        previous_current = str(profiles_before.get("current") or "")
-        record, import_meta = create_profile_item(
-            {"type": "remote", "url": url, "option": option},
-            None,
-        )
-        profiles_after = get_profiles_state()
-        current_uid = str(profiles_after.get("current") or "")
-        activated_current = current_uid == str(record.get("uid") or "")
-        return {
-            "profile": {
-                "uid": str(record.get("uid") or ""),
-                "name": str(record.get("name") or ""),
-                "url": str(record.get("url") or ""),
-            },
-            "activatedCurrent": activated_current,
-            "previousCurrent": previous_current,
-            "fetch": import_meta or {},
-            "validation": (import_meta or {}).get("validation") or {},
-        }
+        try:
+            profiles_before = get_profiles_state()
+            previous_current = str(profiles_before.get("current") or "")
+            record, import_meta = create_profile_item(
+                {"type": "remote", "url": url, "option": option},
+                None,
+            )
+            profiles_after = get_profiles_state()
+            current_uid = str(profiles_after.get("current") or "")
+            activated_current = current_uid == str(record.get("uid") or "")
+            return validation_valid(
+                {
+                    "profile": {
+                        "uid": str(record.get("uid") or ""),
+                        "name": str(record.get("name") or ""),
+                        "url": str(record.get("url") or ""),
+                    },
+                    "activatedCurrent": activated_current,
+                    "previousCurrent": previous_current,
+                    "fetch": import_meta or {},
+                    "validation": (import_meta or {}).get("validation") or {},
+                }
+            )
+        except Exception as exc:
+            return validation_invalid(exc, fallback_code="PROFILE_IMPORT_FAILED")
+        finally:
+            PROFILE_MUTATION_LOCK.release()
 
     if cmd == "view_profile":
         uid = str(args.get("index") or "")
@@ -2757,8 +3077,23 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
 
     if cmd == "save_profile_file":
         uid = str(args.get("index") or "")
-        update_profile_file(uid, str(args.get("fileData") or ""))
-        return None
+        if not PROFILE_MUTATION_LOCK.acquire(blocking=False):
+            return {"status": "busy"}
+        path = profile_path(uid)
+        previous_file = path.read_bytes() if path.exists() else None
+        previous_profiles = get_profiles_state()
+        try:
+            update_profile_file(uid, str(args.get("fileData") or ""))
+            return validation_valid()
+        except Exception as exc:
+            if previous_file is None:
+                path.unlink(missing_ok=True)
+            else:
+                atomic_write_bytes(path, previous_file)
+            save_profiles_state(previous_profiles)
+            return validation_invalid(exc, fallback_code="PROFILE_APPLY_FAILED")
+        finally:
+            PROFILE_MUTATION_LOCK.release()
 
     if cmd == "patch_profile":
         uid = str(args.get("index") or "")
@@ -2808,38 +3143,54 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
         return None
 
     if cmd == "patch_profiles_config":
-        profiles = get_profiles_state()
-        patch = args.get("profiles") or {}
-        previous_current = str(profiles.get("current") or "")
-        explicit_empty_patch = (
-            "items" in patch
-            and patch.get("current") == ""
-            and isinstance(patch.get("items"), list)
-            and not patch.get("items")
-        )
-        if "items" in patch and isinstance(patch["items"], list):
-            profiles["items"] = patch["items"]
-        if "current" in patch and patch["current"] != profiles.get("current"):
-            profiles["current"] = patch["current"]
-        profiles, _ = normalize_profiles_state(profiles)
-        save_profiles_state(profiles)
-        if profiles.get("current") != previous_current:
-            if profiles.get("current"):
-                apply_current_profile()
-            elif explicit_empty_patch:
+        if not PROFILE_MUTATION_LOCK.acquire(blocking=False):
+            return {"status": "busy"}
+        profiles_before = get_profiles_state()
+        try:
+            profiles = copy.deepcopy(profiles_before)
+            patch = args.get("profiles") or {}
+            previous_current = str(profiles.get("current") or "")
+            outcome: dict[str, Any] = validation_valid()
+            explicit_empty_patch = (
+                "items" in patch
+                and patch.get("current") == ""
+                and isinstance(patch.get("items"), list)
+                and not patch.get("items")
+            )
+            if "items" in patch and isinstance(patch["items"], list):
+                profiles["items"] = patch["items"]
+            if "current" in patch and patch["current"] != profiles.get("current"):
+                profiles["current"] = patch["current"]
+            profiles, _ = normalize_profiles_state(profiles)
+            save_profiles_state(profiles)
+            if profiles.get("current") != previous_current:
+                if profiles.get("current"):
+                    apply_current_profile()
+                elif explicit_empty_patch:
+                    apply_empty_profile_runtime()
+                else:
+                    mark_runtime_profile_degraded(
+                        "配置列表短暂进入空状态，继续保留上一次成功运行态。"
+                    )
+                    append_operation_log(
+                        "skipped applying empty runtime for transient empty profile state"
+                    )
+                    outcome = {
+                        "status": "skipped",
+                        "reason": "transient-empty-last-good",
+                    }
+            elif not profiles.get("current") and explicit_empty_patch:
                 apply_empty_profile_runtime()
-            else:
-                mark_runtime_profile_degraded(
-                    "配置列表短暂进入空状态，继续保留上一次成功运行态。"
-                )
-                append_operation_log(
-                    "skipped applying empty runtime for transient empty profile state"
-                )
-        elif not profiles.get("current") and explicit_empty_patch:
-            apply_empty_profile_runtime()
-        return True
+            return outcome
+        except Exception as exc:
+            save_profiles_state(profiles_before)
+            return validation_invalid(exc, fallback_code="PROFILE_APPLY_FAILED")
+        finally:
+            PROFILE_MUTATION_LOCK.release()
 
     if cmd == "enhance_profiles":
+        if not PROFILE_MUTATION_LOCK.acquire(blocking=False):
+            return {"status": "busy"}
         try:
             profiles = get_profiles_state()
             if profiles.get("current"):
@@ -2850,17 +3201,22 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
                 mark_runtime_profile_degraded(
                     "当前配置列表为空，继续保留上一次成功运行态。"
                 )
-        except ApiError:
-            raise
+            return validation_valid()
+        except ApiError as exc:
+            return validation_invalid(exc, fallback_code="PROFILE_APPLY_FAILED")
         except Exception as exc:
-            raise ApiError(
-                "PROFILE_APPLY_FAILED",
-                f"应用运行时配置失败: {exc}",
-                status=HTTPStatus.BAD_GATEWAY,
-                layer="runtime",
-                recoverable=False,
-            ) from exc
-        return None
+            return validation_invalid(
+                ApiError(
+                    "PROFILE_APPLY_FAILED",
+                    f"应用运行时配置失败: {exc}",
+                    status=HTTPStatus.BAD_GATEWAY,
+                    layer="runtime",
+                    recoverable=False,
+                ),
+                fallback_code="PROFILE_APPLY_FAILED",
+            )
+        finally:
+            PROFILE_MUTATION_LOCK.release()
 
     if cmd == "get_clash_info":
         runtime = controller_request("GET", "/configs")
@@ -3268,27 +3624,24 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
 
     if cmd == "clash_api_get_proxy_delay":
         raw_name = str(args.get("name") or "")
-        name = urllib.parse.quote(raw_name)
-        url = urllib.parse.quote(str(args.get("url") or "http://cp.cloudflare.com"), safe="")
+        name = urllib.parse.quote(raw_name, safe="")
+        url = str(args.get("url") or "http://cp.cloudflare.com")
         timeout = int(args.get("timeout") or 10000)
-        try:
-            result = controller_request("GET", f"/proxies/{name}/delay?timeout={timeout}&url={url}")
-            delay = int((result or {}).get("delay") or 0)
-            return {
-                "target": raw_name,
-                "status": "success",
-                "latencyMs": delay,
-                "delay": delay,
-            }
-        except Exception as exc:
-            error_code, error_message = classify_delay_error(exc)
-            return {
-                "target": raw_name,
-                "status": error_code,
-                "delay": timeout if error_code == "timeout" else 1_000_000,
-                "errorCode": error_code,
-                "errorMessage": error_message,
-            }
+        return controller_delay_result(f"/proxies/{name}/delay", raw_name, url, timeout)
+
+    if cmd == "clash_api_get_provider_proxy_delay":
+        provider = str(args.get("provider") or "")
+        raw_name = str(args.get("name") or "")
+        provider_path = urllib.parse.quote(provider, safe="")
+        name_path = urllib.parse.quote(raw_name, safe="")
+        url = str(args.get("url") or "http://cp.cloudflare.com")
+        timeout = int(args.get("timeout") or 10000)
+        return controller_delay_result(
+            f"/providers/proxies/{provider_path}/{name_path}/delay",
+            raw_name,
+            url,
+            timeout,
+        )
 
     if cmd == "test_delay":
         target = str(args.get("url") or "http://cp.cloudflare.com")
@@ -3405,6 +3758,9 @@ class VergeApiHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/runtime-info":
+            if urllib.parse.parse_qs(parsed.query).get("scope", [""])[0] == "contract":
+                self.send_json(runtime_contract_probe_payload())
+                return
             if not self.authenticate(allow_query_token=True, allow_lazycat_session=True):
                 self.send_json(
                     error_envelope(

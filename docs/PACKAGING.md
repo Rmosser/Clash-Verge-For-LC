@@ -2,6 +2,10 @@
 
 这份文档只定义 LPK 打包，不定义宿主机部署。
 
+LPK v2 的包名、版本和本地化元数据以
+`src/mihomo-dashboard-app/package.yml` 为准；应用路由、服务和 healthcheck
+仍由相邻的 `lzc-manifest.yml` 定义。
+
 ## 只出包
 
 ```bash

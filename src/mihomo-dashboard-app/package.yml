@@ -1,0 +1,14 @@
+package: cloud.lazycat.app.clash-verge-for-lc
+version: 0.3.0
+name: Clash Verge For LC
+description: Clash Verge Rev web port for Mihomo (Clash Meta), proxied via LazyCat.
+locales:
+  en:
+    name: Clash Verge For LC
+    description: Clash Verge Rev web port for Mihomo (Clash Meta), proxied via LazyCat.
+  zh:
+    name: Clash Verge For LC
+    description: 适配懒猫微服与宿主机 Mihomo 的 Clash Verge Rev Web 控制台。
+author: Rainier
+license: MIT
+homepage: https://github.com/Rmosser/Clash-Verge-For-LC

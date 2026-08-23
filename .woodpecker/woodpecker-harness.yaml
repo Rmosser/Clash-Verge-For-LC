@@ -43,10 +43,12 @@ steps:
       - git ls-files -z -- '*.sh' | xargs -0 -r -n 1 bash -n
       - bash -n infra/microserver/lzc-net-safe-apply scripts/mihomo-manager
       - node -e 'JSON.parse(require("node:fs").readFileSync("docs/doc-sync-rules.json", "utf8"))'
+      - node -e 'const [major,minor]=process.versions.node.split(".").map(Number); if (major<22||(major===22&&minor<22)) throw new Error("Node " + process.versions.node + " is below 22.22.0")'
+      - test "$(corepack pnpm@11.3.0 --version)" = "11.3.0"
       - python3 -I -B scripts/check_docs.py --all
       - bash scripts/test.sh
-      - corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app install --frozen-lockfile
-      - corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app typecheck
-      - corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app test:unit
-      - corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app lint
-      - corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app build
+      - corepack pnpm@11.3.0 --dir src/mihomo-dashboard-app install --frozen-lockfile
+      - TZ=Asia/Shanghai corepack pnpm@11.3.0 --dir src/mihomo-dashboard-app typecheck
+      - TZ=Asia/Shanghai corepack pnpm@11.3.0 --dir src/mihomo-dashboard-app test:unit
+      - TZ=Asia/Shanghai corepack pnpm@11.3.0 --dir src/mihomo-dashboard-app lint
+      - NODE_OPTIONS=--max-old-space-size=3072 TZ=Asia/Shanghai corepack pnpm@11.3.0 --dir src/mihomo-dashboard-app build

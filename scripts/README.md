@@ -9,13 +9,13 @@
 | `bash scripts/test.sh` | shell/Python 语法和微服 API 单元测试 |
 | `bash scripts/lint.sh` | shell 语法和 Python 编译检查 |
 | `python3 -I -B scripts/check_docs.py --all` | 文档入口、必需路径和本地链接 |
-| `corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app test:unit` | dashboard 单元测试 |
-| `corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app typecheck` | dashboard TypeScript 类型检查 |
-| `corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app lint` | dashboard ESLint |
-| `corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app build` | dashboard 生产构建 |
+| `npm exec --yes --package=pnpm@11.3.0 -- pnpm --dir src/mihomo-dashboard-app test:unit` | dashboard 单元测试 |
+| `npm exec --yes --package=pnpm@11.3.0 -- pnpm --dir src/mihomo-dashboard-app typecheck` | dashboard TypeScript 类型检查 |
+| `npm exec --yes --package=pnpm@11.3.0 -- pnpm --dir src/mihomo-dashboard-app lint` | dashboard ESLint |
+| `npm exec --yes --package=pnpm@11.3.0 -- pnpm --dir src/mihomo-dashboard-app build` | dashboard 生产构建 |
 
 前端命令需要先执行同版本的 frozen install；本机缺少 Corepack 时使用
-`npm exec --yes --package=pnpm@10.29.2 -- pnpm <args>`。完整命令和 CI 对应关系见
+`npm exec --yes --package=pnpm@11.3.0 -- pnpm <args>`。完整命令和 CI 对应关系见
 [../docs/quality.md](../docs/quality.md)。
 
 ## 当前默认路径
@@ -23,6 +23,7 @@
 | 脚本 | 什么时候用 | 会改什么 |
 | --- | --- | --- |
 | `deploy_microserver.sh` | 部署或重种宿主机运行时 | 下发 `mihomo`、config、systemd units、Verge API、container proxy、可选 DNS 同步 |
+| `deploy_verge_api.sh` | 只更新 rainierdev Verge API/runtime contract | 成对备份、部署或恢复 API Python、unit metadata 和 runtime contract；不读取 `.env` 或 Mihomo secret |
 | `deploy_dashboard.sh` | 安装或重装懒猫 dashboard 应用 | 构建并安装 LPK，校验 `/api`、`/verge-api` 和 websocket 链路 |
 | `build_dashboard_release.sh` | 只出可分发 LPK | 在 `output/release/<version>/` 生成版本化安装包 |
 | `install_host_native_bootstrap.sh` | 给 `rainierdev` / `rainierspace` 安装开机自举 | 采样当前 live host-native 部署并安装 root user-systemd bootstrap |

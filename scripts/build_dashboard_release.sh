@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DIR="$ROOT/src/mihomo-dashboard-app"
 MANIFEST_FILE="$APP_DIR/lzc-manifest.yml"
+PACKAGE_FILE="$APP_DIR/package.yml"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$ROOT/output/release}"
 
 usage() {
@@ -46,29 +47,9 @@ require_cmd() {
   fi
 }
 
-resolve_build_cmd() {
-  if command -v pnpm >/dev/null 2>&1; then
-    printf '%s\n' "pnpm build"
-    return 0
-  fi
-
-  if command -v corepack >/dev/null 2>&1; then
-    printf '%s\n' "corepack pnpm build"
-    return 0
-  fi
-
-  if command -v npm >/dev/null 2>&1; then
-    printf '%s\n' "npm run build"
-    return 0
-  fi
-
-  echo "ERROR: missing a supported build command (pnpm, corepack pnpm, or npm)" >&2
-  exit 1
-}
-
-read_manifest_field() {
+read_package_field() {
   local key="$1"
-  sed -n -E "s/^${key}:[[:space:]]*(.+)[[:space:]]*$/\\1/p" "$MANIFEST_FILE" | head -n 1
+  sed -n -E "s/^${key}:[[:space:]]*(.+)[[:space:]]*$/\\1/p" "$PACKAGE_FILE" | head -n 1
 }
 
 validate_dist_config() {
@@ -111,22 +92,24 @@ write_sha256() {
 
 require_cmd python3
 require_cmd lzc-cli
-BUILD_CMD="$(resolve_build_cmd)"
+require_cmd npm
 
-if [[ ! -f "$MANIFEST_FILE" ]]; then
-  echo "ERROR: manifest file not found: $MANIFEST_FILE" >&2
+PNPM_CMD=(npm exec --yes --package=pnpm@11.3.0 -- pnpm)
+
+if [[ ! -f "$PACKAGE_FILE" || ! -f "$MANIFEST_FILE" ]]; then
+  echo "ERROR: package metadata or manifest file not found" >&2
   exit 1
 fi
 
-APP_NAME="$(read_manifest_field "name")"
-APP_PACKAGE="$(read_manifest_field "package")"
-APP_VERSION="$(read_manifest_field "version")"
+APP_NAME="$(read_package_field "name")"
+APP_PACKAGE="$(read_package_field "package")"
+APP_VERSION="$(read_package_field "version")"
 APP_SUBDOMAIN="$(
   sed -n -E 's/^[[:space:]]*subdomain:[[:space:]]*(.+)[[:space:]]*$/\1/p' "$MANIFEST_FILE" | head -n 1
 )"
 
 if [[ -z "$APP_NAME" || -z "$APP_PACKAGE" || -z "$APP_VERSION" ]]; then
-  echo "ERROR: failed to parse name/package/version from $MANIFEST_FILE" >&2
+  echo "ERROR: failed to parse name/package/version from $PACKAGE_FILE" >&2
   exit 1
 fi
 
@@ -144,7 +127,7 @@ rm -f "$LPK_PATH" "$SHA_PATH" "$README_PATH" "$BUILD_INFO_PATH"
 echo "Building Clash Verge Rev web assets ..."
 (
   cd "$APP_DIR"
-  bash -lc "$BUILD_CMD" >/dev/null
+  "${PNPM_CMD[@]}" build >/dev/null
 )
 
 if [[ ! -f "$APP_DIR/dist/index.html" ]]; then
@@ -157,7 +140,7 @@ validate_dist_config
 echo "Building LazyCat installable LPK ..."
 (
   cd "$APP_DIR"
-  lzc-cli project build -f lzc-build.yml -o "$LPK_PATH" >/dev/null
+  lzc-cli project release -f lzc-build.yml -o "$LPK_PATH" >/dev/null
 )
 
 if [[ ! -f "$LPK_PATH" ]]; then
@@ -204,6 +187,7 @@ package=${APP_PACKAGE}
 version=${APP_VERSION}
 subdomain=${APP_SUBDOMAIN:-clash}
 manifest=${MANIFEST_FILE}
+package_metadata=${PACKAGE_FILE}
 artifact=${LPK_PATH}
 sha256=${SHA_PATH}
 built_at_utc=${BUILD_TIME_UTC}
