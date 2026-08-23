@@ -114,6 +114,7 @@ fi
 python3 -m py_compile "$API_LOCAL"
 python3 - "$CONTRACT_LOCAL" <<'PY'
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -129,7 +130,20 @@ for key, expected in required.items():
         raise SystemExit(f"ERROR: runtime contract {key} is not the v2.5.2 WebPort value")
 if payload.get("capabilities", {}).get("systemProxy", {}).get("mode") != "disabled":
     raise SystemExit("ERROR: runtime contract must keep systemProxy disabled")
+if not re.fullmatch(r"[0-9a-f]{40}", str(payload.get("gitCommit") or "")):
+    raise SystemExit("ERROR: runtime contract must bind an exact candidate gitCommit")
 PY
+
+read -r EXPECTED_BUILD_ID EXPECTED_GIT_COMMIT < <(
+  python3 - "$CONTRACT_LOCAL" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(payload["buildId"], payload["gitCommit"])
+PY
+)
 
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$BASHPID"
 REMOTE_TMP_ROOT="/tmp/clash-verge-webport-$RUN_ID"
@@ -156,6 +170,8 @@ ssh "${ssh_args[@]}" "$SSH_USER@$HOST" \
   REMOTE_API="$REMOTE_API" \
   REMOTE_UNIT="$REMOTE_UNIT" \
   REMOTE_CONTRACT="$REMOTE_CONTRACT" \
+  EXPECTED_BUILD_ID="$EXPECTED_BUILD_ID" \
+  EXPECTED_GIT_COMMIT="$EXPECTED_GIT_COMMIT" \
   bash -s <<'REMOTE'
 set -Eeuo pipefail
 
@@ -197,6 +213,10 @@ if payload.get("apiSchemaVersion") != "2026.08-lzc-v2":
 if payload.get("uiSchemaVersion") != "2026.08-lzc-v2":
     raise SystemExit(1)
 if payload.get("packageFingerprint") != "cloud.lazycat.app.clash-verge-for-lc/2.5.2-webport.0":
+    raise SystemExit(1)
+if payload.get("buildId") != __import__("os").environ["EXPECTED_BUILD_ID"]:
+    raise SystemExit(1)
+if payload.get("gitCommit") != __import__("os").environ["EXPECTED_GIT_COMMIT"]:
     raise SystemExit(1)
 if payload.get("capabilities", {}).get("systemProxy", {}).get("mode") != "disabled":
     raise SystemExit(1)
@@ -243,6 +263,10 @@ expected = {
     "packageFingerprint": "cloud.lazycat.app.clash-verge-for-lc/2.5.2-webport.0",
 }
 if any(payload.get(key) != value for key, value in expected.items()):
+    raise SystemExit(1)
+if payload.get("buildId") != __import__("os").environ["EXPECTED_BUILD_ID"]:
+    raise SystemExit(1)
+if payload.get("gitCommit") != __import__("os").environ["EXPECTED_GIT_COMMIT"]:
     raise SystemExit(1)
 if payload.get("systemProxy", {}).get("mode") != "disabled":
     raise SystemExit(1)
