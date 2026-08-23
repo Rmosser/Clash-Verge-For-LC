@@ -2,9 +2,9 @@
 
 ### 状态与结论
 
-- Status：`stopped_at_gate_a`。本 session 已完成基线、分支、官方版本核对、Web vendor
-  overlay、WebPort API 适配、本地质量和 Woodpecker required context；Gate A API 配对
-  部署健康校验失败后已按 Stop Condition 自动回滚，未继续部署 UI、LPK、Review 或 merge。
+- Status：`focused_fix_validated_locally`。Gate A 失败后的方案 1 强化版与 LPK v2
+  打包迁移已在本地通过，历史 baseline LPK 身份也已重建并证明；新的 exact HEAD 尚未形成，
+  因此尚未执行本轮 Woodpecker、API/UI 前向部署、回滚演练、Review 或 merge。
 - 当前只读基线：`main` / `origin/main` 均为
   `ab1331e0cd8120ca41e6c015a285b9c66b23721f`；实施开始前已重新 fetch/prune，worktree
   当时干净且只有一个 worktree。后续 PR/merge 前仍须重新 fetch/prune 并复核 exact head，
@@ -48,6 +48,30 @@
   首次 Gate A API/runtime-contract 配对部署时，远端 health probe 在 API 重启后连接被拒绝；
   专用脚本已自动恢复原 API、unit、runtime-contract 配对版本。回滚后 API health 为 `200`，
   Mihomo 版本和启动时间未变；按 Stop Condition 停止前向迁移，未部署 UI 或执行 LPK 安装。
+- 2026-08-23：本 session 只读重验 `rainierdev`：Mihomo 完整版本仍为 `v1.19.30`，
+  `ActiveEnterTimestampMonotonic=129115776897`，Verge API `NRestarts=0`，固定 listener
+  `127.0.0.1:7890`、`172.18.0.1:9090/9091/17890` 均在，API health 为 `200`。
+  API unit 是 `Type=simple`，而 Python 在 bind 前执行状态准备；结合上次“systemd 已 active、
+  立即 curl connection refused、随后旧版本恢复健康”且没有 restart storm 的证据，最强解释是
+  listener readiness window，而不是 Mihomo、bind 地址或持续 API crash。
+- 2026-08-23：按方案 1 强化版把 API 配对部署改为最多 30 秒的 monotonic deadline：先验证
+  `ActiveState` / `NRestarts`，再等待精确 `172.18.0.1:9091` listener，最后只做一次无 body
+  health probe；candidate、显式回滚和自动恢复都拒绝 restart storm，并在成功/失败路径复核
+  Mihomo binary 与启动时间。opaque backup 只接受脚本生成的 `backup.<8 alnum>`，远程参数采用
+  有限字符集。故障注入覆盖 delayed readiness、timeout、service failure、health 后不稳定、
+  rollback/restore restart storm、Mihomo drift、回滚失败和路径穿越。
+- 2026-08-23：当前 `lzc-cli 2.0.9` 要求 LPK v2 package metadata；新增相邻
+  `package.yml` 与 `en`/`zh` locale，把四条 routes/services 留在原 manifest，并把 icon 缩为
+  `512x512` / `180768` bytes。`project lint` 无 warning，运行契约 hash
+  `6daa4597d3e7751a6f86625b6335b2415c5d9ce09c1cff1d8c5e3b7dd6680f94` 与当前 HEAD、
+  `origin/main` 相同；候选 LPK build/lint 通过，内层只含 295 个静态 Web 条目。
+- 2026-08-23：拒绝安装旧 `output/release/0.2.0` 未知产物，因为它无法证明 source identity
+  且不通过当前 LPK lint。改从 exact repo commit
+  `e4a3db6644a5623143eadc1db5c41a34f4ed3838` 隔离重建 v2.4.7 baseline，产物为
+  `output/rollback-baseline/e4a3db6-lpkv2/clash-verge-for-lc-0.2.0.lpk`，SHA-256
+  `b758f1c4cb593343526f9c5d6a8565d9b2156a900deeb1241dade661f8eddeff`；project/lpk lint、
+  frozen install 和 build 全通过，包内只有静态 Web 文件，不含 Mihomo、配置、订阅、密钥、
+  数据库或运行态数据。
 
 ### Goal
 
@@ -76,7 +100,7 @@
 ### 固定版本与运行契约
 
 - Dashboard app version：`2.5.2-webport.0`。
-- LazyCat manifest version：`0.3.0`。
+- LazyCat package version：`0.3.0`。
 - `apiSchemaVersion` / `uiSchemaVersion`：`2026.08-lzc-v2`。
 - `packageFingerprint`：
   `cloud.lazycat.app.clash-verge-for-lc/2.5.2-webport.0`。
