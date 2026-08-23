@@ -2,8 +2,9 @@
 
 ### 状态与结论
 
-- Status：`in_progress`。当前 session 已完成基线、分支、官方版本核对、Web vendor
-  overlay、WebPort API 适配和本地质量收敛；尚未部署或改变任何运行态。
+- Status：`stopped_at_gate_a`。本 session 已完成基线、分支、官方版本核对、Web vendor
+  overlay、WebPort API 适配、本地质量和 Woodpecker required context；Gate A API 配对
+  部署健康校验失败后已按 Stop Condition 自动回滚，未继续部署 UI、LPK、Review 或 merge。
 - 当前只读基线：`main` / `origin/main` 均为
   `ab1331e0cd8120ca41e6c015a285b9c66b23721f`；实施开始前已重新 fetch/prune，worktree
   当时干净且只有一个 worktree。后续 PR/merge 前仍须重新 fetch/prune 并复核 exact head，
@@ -36,6 +37,17 @@
   `172.18.0.1:17890`，未执行生产或核心变更。
 - 2026-08-23：functional candidate 提交为 `9bd79564bfe70214b4d0423f51e0d03e5bcc4f86`；
   release metadata 已绑定该 exact candidate，metadata commit 后必须重新执行全部本地门禁。
+- 2026-08-23：PR #13 exact head `4da60740f6aaa0fef9be8ac192439e6174ce382a` 的 Woodpecker
+  pipeline 39 成功，GitHub required context 为
+  `ci/woodpecker/pr/woodpecker-harness`；同一 head 的 overlay verify、仓库测试、文档检查、
+  pnpm 11.3.0 frozen install、typecheck、36 个前端 unit tests、lint、production build 和
+  `git diff --check` 全部通过。workflow 中 Node 版本断言的 template literal 解析问题已修为
+  字符串拼接后验证通过。
+- 2026-08-23：Gate 0 在 `rainierdev` 再次确认 Mihomo `v1.19.30`、Mihomo
+  `ActiveEnterTimestampMonotonic=129115776897`、Verge API health `200` 和相关 listener。
+  首次 Gate A API/runtime-contract 配对部署时，远端 health probe 在 API 重启后连接被拒绝；
+  专用脚本已自动恢复原 API、unit、runtime-contract 配对版本。回滚后 API health 为 `200`，
+  Mihomo 版本和启动时间未变；按 Stop Condition 停止前向迁移，未部署 UI 或执行 LPK 安装。
 
 ### Goal
 
