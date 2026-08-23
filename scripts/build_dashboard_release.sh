@@ -46,26 +46,6 @@ require_cmd() {
   fi
 }
 
-resolve_build_cmd() {
-  if command -v pnpm >/dev/null 2>&1; then
-    printf '%s\n' "pnpm build"
-    return 0
-  fi
-
-  if command -v corepack >/dev/null 2>&1; then
-    printf '%s\n' "corepack pnpm build"
-    return 0
-  fi
-
-  if command -v npm >/dev/null 2>&1; then
-    printf '%s\n' "npm run build"
-    return 0
-  fi
-
-  echo "ERROR: missing a supported build command (pnpm, corepack pnpm, or npm)" >&2
-  exit 1
-}
-
 read_manifest_field() {
   local key="$1"
   sed -n -E "s/^${key}:[[:space:]]*(.+)[[:space:]]*$/\\1/p" "$MANIFEST_FILE" | head -n 1
@@ -111,7 +91,9 @@ write_sha256() {
 
 require_cmd python3
 require_cmd lzc-cli
-BUILD_CMD="$(resolve_build_cmd)"
+require_cmd npm
+
+PNPM_CMD=(npm exec --yes --package=pnpm@11.3.0 -- pnpm)
 
 if [[ ! -f "$MANIFEST_FILE" ]]; then
   echo "ERROR: manifest file not found: $MANIFEST_FILE" >&2
@@ -144,7 +126,7 @@ rm -f "$LPK_PATH" "$SHA_PATH" "$README_PATH" "$BUILD_INFO_PATH"
 echo "Building Clash Verge Rev web assets ..."
 (
   cd "$APP_DIR"
-  bash -lc "$BUILD_CMD" >/dev/null
+  "${PNPM_CMD[@]}" build >/dev/null
 )
 
 if [[ ! -f "$APP_DIR/dist/index.html" ]]; then
@@ -157,7 +139,7 @@ validate_dist_config
 echo "Building LazyCat installable LPK ..."
 (
   cd "$APP_DIR"
-  lzc-cli project build -f lzc-build.yml -o "$LPK_PATH" >/dev/null
+  lzc-cli project release -f lzc-build.yml -o "$LPK_PATH" >/dev/null
 )
 
 if [[ ! -f "$LPK_PATH" ]]; then

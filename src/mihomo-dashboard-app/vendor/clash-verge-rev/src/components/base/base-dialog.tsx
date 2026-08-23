@@ -6,29 +6,29 @@ import {
   DialogTitle,
   type SxProps,
   type Theme,
-} from "@mui/material";
-import { ReactNode, useEffect } from "react";
+} from '@mui/material'
+import { ReactNode } from 'react'
 
 interface Props {
-  title: ReactNode;
-  open: boolean;
-  okBtn?: ReactNode;
-  cancelBtn?: ReactNode;
-  disableEnforceFocus?: boolean;
-  disableOk?: boolean;
-  disableCancel?: boolean;
-  disableFooter?: boolean;
-  contentSx?: SxProps<Theme>;
-  children?: ReactNode;
-  loading?: boolean;
-  onOk?: () => void;
-  onCancel?: () => void;
-  onClose?: () => void;
+  title: ReactNode
+  open: boolean
+  okBtn?: ReactNode
+  cancelBtn?: ReactNode
+  disableEnforceFocus?: boolean
+  disableOk?: boolean
+  disableCancel?: boolean
+  disableFooter?: boolean
+  contentSx?: SxProps<Theme>
+  children?: ReactNode
+  loading?: boolean
+  onOk?: () => void
+  onCancel?: () => void
+  onClose?: () => void
 }
 
 export interface DialogRef {
-  open: () => void;
-  close: () => void;
+  open: () => void
+  close: () => void
 }
 
 export const BaseDialog: React.FC<Props> = ({
@@ -47,17 +47,6 @@ export const BaseDialog: React.FC<Props> = ({
   onCancel,
   onClose,
 }) => {
-  useEffect(() => {
-    if (!open || typeof document === "undefined") {
-      return;
-    }
-
-    const activeElement = document.activeElement;
-    if (activeElement instanceof HTMLElement) {
-      activeElement.blur();
-    }
-  }, [open]);
-
   return (
     <Dialog
       open={open}
@@ -83,5 +72,5 @@ export const BaseDialog: React.FC<Props> = ({
         </DialogActions>
       )}
     </Dialog>
-  );
-};
+  )
+}

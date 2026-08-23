@@ -5,12 +5,12 @@
 ## 依赖准备
 
 ```bash
-corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app install --frozen-lockfile
+npm exec --yes --package=pnpm@11.3.0 -- pnpm --dir src/mihomo-dashboard-app install --frozen-lockfile
 ```
 
 CI 使用锁文件安装依赖。仓库没有把 `pytest` 当作必需依赖；Python 服务测试使用标准库 `unittest`。
 如果本机没有 Corepack，用
-`npm exec --yes --package=pnpm@10.29.2 -- pnpm <args>` 运行下列同版本命令；
+`npm exec --yes --package=pnpm@11.3.0 -- pnpm <args>` 运行下列同版本命令；
 不要省略 `--frozen-lockfile` 或改用浮动 pnpm。
 
 ## 本地命令
@@ -31,11 +31,13 @@ bash scripts/test.sh
 
 ```bash
 python3 -I -B scripts/check_docs.py --all
-corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app install --frozen-lockfile
-corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app typecheck
-corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app test:unit
-corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app lint
-corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app build
+node -e 'const [a,b]=process.versions.node.split(".").map(Number); if (a<22||(a===22&&b<22)) process.exit(1)'
+npm exec --yes --package=pnpm@11.3.0 -- pnpm --version
+npm exec --yes --package=pnpm@11.3.0 -- pnpm --dir src/mihomo-dashboard-app install --frozen-lockfile
+TZ=Asia/Shanghai npm exec --yes --package=pnpm@11.3.0 -- pnpm --dir src/mihomo-dashboard-app typecheck
+TZ=Asia/Shanghai npm exec --yes --package=pnpm@11.3.0 -- pnpm --dir src/mihomo-dashboard-app test:unit
+TZ=Asia/Shanghai npm exec --yes --package=pnpm@11.3.0 -- pnpm --dir src/mihomo-dashboard-app lint
+NODE_OPTIONS=--max-old-space-size=3072 TZ=Asia/Shanghai npm exec --yes --package=pnpm@11.3.0 -- pnpm --dir src/mihomo-dashboard-app build
 ```
 
 `build` 已经包含一次 TypeScript 检查；单独运行 `typecheck` 是为了让 CI 和本地失败信息更快定位。

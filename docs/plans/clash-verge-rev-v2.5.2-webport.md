@@ -2,16 +2,38 @@
 
 ### 状态与结论
 
-- Status：`planned_not_started`。本节只记录后续实施方案；当前 session 未修改产品代码、
-  未创建分支或提交、未部署、未改变运行态。
+- Status：`in_progress`。当前 session 已完成基线、分支、官方版本核对、Web vendor
+  overlay、WebPort API 适配和本地质量收敛；尚未部署或改变任何运行态。
 - 当前只读基线：`main` / `origin/main` 均为
-  `4abb82305bca6ab93d658cff03206c9809a1afbe`，worktree 干净且只有一个 worktree。
-  后续实施开始时仍须重新 fetch/prune 并复核 exact baseline，不能把本记录当成未来远端真相。
+  `ab1331e0cd8120ca41e6c015a285b9c66b23721f`；实施开始前已重新 fetch/prune，worktree
+  当时干净且只有一个 worktree。后续 PR/merge 前仍须重新 fetch/prune 并复核 exact head，
+  不能把本记录当成未来远端真相。
 - 迁移结论：`需要适配后迁移`，不得用官方源码直接覆盖当前 vendor。
 - 官方目标固定为 release tag `v2.5.2`、commit
   `28f2efc504059b1dc75c793618b775c8e1b2a5f1`；拒绝 `dev`、`2.5.4` 或其他浮动 ref。
 - 建议实施分支：`codex/clash-verge-rev-v2.5.2-webport`。
 - 本文件是该迁移任务的按需实施计划，不承担全局 Active Plan 或机器 schema 职责。
+
+### Progress
+
+- 2026-08-23：执行 `git fetch --prune origin`；确认 `origin/main`、本地 `main` 和
+  HEAD 均为 `ab1331e0cd8120ca41e6c015a285b9c66b23721f`，工作区干净且只有当前 worktree；
+  已从该 exact head 创建 `codex/clash-verge-rev-v2.5.2-webport`。
+- 2026-08-23：重新核对官方 release 页面与 `v2.5.2` tag，确认 exact commit 为
+  `28f2efc504059b1dc75c793618b775c8e1b2a5f1`；未采用 `dev`、`v2.5.4` 或浮动 ref。
+- 2026-08-23：在临时 staging 取得官方 `v2.4.7`（resolved commit
+  `520a7ed83fda06b6507c46e51e16f737c58c7ddc`）和 `v2.5.2`（exact commit
+  `28f2efc504059b1dc75c793618b775c8e1b2a5f1`），并完成临时 staging、固定 patch
+  series 和 overlay-safe vendor 同步；最终 committed vendor 通过 `--verify`，未含
+  `src-tauri`、`v1.19.29` 或 node_modules。
+- 2026-08-23：完成 v2.5.2 WebPort 工具链：pnpm 11.3.0、Vite 8、TypeScript 6、React
+  19.2.7、browser shims、runtime contract、system-proxy lock、profile health/last-good
+  和合成 API/UI 测试；frozen install、typecheck、36 个前端 unit tests、49 个 Python
+  tests、lint 和 production build 已通过。
+- 2026-08-23：完成只允许 `rainierdev.heiyu.space` 的 API/runtime-contract 配对部署与
+  opaque backup 回滚脚本；Gate 0 只读回读确认 host-native Mihomo `v1.19.30`、相关服务
+  active、controller `172.18.0.1:9090`、Verge API `172.18.0.1:9091` 和 proxy
+  `172.18.0.1:17890`，未执行生产或核心变更。
 
 ### Goal
 

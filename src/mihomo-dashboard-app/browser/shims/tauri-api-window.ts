@@ -1,3 +1,5 @@
+import { addAppEventListener } from "../runtime";
+
 export type Theme = "light" | "dark";
 
 type ResizePayload = { payload: { width: number; height: number } };
@@ -47,6 +49,8 @@ class BrowserWindowHandle {
 
   async setMinimizable(_value: boolean) {}
 
+  async startResizeDragging(_direction: string) {}
+
   async hide() {
     this.visible = false;
   }
@@ -82,6 +86,22 @@ class BrowserWindowHandle {
       callback({ payload: media.matches ? "dark" : "light" });
     media.addEventListener("change", handler);
     return () => media.removeEventListener("change", handler);
+  }
+
+  async onFocusChanged(callback: () => void) {
+    window.addEventListener("focus", callback);
+    window.addEventListener("blur", callback);
+    return () => {
+      window.removeEventListener("focus", callback);
+      window.removeEventListener("blur", callback);
+    };
+  }
+
+  async listen<T>(
+    eventName: string,
+    callback: (event: { payload: T }) => void,
+  ) {
+    return addAppEventListener<T>(eventName, callback);
   }
 }
 

@@ -1,0 +1,3 @@
+# Unified diff context lines must carry a leading space; do not treat those
+# patch-format blank lines as source trailing-whitespace errors.
+src/mihomo-dashboard-app/vendor-overlays/clash-verge-rev/patches/*.patch whitespace=-blank-at-eol,-blank-at-eof

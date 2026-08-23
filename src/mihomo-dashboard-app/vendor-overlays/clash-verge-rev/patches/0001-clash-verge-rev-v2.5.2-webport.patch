@@ -1,0 +1,1849 @@
+diff --git a/src/components/profile/profile-more.tsx b/src/components/profile/profile-more.tsx
+index 9bdef3c..ac608da 100644
+--- a/src/components/profile/profile-more.tsx
++++ b/src/components/profile/profile-more.tsx
+@@ -29,7 +29,7 @@ interface Props {
+ const EMPTY_LOG_INFO: [string, string][] = []
+ 
+ // Default global extend script content (mirrors `ITEM_SCRIPT` in
+-// src-tauri/src/utils/tmpl.rs).
++// The profile template is normalized by the Verge API.
+ const DEFAULT_SCRIPT = `// Define main function (script entry)
+ 
+ function main(config, profileName) {
+diff --git a/src/components/setting/mods/sysproxy-viewer.tsx b/src/components/setting/mods/sysproxy-viewer.tsx
+index 7465870..56aadf6 100644
+--- a/src/components/setting/mods/sysproxy-viewer.tsx
++++ b/src/components/setting/mods/sysproxy-viewer.tsx
+@@ -1,5 +1,6 @@
+ import { EditRounded } from '@mui/icons-material'
+ import {
++  Alert,
+   Autocomplete,
+   Box,
+   Button,
+@@ -109,8 +110,12 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+   const [hostOptions, setHostOptions] = useState<string[]>([])
+ 
+   const { clashConfig } = useClashConfigData()
+-  const { indicator: isProxyReallyEnabled, invalidateProxyState } =
+-    useSystemProxyState()
++  const {
++    indicator: isProxyReallyEnabled,
++    invalidateProxyState,
++    systemProxyDisabled,
++    systemProxyDisabledReason,
++  } = useSystemProxyState()
+ 
+   const {
+     enable_system_proxy: enabled,
+@@ -156,7 +161,7 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+     }
+ 
+     prevMixedPortRef.current = mixedPort
+-    if (!enabled) {
++    if (!enabled || systemProxyDisabled) {
+       return
+     }
+ 
+@@ -177,7 +182,13 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+     }
+ 
+     updateProxy()
+-  }, [clashConfig?.mixedPort, enabled, value.pac, invalidateProxyState])
++  }, [
++    clashConfig?.mixedPort,
++    enabled,
++    systemProxyDisabled,
++    value.pac,
++    invalidateProxyState,
++  ])
+ 
+   const { systemProxyAddress } = useSystemData()
+ 
+@@ -309,6 +320,10 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+   }
+ 
+   const onSave = useLockFn(async () => {
++    if (systemProxyDisabled) {
++      showNotice.error(systemProxyDisabledReason)
++      return
++    }
+     if (value.duration < 1) {
+       showNotice.error('settings.modals.sysproxy.messages.durationTooShort')
+       return
+@@ -413,7 +428,7 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+             await invalidateProxyState()
+ 
+             // 如果需要重置代理且代理当前启用
+-            if (needResetProxy && enabled) {
++            if (needResetProxy && enabled && !systemProxyDisabled) {
+               const [currentSysProxy, currentAutoProxy] = await Promise.all([
+                 getSystemProxy(),
+                 getAutotemProxy(),
+@@ -454,9 +469,14 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+       onCancel={() => setOpen(false)}
+       onOk={onSave}
+       loading={saving}
+-      disableOk={saving}
++      disableOk={saving || systemProxyDisabled}
+     >
+       <List>
++        {systemProxyDisabled && (
++          <Alert severity="info" sx={{ mb: 1 }}>
++            {systemProxyDisabledReason}
++          </Alert>
++        )}
+         <BaseFieldset
+           label={t('settings.modals.sysproxy.fieldsets.currentStatus')}
+           padding="15px 10px"
+@@ -523,7 +543,7 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+           />
+           <Switch
+             edge="end"
+-            disabled={!enabled}
++            disabled={!enabled || systemProxyDisabled}
+             checked={value.pac}
+             onChange={(_, e) => setValue((v) => ({ ...v, pac: e }))}
+           />
+@@ -540,7 +560,7 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+           />
+           <Switch
+             edge="end"
+-            disabled={!enabled}
++            disabled={!enabled || systemProxyDisabled}
+             checked={value.guard}
+             onChange={(_, e) => setValue((v) => ({ ...v, guard: e }))}
+             sx={{ marginLeft: 'auto' }}
+@@ -552,7 +572,7 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+             primary={t('settings.modals.sysproxy.fields.guardDuration')}
+           />
+           <TextField
+-            disabled={!enabled}
++            disabled={!enabled || systemProxyDisabled}
+             size="small"
+             value={value.duration}
+             sx={{ width: 100 }}
+@@ -578,7 +598,7 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+             />
+             <Switch
+               edge="end"
+-              disabled={!enabled}
++              disabled={!enabled || systemProxyDisabled}
+               checked={value.use_default}
+               onChange={(_, e) => {
+                 if (!e && !value.bypass) {
+@@ -604,7 +624,7 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+             />
+             <Switch
+               edge="end"
+-              disabled={!enabled}
++              disabled={!enabled || systemProxyDisabled}
+               checked={value.enable_bypass_check}
+               onChange={(_, e) =>
+                 setValue((v) => ({ ...v, enable_bypass_check: e }))
+@@ -617,7 +637,7 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+           <BaseSplitChipEditor
+             value={value.bypass ?? ''}
+             separator={separator}
+-            disabled={!enabled}
++            disabled={!enabled || systemProxyDisabled}
+             error={bypassError}
+             helperText={
+               bypassError
+diff --git a/src/hooks/system-proxy-lock.test.ts b/src/hooks/system-proxy-lock.test.ts
+new file mode 100644
+index 0000000..177436c
+--- /dev/null
++++ b/src/hooks/system-proxy-lock.test.ts
+@@ -0,0 +1,44 @@
++import { describe, expect, it } from "vitest";
++
++import { resolveSystemProxyLockState } from "./system-proxy-lock";
++
++describe("resolveSystemProxyLockState", () => {
++  it("disables system proxy with policy reason when policy is disabled and tun is off", () => {
++    const result = resolveSystemProxyLockState({
++      policy: { mode: "disabled", reason: "policy disabled" },
++      tunEnabled: false,
++      tunReason: "tun reason",
++    });
++
++    expect(result).toEqual({
++      systemProxyDisabled: true,
++      systemProxyDisabledReason: "policy disabled",
++    });
++  });
++
++  it("disables system proxy with tun reason when policy is enabled and tun is on", () => {
++    const result = resolveSystemProxyLockState({
++      policy: { mode: "enabled", reason: "policy enabled" },
++      tunEnabled: true,
++      tunReason: "tun reason",
++    });
++
++    expect(result).toEqual({
++      systemProxyDisabled: true,
++      systemProxyDisabledReason: "tun reason",
++    });
++  });
++
++  it("prioritizes tun reason over policy reason when both policy-disabled and tun-enabled", () => {
++    const result = resolveSystemProxyLockState({
++      policy: { mode: "disabled", reason: "policy disabled" },
++      tunEnabled: true,
++      tunReason: "tun reason",
++    });
++
++    expect(result).toEqual({
++      systemProxyDisabled: true,
++      systemProxyDisabledReason: "tun reason",
++    });
++  });
++});
+diff --git a/src/hooks/system-proxy-lock.ts b/src/hooks/system-proxy-lock.ts
+new file mode 100644
+index 0000000..7ca4017
+--- /dev/null
++++ b/src/hooks/system-proxy-lock.ts
+@@ -0,0 +1,37 @@
++import type { WebActionPolicy } from "@root/browser/runtime";
++
++interface ResolveSystemProxyLockStateParams {
++  policy: WebActionPolicy;
++  tunEnabled: boolean;
++  tunReason: string;
++}
++
++interface SystemProxyLockState {
++  systemProxyDisabled: boolean;
++  systemProxyDisabledReason: string;
++}
++
++export const resolveSystemProxyLockState = ({
++  policy,
++  tunEnabled,
++  tunReason,
++}: ResolveSystemProxyLockStateParams): SystemProxyLockState => {
++  if (tunEnabled) {
++    return {
++      systemProxyDisabled: true,
++      systemProxyDisabledReason: tunReason || policy.reason,
++    };
++  }
++
++  if (policy.mode !== "enabled") {
++    return {
++      systemProxyDisabled: true,
++      systemProxyDisabledReason: policy.reason,
++    };
++  }
++
++  return {
++    systemProxyDisabled: false,
++    systemProxyDisabledReason: "",
++  };
++};
+diff --git a/src/hooks/use-system-proxy-state.ts b/src/hooks/use-system-proxy-state.ts
+index 01be4aa..2c0316a 100644
+--- a/src/hooks/use-system-proxy-state.ts
++++ b/src/hooks/use-system-proxy-state.ts
+@@ -1,10 +1,12 @@
+ import { useRef } from 'react'
+ import { closeAllConnections } from 'tauri-plugin-mihomo-api'
+ 
++import { getWebActionPolicy } from '@root/browser/runtime'
+ import { useVerge } from '@/hooks/use-verge'
+ import { useClashConfigData, useSystemData } from '@/providers/app-data-context'
+ import { getAutotemProxy } from '@/services/cmds'
+ import { revalidateQueries, useQuery } from '@/services/query-client'
++import { resolveSystemProxyLockState } from './system-proxy-lock'
+ 
+ // 系统代理状态检测统一逻辑
+ export const useSystemProxyState = () => {
+@@ -25,8 +27,17 @@ export const useSystemProxyState = () => {
+     verge_mixed_port,
+   } = verge ?? {}
+ 
++  const { systemProxyDisabled, systemProxyDisabledReason } =
++    resolveSystemProxyLockState({
++      policy: getWebActionPolicy('systemProxy'),
++      tunEnabled: false,
++      tunReason: '',
++    })
++
+   // OS 实际状态：enable + 地址匹配本应用
+-  const indicator = (() => {
++  const indicator = systemProxyDisabled
++    ? false
++    : (() => {
+     const host = proxy_host || '127.0.0.1'
+     if (proxy_auto_config) {
+       if (!autoproxy?.enable) return false
+@@ -37,13 +48,16 @@ export const useSystemProxyState = () => {
+       const port = verge_mixed_port || clashConfig?.mixedPort || 7897
+       return sysproxy.server === `${host}:${port}`
+     }
+-  })()
++      })()
+ 
+   // "最后一次生效"模式：快速连续点击时，只执行最终状态
+   const pendingRef = useRef<boolean | null>(null)
+   const busyRef = useRef(false)
+ 
+   const toggleSystemProxy = async (enabled: boolean) => {
++    if (systemProxyDisabled) {
++      throw new Error(systemProxyDisabledReason)
++    }
+     mutateVerge(
+       (prev) => (prev ? { ...prev, enable_system_proxy: enabled } : prev),
+       false,
+@@ -73,8 +87,10 @@ export const useSystemProxyState = () => {
+ 
+   return {
+     indicator,
+-    configState: enable_system_proxy ?? false,
++    configState: systemProxyDisabled ? false : (enable_system_proxy ?? false),
+     toggleSystemProxy,
+     invalidateProxyState,
++    systemProxyDisabled,
++    systemProxyDisabledReason,
+   }
+ }
+diff --git a/src/hooks/use-traffic-data.ts b/src/hooks/use-traffic-data.ts
+index bd48d09..bdc0cfe 100644
+--- a/src/hooks/use-traffic-data.ts
++++ b/src/hooks/use-traffic-data.ts
+@@ -1,4 +1,8 @@
+-import { MihomoWebSocket, Traffic } from 'tauri-plugin-mihomo-api'
++import {
++  MihomoWebSocket,
++  normalizeTraffic,
++  Traffic,
++} from 'tauri-plugin-mihomo-api'
+ 
+ import { useMihomoWsSubscription } from './use-mihomo-ws-subscription'
+ import { useTrafficMonitorEnhanced } from './use-traffic-monitor'
+@@ -46,7 +50,7 @@ export const useTrafficData = (options?: { enabled?: boolean }) => {
+         }
+ 
+         try {
+-          const parsed = JSON.parse(data) as Traffic
++          const parsed = normalizeTraffic(JSON.parse(data))
+           if (shouldSkipDuplicateTraffic(parsed)) {
+             return
+           }
+diff --git a/src/locales/en/profiles.json b/src/locales/en/profiles.json
+index 1305197..3c7b9da 100644
+--- a/src/locales/en/profiles.json
++++ b/src/locales/en/profiles.json
+@@ -28,11 +28,26 @@
+     "feedback": {
+       "errors": {
+         "invalidUrl": "Invalid profile URL. Please enter a URL starting with http:// or https://",
+-        "onlyYaml": "Only YAML Files Supported"
++        "onlyYaml": "Only YAML Files Supported",
++        "sameBoxDirectYamlRequired": "For same-box imports, use the SubHub direct YAML export URL instead of a login-protected app page"
+       },
+       "notifications": {
++        "importStageFetching": "Fetching remote subscription...",
++        "importStageValidating": "Validating subscription payload...",
++        "importStageApplying": "Applying runtime configuration...",
++        "importStageWaitingNodes": "Configuration applied, waiting for proxy nodes...",
+         "importRetry": "Import failed, retrying with Clash proxy...",
+         "importFail": "Import failed even with Clash proxy",
++        "importSameBoxSubHubHint": "Detected a same-box SubHub lazycat subscription URL. This flow does not reuse your current browser login state. If the box times out while re-fetching large YAML via *.heiyu.space, switch to a direct no-login export URL or download the YAML first.",
++        "importSameBoxSubHubFail": "Same-box SubHub lazycat import failed. Re-fetching large YAML through *.heiyu.space can time out on the microserver. Use a direct no-login export URL or download the YAML locally and import the file.",
++        "importFailedTimeout": "Subscription fetch timed out. Retry later or import a local YAML file.",
++        "importFailedNetwork": "Subscription fetch failed due to network issues. Check connectivity or import a local YAML file.",
++        "importFailedHttp": "Subscription URL returned an unexpected HTTP status. Verify URL and permissions.",
++        "importFailedHtmlLogin": "Subscription URL returned an HTML/login page. Use a direct YAML download URL.",
++        "importFailedInvalidContent": "Subscription content is invalid or missing required sections (proxy-groups/rules/proxies).",
++        "importFailedApply": "Subscription was saved, but applying runtime config failed. Check logs and retry.",
++        "importNodesTimeout": "Subscription applied, but proxy nodes were not ready in time. Check provider URLs or refresh later.",
++        "importSavedNotActive": "Profile {{name}} imported (not active yet; switch profile to apply)",
+         "importNeedsRefresh": "Profile imported but may need manual refresh",
+         "importSuccess": "Profile imported successfully, please restart if not visible",
+         "profileSwitched": "Profile Switched",
+diff --git a/src/locales/zh/profiles.json b/src/locales/zh/profiles.json
+index 0bd2290..c49b5ec 100644
+--- a/src/locales/zh/profiles.json
++++ b/src/locales/zh/profiles.json
+@@ -28,11 +28,26 @@
+     "feedback": {
+       "errors": {
+         "invalidUrl": "无效的订阅链接，请输入以 http:// 或 https:// 开头的地址",
+-        "onlyYaml": "仅支持 YAML 文件"
++        "onlyYaml": "仅支持 YAML 文件",
++        "sameBoxDirectYamlRequired": "同机场景请使用 SubHub 直出 YAML 订阅链接，不要使用需要登录的页面地址"
+       },
+       "notifications": {
++        "importStageFetching": "正在拉取订阅内容...",
++        "importStageValidating": "正在校验订阅内容...",
++        "importStageApplying": "正在应用运行时配置...",
++        "importStageWaitingNodes": "配置已应用，正在等待节点就绪...",
+         "importRetry": "订阅导入失败，尝试使用 Clash 代理导入",
+         "importFail": "使用 Clash 代理导入订阅失败",
++        "importSameBoxSubHubHint": "检测到同机 SubHub lazycat 订阅链接。该链路不依赖当前浏览器登录态，若微服经 *.heiyu.space 回拉大订阅超时，请改用免登录直链或先下载 YAML 再导入。",
++        "importSameBoxSubHubFail": "同机 SubHub lazycat 订阅导入失败。当前微服经 *.heiyu.space 回拉大订阅容易超时；请改用免登录直链，或先在浏览器下载 YAML 后使用本地文件导入。",
++        "importFailedTimeout": "订阅拉取超时，请稍后重试或先下载 YAML 再本地导入。",
++        "importFailedNetwork": "订阅拉取网络失败，请检查网络或改用本地 YAML 导入。",
++        "importFailedHttp": "订阅链接返回异常 HTTP 状态，请检查链接与权限。",
++        "importFailedHtmlLogin": "订阅链接返回了登录页/HTML，请改用可直接下载 YAML 的订阅链接。",
++        "importFailedInvalidContent": "订阅内容格式无效或缺少关键段（proxy-groups/rules/proxies）。",
++        "importFailedApply": "订阅已写入，但应用到运行时失败，请查看日志后重试。",
++        "importNodesTimeout": "订阅已应用，但节点未在预期时间内就绪，请检查 provider 链接或稍后刷新。",
++        "importSavedNotActive": "订阅 {{name}} 已导入（当前未激活，切换后生效）",
+         "importNeedsRefresh": "订阅已导入，但可能需要手动刷新",
+         "importSuccess": "订阅已成功导入，如未显示请重启应用",
+         "profileSwitched": "订阅已切换",
+diff --git a/src/main.tsx b/src/main.tsx
+index a793010..aadcfb8 100644
+--- a/src/main.tsx
++++ b/src/main.tsx
+@@ -8,6 +8,15 @@ import { RouterProvider } from 'react-router'
+ import { SWRConfig } from 'swr'
+ import { MihomoWebSocket } from 'tauri-plugin-mihomo-api'
+ 
++import {
++  assessRuntimeContract,
++  getRuntimeInfo,
++  isRuntimeInfo,
++  persistRuntimeAssessment,
++  vergeJson,
++  type RuntimeContractAssessment,
++  type RuntimeInfo,
++} from '@root/browser/runtime'
+ import { BaseErrorBoundary } from './components/base'
+ import { router } from './pages/_routers'
+ import { AppDataProvider } from './providers/app-data-provider'
+@@ -39,7 +48,61 @@ if (!container) {
+ 
+ disableWebViewShortcuts()
+ 
+-const initializeApp = (initialThemeMode: 'light' | 'dark') => {
++const RuntimeContractGate = ({
++  assessment,
++  children,
++}: {
++  assessment: RuntimeContractAssessment | null
++  children: React.ReactNode
++}) => {
++  if (assessment?.status === 'blocked') {
++    return (
++      <div
++        role="alert"
++        style={{
++          alignItems: 'center',
++          background: '#181a1b',
++          color: '#fff',
++          display: 'flex',
++          flexDirection: 'column',
++          gap: '12px',
++          justifyContent: 'center',
++          minHeight: '100vh',
++          padding: '24px',
++          textAlign: 'center',
++        }}
++      >
++        <strong>Clash Verge WebPort 无法安全启动</strong>
++        <span>{assessment.reason ?? '运行时契约校验失败。'}</span>
++      </div>
++    )
++  }
++  return children
++}
++
++const loadRuntimeAssessment = async (): Promise<RuntimeContractAssessment | null> => {
++  if (!window.__LZCAPP_MIHOMO__) return null
++
++  try {
++    const configured = getRuntimeInfo()
++    const actual = isRuntimeInfo(configured)
++      ? configured
++      : await vergeJson<RuntimeInfo>('/runtime-info')
++    const assessment = assessRuntimeContract(actual)
++    persistRuntimeAssessment(assessment)
++    return assessment
++  } catch (error) {
++    console.error('[main.tsx] Runtime contract probe failed:', error)
++    const assessment = assessRuntimeContract(null)
++    persistRuntimeAssessment(assessment)
++    return assessment
++  }
++}
++
++const initializeApp = (
++  initialThemeMode: 'light' | 'dark',
++  runtimeAssessment: RuntimeContractAssessment | null,
++) => {
+   const contexts = [
+     <ThemeModeProvider key="theme" initialState={initialThemeMode} />,
+     <LoadingCacheProvider key="loading" />,
+@@ -51,13 +114,15 @@ const initializeApp = (initialThemeMode: 'light' | 'dark') => {
+     <React.StrictMode>
+       <ComposeContextProvider contexts={contexts}>
+         <BaseErrorBoundary>
+-          <SWRConfig value={swrConfig}>
+-            <WindowProvider>
+-              <AppDataProvider>
+-                <RouterProvider router={router} />
+-              </AppDataProvider>
+-            </WindowProvider>
+-          </SWRConfig>
++          <RuntimeContractGate assessment={runtimeAssessment}>
++            <SWRConfig value={swrConfig}>
++              <WindowProvider>
++                <AppDataProvider>
++                  <RouterProvider router={router} />
++                </AppDataProvider>
++              </WindowProvider>
++            </SWRConfig>
++          </RuntimeContractGate>
+         </BaseErrorBoundary>
+       </ComposeContextProvider>
+     </React.StrictMode>,
+@@ -66,7 +131,8 @@ const initializeApp = (initialThemeMode: 'light' | 'dark') => {
+ 
+ const bootstrap = async () => {
+   const { initialThemeMode } = await preloadAppData()
+-  initializeApp(initialThemeMode)
++  const runtimeAssessment = await loadRuntimeAssessment()
++  initializeApp(initialThemeMode, runtimeAssessment)
+ }
+ 
+ bootstrap().catch((error) => {
+@@ -82,7 +148,9 @@ bootstrap().catch((error) => {
+       )
+     })
+     .finally(() => {
+-      initializeApp(resolveThemeMode(getPreloadConfig()))
++      void loadRuntimeAssessment().then((runtimeAssessment) => {
++        initializeApp(resolveThemeMode(getPreloadConfig()), runtimeAssessment)
++      })
+     })
+ })
+ 
+diff --git a/src/pages/_layout.tsx b/src/pages/_layout.tsx
+index aeedf41..9ce1686 100644
+--- a/src/pages/_layout.tsx
++++ b/src/pages/_layout.tsx
+@@ -13,6 +13,7 @@ import {
+ } from '@dnd-kit/sortable'
+ import { CSS } from '@dnd-kit/utilities'
+ import {
++  Alert,
+   Box,
+   List,
+   Menu,
+@@ -54,6 +55,7 @@ import { useVisibility } from '@/hooks/use-visibility'
+ import { useWindowDecorations } from '@/hooks/use-window'
+ import { useThemeMode } from '@/services/states'
+ import getSystem from '@/utils/get-system'
++import { getRuntimeContractWarning } from '@root/browser/runtime'
+ 
+ import {
+   useCustomTheme,
+@@ -139,6 +141,7 @@ const Layout = () => {
+   const isLogsPage = pathname === '/logs'
+   const pageVisible = useVisibility()
+   const themeReady = useMemo(() => Boolean(theme), [theme])
++  const runtimeWarning = getRuntimeContractWarning()
+ 
+   const [menuUnlocked, setMenuUnlocked] = useState(false)
+   const [menuContextPosition, setMenuContextPosition] =
+@@ -291,6 +294,21 @@ const Layout = () => {
+     <ThemeProvider theme={theme}>
+       {/* 左侧底部窗口控制按钮 */}
+       <NoticeManager position={verge?.notice_position} />
++      {runtimeWarning && (
++        <Alert
++          severity="warning"
++          sx={{
++            borderRadius: 0,
++            left: 0,
++            position: 'fixed',
++            right: 0,
++            top: 0,
++            zIndex: 2000,
++          }}
++        >
++          {runtimeWarning.message}
++        </Alert>
++      )}
+       <div
+         style={{
+           animation: 'fadeIn 0.5s',
+diff --git a/src/pages/home.tsx b/src/pages/home.tsx
+index 5c79d73..36830c3 100644
+--- a/src/pages/home.tsx
++++ b/src/pages/home.tsx
+@@ -35,6 +35,7 @@ import { ProxyTunCard } from '@/components/home/proxy-tun-card'
+ import { useProfiles } from '@/hooks/use-profiles'
+ import { useVerge } from '@/hooks/use-verge'
+ import { entry_lightweight_mode, openWebUrl } from '@/services/cmds'
++import { getWebActionPolicy } from '@root/browser/runtime'
+ 
+ const LazyTestCard = lazy(() =>
+   import('@/components/home/test-card').then((module) => ({
+@@ -212,6 +213,7 @@ const HomePage = () => {
+   const { t } = useTranslation()
+   const { verge } = useVerge()
+   const { current, mutateProfiles } = useProfiles()
++  const lightweightPolicy = getWebActionPolicy('lightweightMode')
+ 
+   // 设置弹窗的状态
+   const [settingsOpen, setSettingsOpen] = useState(false)
+@@ -373,6 +375,8 @@ const HomePage = () => {
+               onClick={async () => await entry_lightweight_mode()}
+               size="small"
+               color="inherit"
++              disabled={lightweightPolicy.mode === 'disabled'}
++              aria-label={lightweightPolicy.reason}
+             >
+               <HistoryEduOutlined />
+             </IconButton>
+diff --git a/src/pages/profiles-import.ts b/src/pages/profiles-import.ts
+new file mode 100644
+index 0000000..861eea4
+--- /dev/null
++++ b/src/pages/profiles-import.ts
+@@ -0,0 +1,65 @@
++const RETRYABLE_IMPORT_ERROR_CODES = new Set([
++  "PROFILE_FETCH_TIMEOUT",
++  "PROFILE_FETCH_NETWORK_ERROR",
++  "PROFILE_FETCH_HTTP_ERROR",
++]);
++
++const READY_IGNORE_PROXY_NAMES = new Set(["DIRECT", "REJECT"]);
++
++export const shouldRetryImportWithSelfProxy = (code: string) =>
++  RETRYABLE_IMPORT_ERROR_CODES.has(code);
++
++export const resolveImportErrorNoticeKey = (
++  code: string,
++  isSameBoxSubHubLazycat: boolean,
++) => {
++  if (code === "PROFILE_HTML_LOGIN_PAGE") {
++    return "profiles.page.feedback.notifications.importFailedHtmlLogin";
++  }
++  if (code === "PROFILE_CONTENT_INVALID") {
++    return "profiles.page.feedback.notifications.importFailedInvalidContent";
++  }
++  if (code === "PROFILE_APPLY_FAILED") {
++    return "profiles.page.feedback.notifications.importFailedApply";
++  }
++  if (code === "IMPORT_NODES_TIMEOUT") {
++    return "profiles.page.feedback.notifications.importNodesTimeout";
++  }
++  if (code === "PROFILE_FETCH_TIMEOUT") {
++    return isSameBoxSubHubLazycat
++      ? "profiles.page.feedback.notifications.importSameBoxSubHubFail"
++      : "profiles.page.feedback.notifications.importFailedTimeout";
++  }
++  if (code === "PROFILE_FETCH_NETWORK_ERROR") {
++    return isSameBoxSubHubLazycat
++      ? "profiles.page.feedback.notifications.importSameBoxSubHubFail"
++      : "profiles.page.feedback.notifications.importFailedNetwork";
++  }
++  if (code === "PROFILE_FETCH_HTTP_ERROR") {
++    return isSameBoxSubHubLazycat
++      ? "profiles.page.feedback.notifications.importSameBoxSubHubFail"
++      : "profiles.page.feedback.notifications.importFailedHttp";
++  }
++  return isSameBoxSubHubLazycat
++    ? "profiles.page.feedback.notifications.importSameBoxSubHubFail"
++    : "profiles.page.feedback.notifications.importFail";
++};
++
++export const hasReadyNodes = (
++  proxyData: {
++    proxies?: IProxyItem[];
++  },
++  providerRecord: Record<string, IProxyProviderItem>,
++) => {
++  const leafProxyCount = (proxyData?.proxies || []).filter((proxy) => {
++    const name = String(proxy?.name || "").toUpperCase();
++    return name && !READY_IGNORE_PROXY_NAMES.has(name);
++  }).length;
++
++  const providerProxyCount = Object.values(providerRecord || {}).reduce(
++    (sum, provider) => sum + (provider?.proxies?.length || 0),
++    0,
++  );
++
++  return leafProxyCount > 0 || providerProxyCount > 0;
++};
+diff --git a/src/pages/profiles.tsx b/src/pages/profiles.tsx
+index e4d8ea2..e5e5810 100644
+--- a/src/pages/profiles.tsx
++++ b/src/pages/profiles.tsx
+@@ -72,8 +72,12 @@ import {
+   useThemeMode,
+ } from '@/services/states'
+ import { debugLog } from '@/utils/debug'
++import {
++  resolveImportErrorNoticeKey,
++  shouldRetryImportWithSelfProxy,
++} from '@/pages/profiles-import'
+ 
+-// 与 src-tauri/src/main.rs 的 worker_limit 上限(8)保持一致，避免前后端更新风暴不对齐
++// Keep the profile update worker limit aligned with the WebPort API contract.
+ const PROFILE_UPDATE_WORKER_LIMIT = 8
+ const PROFILE_SWITCH_LOADING_DELAY = 400
+ 
+@@ -284,6 +288,14 @@ const ProfilePage = () => {
+     }
+     setLoading(true)
+ 
++    const getImportErrorCode = (error: unknown) => {
++      if (error && typeof error === 'object') {
++        const code = (error as { code?: unknown }).code
++        if (typeof code === 'string' && code) return code
++      }
++      return ''
++    }
++
+     const handleImportSuccess = async (noticeKey: string) => {
+       showNotice.success(noticeKey)
+       setUrl('')
+@@ -291,30 +303,58 @@ const ProfilePage = () => {
+     }
+     try {
+       // 尝试正常导入
+-      await importProfile(url)
++      const result = await importProfile(url)
++      if (result && typeof result === 'object' && result.status === 'invalid') {
++        throw Object.assign(new Error(result.message), {
++          code: result.kind || 'PROFILE_APPLY_FAILED',
++        })
++      }
+       await handleImportSuccess('shared.feedback.notifications.importSuccess')
+     } catch (initialErr) {
+       console.warn('[订阅导入] 首次导入失败:', initialErr)
+ 
+-      if (String(initialErr).toLowerCase().includes('legacy tls')) {
+-        showNotice.error(String(initialErr))
++      const initialCode = getImportErrorCode(initialErr)
++      if (
++        initialCode === 'PROFILE_FETCH_TLS_ERROR' ||
++        String(initialErr).toLowerCase().includes('legacy tls')
++      ) {
++        showNotice.error('profiles.page.feedback.notifications.importFail')
++        return
++      }
++
++      if (!shouldRetryImportWithSelfProxy(initialCode)) {
++        showNotice.error(
++          resolveImportErrorNoticeKey(
++            initialCode,
++            /lazycat|heiyu/i.test(url),
++          ),
++          String(initialErr),
++        )
+         return
+       }
+ 
+       showNotice.info('profiles.page.feedback.notifications.importRetry')
+       try {
+         // 使用自身代理尝试导入
+-        await importProfile(url, {
++        const result = await importProfile(url, {
+           with_proxy: false,
+           self_proxy: true,
+         })
++        if (result && typeof result === 'object' && result.status === 'invalid') {
++          throw Object.assign(new Error(result.message), {
++            code: result.kind || 'PROFILE_APPLY_FAILED',
++          })
++        }
+         await handleImportSuccess(
+           'shared.feedback.notifications.importWithClashProxy',
+         )
+       } catch (retryErr) {
+         // 回退导入也失败
+         showNotice.error(
+-          'profiles.page.feedback.notifications.importFail',
++          resolveImportErrorNoticeKey(
++            getImportErrorCode(retryErr),
++            /lazycat|heiyu/i.test(url),
++          ),
+           String(retryErr),
+         )
+       }
+diff --git a/src/pages/unlock.tsx b/src/pages/unlock.tsx
+index ea91e6b..71f209d 100644
+--- a/src/pages/unlock.tsx
++++ b/src/pages/unlock.tsx
+@@ -26,6 +26,7 @@ import { useTranslation } from 'react-i18next'
+ 
+ import { BaseEmpty, BasePage } from '@/components/base'
+ import { showNotice } from '@/services/notice-service'
++import { probeRuntime } from '@/services/runtime-probe'
+ 
+ interface UnlockItem {
+   name: string
+@@ -212,28 +213,19 @@ const UnlockPage = () => {
+     })()
+   }, [getUnlockItems, loadResultsFromStorage, sortItemsByName])
+ 
+-  const invokeWithTimeout = async <T,>(
+-    cmd: string,
+-    args?: any,
+-    timeout = 15000,
+-  ): Promise<T> => {
+-    return Promise.race([
+-      invoke<T>(cmd, args),
+-      new Promise<T>((_, reject) =>
+-        setTimeout(
+-          () =>
+-            reject(new Error(t('tests.unlock.page.messages.detectionTimeout'))),
+-          timeout,
+-        ),
+-      ),
+-    ])
++  const checkMediaUnlock = async () => {
++    const result = await probeRuntime<UnlockItem[]>({
++      kind: 'unlock',
++      timeoutMs: 15000,
++    })
++    return result.data ?? []
+   }
+ 
+   // 执行全部项目检测
+   const checkAllMedia = useLockFn(async () => {
+     try {
+       setIsCheckingAll(true)
+-      const result = await invokeWithTimeout<UnlockItem[]>('check_media_unlock')
++      const result = await checkMediaUnlock()
+       const sortedItems = sortItemsByName(dedupeUnlockItems(result))
+ 
+       setUnlockItems(sortedItems)
+@@ -253,7 +245,7 @@ const UnlockPage = () => {
+   const checkSingleMedia = useLockFn(async (name: string) => {
+     try {
+       setLoadingItems((prev) => [...prev, name])
+-      const result = await invokeWithTimeout<UnlockItem[]>('check_media_unlock')
++      const result = await checkMediaUnlock()
+       const dedupedResult = dedupeUnlockItems(result)
+ 
+       const normalizedTargetName = normalizeUnlockName(name)
+diff --git a/src/providers/app-data-context.ts b/src/providers/app-data-context.ts
+index 890ff19..2ee10cf 100644
+--- a/src/providers/app-data-context.ts
++++ b/src/providers/app-data-context.ts
+@@ -5,11 +5,15 @@ import {
+   Rule,
+   RuleProvider,
+ } from 'tauri-plugin-mihomo-api'
++import type { RuntimeInfo, RuntimeProfileHealth } from '@root/browser/runtime'
+ 
+ export interface ProxiesContextType {
+   proxies: any
+   proxyProviders: Record<string, ProxyProvider | undefined>
+   isProxiesPending: boolean
++  runtimeInfo: RuntimeInfo | null
++  profileHealth: RuntimeProfileHealth | null
++  staleProxyData: boolean
+ }
+ 
+ export interface RulesContextType {
+@@ -66,7 +70,14 @@ const useCtx = <T>(ctx: Context<T | null>, hookName: string): T => {
+ }
+ 
+ export const useProxiesData = () => {
+-  const { proxies, proxyProviders, isProxiesPending } = useCtx(
++  const {
++    proxies,
++    proxyProviders,
++    isProxiesPending,
++    runtimeInfo,
++    profileHealth,
++    staleProxyData,
++  } = useCtx(
+     ProxiesContext,
+     'useProxiesData',
+   )
+@@ -75,6 +86,9 @@ export const useProxiesData = () => {
+     proxies,
+     proxyProviders: proxyProviders as Record<string, ProxyProvider>,
+     isProxiesPending,
++    runtimeInfo,
++    profileHealth,
++    staleProxyData,
+   }
+ }
+ 
+diff --git a/src/providers/app-data-provider.tsx b/src/providers/app-data-provider.tsx
+index 19f6fe4..dceb368 100644
+--- a/src/providers/app-data-provider.tsx
++++ b/src/providers/app-data-provider.tsx
+@@ -1,5 +1,5 @@
+ import { listen } from '@tauri-apps/api/event'
+-import React, { useCallback, useEffect, useMemo, useRef } from 'react'
++import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+ import {
+   getBaseConfig,
+   getRuleProviders,
+@@ -15,6 +15,14 @@ import {
+   getSystemProxy,
+ } from '@/services/cmds'
+ import { revalidateQueries, useQuery } from '@/services/query-client'
++import { vergeJson, type RuntimeInfo } from '@root/browser/runtime'
++import {
++  getProfileHealth,
++  hasUsableProxyProviderSnapshot,
++  hasUsableProxySnapshot,
++  shouldFreezeProxySnapshots,
++  shouldRefreshAfterRecovery,
++} from '@/services/profile-health'
+ 
+ import {
+   ClashConfigContext,
+@@ -82,6 +90,17 @@ export const AppDataProvider = ({
+     revalidateOnMount: false,
+   })
+ 
++  const {
++    data: runtimeInfo,
++    refetch: _refetchRuntimeInfo,
++  } = useQuery<RuntimeInfo>({
++    queryKey: ['getRuntimeInfo'],
++    queryFn: () => vergeJson<RuntimeInfo>('/runtime-info'),
++    ...TQ_DEFAULTS,
++    refetchInterval: 5000,
++    retry: 1,
++  })
++
+   const { data: ruleProviders, refetch: _refetchRuleProviders } = useQuery({
+     queryKey: ['getRuleProviders'],
+     queryFn: getRuleProviders,
+@@ -115,6 +134,73 @@ export const AppDataProvider = ({
+     retry: 1,
+   })
+ 
++  const profileHealth = getProfileHealth(runtimeInfo)
++  const [stableProxiesData, setStableProxiesData] = useState<typeof proxiesData>()
++  const [stableProxyProviders, setStableProxyProviders] = useState<
++    typeof proxyProviders
++  >()
++  const previousProfileHealthRef = useRef(profileHealth)
++
++  useEffect(() => {
++    if (
++      !shouldFreezeProxySnapshots(profileHealth) &&
++      hasUsableProxySnapshot(proxiesData)
++    ) {
++      // Keep the last usable snapshot for a degraded runtime response.
++      // eslint-disable-next-line @eslint-react/set-state-in-effect
++      setStableProxiesData(proxiesData)
++    }
++  }, [profileHealth, proxiesData])
++
++  useEffect(() => {
++    if (
++      !shouldFreezeProxySnapshots(profileHealth) &&
++      hasUsableProxyProviderSnapshot(proxyProviders)
++    ) {
++      // Keep the last usable provider snapshot for a degraded runtime response.
++      // eslint-disable-next-line @eslint-react/set-state-in-effect
++      setStableProxyProviders(proxyProviders)
++    }
++  }, [profileHealth, proxyProviders])
++
++  const refreshRuntimeInfo = useStableFn(_refetchRuntimeInfo)
++
++  useEffect(() => {
++    const previous = previousProfileHealthRef.current
++    if (shouldRefreshAfterRecovery(previous, profileHealth)) {
++      void Promise.allSettled([
++        _refetchProxy(),
++        _refetchProxyProviders(),
++        refreshRuntimeInfo(),
++      ])
++    }
++    previousProfileHealthRef.current = profileHealth
++  }, [
++    profileHealth,
++    _refetchProxy,
++    _refetchProxyProviders,
++    refreshRuntimeInfo,
++  ])
++
++  const effectiveProxiesData = useMemo(
++    () =>
++      shouldFreezeProxySnapshots(profileHealth) && stableProxiesData
++        ? stableProxiesData
++        : (proxiesData ?? stableProxiesData),
++    [profileHealth, proxiesData, stableProxiesData],
++  )
++  const effectiveProxyProviders = useMemo(
++    () =>
++      shouldFreezeProxySnapshots(profileHealth) && stableProxyProviders
++        ? stableProxyProviders
++        : (proxyProviders ?? stableProxyProviders ?? {}),
++    [profileHealth, proxyProviders, stableProxyProviders],
++  )
++  const staleProxyData = useMemo(
++    () => shouldFreezeProxySnapshots(profileHealth) && !!stableProxiesData,
++    [profileHealth, stableProxiesData],
++  )
++
+   const refreshProxy = useStableFn(_refetchProxy)
+   const refreshClashConfig = useStableFn(_refetchClashConfig)
+   const refreshRules = useStableFn(_refetchRules)
+@@ -207,6 +293,7 @@ export const AppDataProvider = ({
+       refreshSysproxy(),
+       refreshProxyProviders(),
+       refreshRuleProviders(),
++      refreshRuntimeInfo(),
+     ])
+   }, [
+     refreshProxy,
+@@ -215,15 +302,26 @@ export const AppDataProvider = ({
+     refreshSysproxy,
+     refreshProxyProviders,
+     refreshRuleProviders,
++    refreshRuntimeInfo,
+   ])
+ 
+   const proxiesValue = useMemo(
+     () => ({
+-      proxies: proxiesData,
+-      proxyProviders: proxyProviders || {},
++      proxies: effectiveProxiesData,
++      proxyProviders: effectiveProxyProviders || {},
+       isProxiesPending,
++      runtimeInfo: runtimeInfo ?? null,
++      profileHealth,
++      staleProxyData,
+     }),
+-    [proxiesData, proxyProviders, isProxiesPending],
++    [
++      effectiveProxiesData,
++      effectiveProxyProviders,
++      isProxiesPending,
++      runtimeInfo,
++      profileHealth,
++      staleProxyData,
++    ],
+   )
+ 
+   const rulesValue = useMemo(
+diff --git a/src/services/cmds.ts b/src/services/cmds.ts
+index 096516e..119ff73 100644
+--- a/src/services/cmds.ts
++++ b/src/services/cmds.ts
+@@ -50,7 +50,7 @@ export async function saveProfileFile(index: string, fileData: string) {
+ }
+ 
+ export async function importProfile(url: string, option?: IProfileOption) {
+-  return invoke<void>('import_profile', {
++  return invoke<ValidationOutcome | null>('import_profile', {
+     url,
+     option: option || { with_proxy: true },
+   })
+diff --git a/src/services/delay.ts b/src/services/delay.ts
+index 3adb47c..05f4722 100644
+--- a/src/services/delay.ts
++++ b/src/services/delay.ts
+@@ -235,7 +235,17 @@ class DelayManager {
+ 
+       // 设置超时处理, delay = 0 为超时
+       const timeoutPromise = new Promise<ProxyDelay>((resolve) => {
+-        setTimeout(() => resolve({ delay: 0 }), timeout)
++        setTimeout(
++          () =>
++            resolve({
++              target: name,
++              status: 'timeout',
++              delay: 0,
++              errorCode: 'timeout',
++              errorMessage: '延迟测试超时',
++            }),
++          timeout,
++        )
+       })
+ 
+       // 使用Promise.race来实现超时控制
+diff --git a/src/services/profile-health.test.ts b/src/services/profile-health.test.ts
+new file mode 100644
+index 0000000..3354eb3
+--- /dev/null
++++ b/src/services/profile-health.test.ts
+@@ -0,0 +1,74 @@
++import { describe, expect, it } from "vitest";
++
++import { getExpectedRuntimeInfo } from "../../../../browser/runtime";
++
++import {
++  getProfileHealth,
++  hasUsableProxyProviderSnapshot,
++  hasUsableProxySnapshot,
++  shouldFreezeProxySnapshots,
++  shouldRefreshAfterRecovery,
++} from "./profile-health";
++
++describe("profile health helpers", () => {
++  it("freezes proxy snapshots while runtime profile health is degraded", () => {
++    expect(
++      shouldFreezeProxySnapshots({
++        status: "degraded",
++        activeProfileId: "demo",
++        lastGoodProfileId: "demo",
++        lastAppliedAt: "2026-03-31T01:44:24Z",
++        lastError: "订阅拉取超时（20s）",
++        providerCounts: { "high-premium": 7 },
++      }),
++    ).toBe(true);
++  });
++
++  it("requests a recovery refresh only when health turns ready again", () => {
++    const degraded = {
++      status: "degraded" as const,
++      activeProfileId: "demo",
++      lastGoodProfileId: "demo",
++      lastAppliedAt: "2026-03-31T01:44:24Z",
++      lastError: "订阅拉取超时（20s）",
++      providerCounts: { "high-premium": 7 },
++    };
++    const ready = {
++      ...degraded,
++      status: "ready" as const,
++      lastError: "",
++    };
++
++    expect(shouldRefreshAfterRecovery(degraded, ready)).toBe(true);
++    expect(shouldRefreshAfterRecovery(ready, ready)).toBe(false);
++  });
++
++  it("treats proxy and provider snapshots as usable when shape is complete", () => {
++    expect(
++      hasUsableProxySnapshot({
++        groups: [],
++        proxies: [],
++        global: { all: [] },
++      }),
++    ).toBe(true);
++    expect(hasUsableProxyProviderSnapshot({ "high-premium": {} })).toBe(true);
++    expect(hasUsableProxySnapshot(null)).toBe(false);
++  });
++
++  it("extracts optional profile health from runtime info", () => {
++    const expected = getExpectedRuntimeInfo();
++    const runtimeInfo = {
++      ...expected,
++      profileHealth: {
++        status: "degraded" as const,
++        activeProfileId: "demo",
++        lastGoodProfileId: "demo",
++        lastAppliedAt: "2026-03-31T01:44:24Z",
++        lastError: "订阅拉取超时（20s）",
++        providerCounts: { "high-premium": 7 },
++      },
++    };
++
++    expect(getProfileHealth(runtimeInfo)?.status).toBe("degraded");
++  });
++});
+diff --git a/src/services/profile-health.ts b/src/services/profile-health.ts
+new file mode 100644
+index 0000000..b0cd82e
+--- /dev/null
++++ b/src/services/profile-health.ts
+@@ -0,0 +1,39 @@
++import type { RuntimeInfo, RuntimeProfileHealth } from "@root/browser/runtime";
++
++export const getProfileHealth = (
++  runtimeInfo: RuntimeInfo | null | undefined,
++): RuntimeProfileHealth | null => {
++  const health = runtimeInfo?.profileHealth;
++  if (!health) {
++    return null;
++  }
++  return health;
++};
++
++export const shouldFreezeProxySnapshots = (
++  health: RuntimeProfileHealth | null | undefined,
++) => health?.status === "degraded";
++
++export const shouldRefreshAfterRecovery = (
++  previous: RuntimeProfileHealth | null | undefined,
++  next: RuntimeProfileHealth | null | undefined,
++) => previous?.status === "degraded" && next?.status === "ready";
++
++export const hasUsableProxySnapshot = (value: unknown) => {
++  if (!value || typeof value !== "object") {
++    return false;
++  }
++  const candidate = value as {
++    groups?: unknown[];
++    proxies?: unknown[];
++    global?: { all?: unknown[] } | null;
++  };
++  return (
++    Array.isArray(candidate.groups) ||
++    Array.isArray(candidate.proxies) ||
++    !!candidate.global
++  );
++};
++
++export const hasUsableProxyProviderSnapshot = (value: unknown) =>
++  !!value && typeof value === "object";
+diff --git a/src/services/runtime-probe.test.ts b/src/services/runtime-probe.test.ts
+new file mode 100644
+index 0000000..ee8943a
+--- /dev/null
++++ b/src/services/runtime-probe.test.ts
+@@ -0,0 +1,91 @@
++import { afterEach, describe, expect, it, vi } from "vitest";
++
++import { probeRuntime } from "./runtime-probe";
++
++afterEach(() => {
++  vi.unstubAllGlobals();
++  vi.restoreAllMocks();
++});
++
++describe("probeRuntime", () => {
++  it("maps plain-text timeout failures into structured probe errors", async () => {
++    vi.stubGlobal("window", {
++      __LZCAPP_MIHOMO__: {
++        vergeApiBaseUrl: "/verge-api",
++      },
++    } as typeof globalThis & {
++      __LZCAPP_MIHOMO__?: {
++        vergeApiBaseUrl?: string;
++      };
++    });
++
++    vi.stubGlobal(
++      "fetch",
++      vi.fn(async () =>
++        new Response("ETIMEDOUT timeout\n", {
++          status: 502,
++          headers: {
++            "Content-Type": "text/plain; charset=utf-8",
++          },
++        }),
++      ),
++    );
++
++    await expect(
++      probeRuntime({
++        kind: "ip_info",
++        timeoutMs: 5000,
++      }),
++    ).rejects.toMatchObject({
++      code: "TIMEOUT",
++      message: "ETIMEDOUT timeout",
++    });
++  });
++
++  it("preserves successful JSON envelopes from the probe backend", async () => {
++    vi.stubGlobal("window", {
++      __LZCAPP_MIHOMO__: {
++        vergeApiBaseUrl: "/verge-api",
++      },
++    } as typeof globalThis & {
++      __LZCAPP_MIHOMO__?: {
++        vergeApiBaseUrl?: string;
++      };
++    });
++
++    vi.stubGlobal(
++      "fetch",
++      vi.fn(async () =>
++        new Response(
++          JSON.stringify({
++            ok: true,
++            code: "OK",
++            message: "ok",
++            durationMs: 42,
++            fromCache: false,
++            data: { status: "success" },
++          }),
++          {
++            status: 200,
++            headers: {
++              "Content-Type": "application/json; charset=utf-8",
++            },
++          },
++        ),
++      ),
++    );
++
++    await expect(
++      probeRuntime<{ status: string }>({
++        kind: "unlock",
++      }),
++    ).resolves.toEqual({
++      ok: true,
++      code: "OK",
++      message: "ok",
++      durationMs: 42,
++      fromCache: false,
++      data: { status: "success" },
++    });
++  });
++});
+diff --git a/src/services/runtime-probe.ts b/src/services/runtime-probe.ts
+new file mode 100644
+index 0000000..155f053
+--- /dev/null
++++ b/src/services/runtime-probe.ts
+@@ -0,0 +1,177 @@
++import { invoke } from "@tauri-apps/api/core";
++import { extractErrorMessage } from "foxts/extract-error-message";
++
++export type ProbeCode =
++  | "OK"
++  | "TIMEOUT"
++  | "UPSTREAM_TLS"
++  | "PROXY_UNREACHABLE"
++  | "NO_ACTIVE_PROXY"
++  | "TARGET_BLOCKED"
++  | "UNKNOWN";
++
++export type ProbeEnvelope<T = unknown> = {
++  ok: boolean;
++  code: ProbeCode;
++  message: string;
++  data?: T;
++  durationMs: number;
++  fromCache: boolean;
++};
++
++export type ProbeRequest = {
++  kind: "ip_info" | "unlock" | "url";
++  target?: string;
++  timeoutMs?: number;
++  proxyGroup?: string;
++};
++
++const hasWebPortRuntime = () =>
++  typeof window !== "undefined" &&
++  !!window.__LZCAPP_MIHOMO__?.vergeApiBaseUrl;
++
++export const createProbeError = (
++  code: ProbeCode,
++  message: string,
++  payload?: unknown,
++) => {
++  const error = new Error(message) as Error & {
++    code?: ProbeCode;
++    payload?: unknown;
++  };
++  error.code = code;
++  error.payload = payload;
++  return error;
++};
++
++const classifyProbeFailure = (
++  rawText: string,
++  status: number,
++): Pick<ProbeEnvelope, "code" | "message"> => {
++  const text = rawText.trim();
++  const upper = text.toUpperCase();
++
++  if (upper.includes("ETIMEDOUT") || upper.includes("TIMEOUT")) {
++    return {
++      code: "TIMEOUT",
++      message: text || "探测超时。",
++    };
++  }
++
++  if (
++    upper.includes("ECONNREFUSED") ||
++    upper.includes("ECONNRESET") ||
++    upper.includes("EHOSTUNREACH") ||
++    upper.includes("ENETUNREACH")
++  ) {
++    return {
++      code: "PROXY_UNREACHABLE",
++      message: text || "探测代理不可达。",
++    };
++  }
++
++  if (upper.includes("TLS") || upper.includes("SSL")) {
++    return {
++      code: "UPSTREAM_TLS",
++      message: text || "上游 TLS 握手失败。",
++    };
++  }
++
++  return {
++    code: "UNKNOWN",
++    message: text || `HTTP ${status}`,
++  };
++};
++
++const buildProbeEnvelope = <T>(
++  response: Response,
++  rawText: string,
++): ProbeEnvelope<T> => {
++  const failure = classifyProbeFailure(rawText, response.status);
++  return {
++    ok: false,
++    code: failure.code,
++    message: failure.message,
++    durationMs: 0,
++    fromCache: false,
++  };
++};
++
++const parseProbeResponse = async <T>(response: Response) => {
++  let payload: ProbeEnvelope<T>;
++  const rawText = await response.text();
++
++  try {
++    const contentType = response.headers.get("content-type") ?? "";
++    if (contentType.includes("application/json")) {
++      payload = JSON.parse(rawText) as ProbeEnvelope<T>;
++    } else {
++      payload = buildProbeEnvelope<T>(response, rawText);
++    }
++  } catch (error) {
++    payload = buildProbeEnvelope<T>(
++      response,
++      rawText || extractErrorMessage(error) || "探测响应解析失败。",
++    );
++  }
++
++  if (!response.ok || !payload.ok) {
++    throw createProbeError(
++      payload?.code || "UNKNOWN",
++      payload.message || "探测失败。",
++      payload,
++    );
++  }
++
++  return payload;
++};
++
++export const probeRuntime = async <T>(
++  request: ProbeRequest,
++): Promise<ProbeEnvelope<T>> => {
++  if (hasWebPortRuntime()) {
++    const response = await fetch("/fetch/probe", {
++      method: "POST",
++      credentials: "same-origin",
++      headers: {
++        "Content-Type": "application/json",
++      },
++      body: JSON.stringify(request),
++    });
++    return parseProbeResponse<T>(response);
++  }
++
++  if (request.kind === "ip_info") {
++    const result = await invoke<T>("get_ip_info");
++    return {
++      ok: true,
++      code: "OK",
++      message: "ok",
++      data: result,
++      durationMs: 0,
++      fromCache: false,
++    };
++  }
++
++  if (request.kind === "unlock") {
++    const result = await invoke<T>("check_media_unlock");
++    return {
++      ok: true,
++      code: "OK",
++      message: "ok",
++      data: result,
++      durationMs: 0,
++      fromCache: false,
++    };
++  }
++
++  const result = await invoke<T>("test_delay", { url: request.target });
++  return {
++    ok: true,
++    code: "OK",
++    message: "ok",
++    data: result,
++    durationMs: 0,
++    fromCache: false,
++  };
++};
+diff --git a/src/services/web-runtime.test.ts b/src/services/web-runtime.test.ts
+new file mode 100644
+index 0000000..d0450f6
+--- /dev/null
++++ b/src/services/web-runtime.test.ts
+@@ -0,0 +1,147 @@
++import { afterEach, describe, expect, it, vi } from "vitest";
++
++import {
++  assessRuntimeContract,
++  createWebCommandResult,
++  getExpectedRuntimeInfo,
++  getWebActionPolicy,
++} from "../../../../browser/runtime";
++
++afterEach(() => {
++  vi.unstubAllGlobals();
++});
++
++describe("getWebActionPolicy", () => {
++  it("marks system proxy as disabled with lazycat guidance", () => {
++    vi.stubGlobal("window", {
++      __LZCAPP_MIHOMO__: {},
++    } as unknown as typeof globalThis);
++
++    expect(getWebActionPolicy("systemProxy")).toEqual({
++      mode: "disabled",
++      reason:
++        "LazyCat 微服 Web 版不支持接管宿主机系统代理，请使用虚拟网卡模式（TUN）或显式代理入口。",
++    });
++  });
++
++  it("marks directory open as degraded with copy-path fallback", () => {
++    vi.stubGlobal("window", {
++      __LZCAPP_MIHOMO__: {},
++    } as unknown as typeof globalThis);
++
++    expect(getWebActionPolicy("directoryOpen")).toEqual({
++      mode: "degraded",
++      reason: "LazyCat Web 版无法直接打开宿主机目录，将改为复制目录路径。",
++      label: "复制路径",
++      fallback: "copy-path",
++    });
++  });
++
++  it("marks devtools as disabled with browser guidance", () => {
++    vi.stubGlobal("window", {
++      __LZCAPP_MIHOMO__: {},
++    } as unknown as typeof globalThis);
++
++    expect(getWebActionPolicy("devtools")).toEqual({
++      mode: "disabled",
++      reason: "请使用浏览器 DevTools。",
++      label: "浏览器 DevTools",
++    });
++  });
++
++  it("ignores runtime capability overrides for system proxy", () => {
++    const expected = getExpectedRuntimeInfo();
++    vi.stubGlobal("window", {
++      __LZCAPP_MIHOMO__: {
++        runtimeInfo: {
++          ...expected,
++          capabilities: {
++            ...expected.capabilities,
++            systemProxy: {
++              mode: "degraded",
++              reason: "runtime override",
++              label: "custom policy",
++            },
++          },
++        },
++      },
++    } as typeof globalThis & {
++      __LZCAPP_MIHOMO__?: {
++        runtimeInfo?: typeof expected;
++      };
++    });
++
++    expect(getWebActionPolicy("systemProxy")).toEqual({
++      mode: "disabled",
++      reason:
++        "LazyCat 微服 Web 版不支持接管宿主机系统代理，请使用虚拟网卡模式（TUN）或显式代理入口。",
++    });
++  });
++
++  it("prefers runtime capability overrides when the backend reports empty runtime mode", () => {
++    const expected = getExpectedRuntimeInfo();
++    vi.stubGlobal("window", {
++      __LZCAPP_MIHOMO__: {
++        runtimeInfo: {
++          ...expected,
++          capabilities: {
++            ...expected.capabilities,
++            runtimeProfile: {
++              mode: "degraded",
++              reason:
++                "当前没有活动配置文件；运行态修改会写入空配置运行态，需要持久配置时请先新建或选择配置。",
++              label: "空配置运行态",
++            },
++          },
++        },
++      },
++    } as typeof globalThis & {
++      __LZCAPP_MIHOMO__?: {
++        runtimeInfo?: typeof expected;
++      };
++    });
++
++    expect(getWebActionPolicy("runtimeProfile")).toEqual({
++      mode: "degraded",
++      reason:
++        "当前没有活动配置文件；运行态修改会写入空配置运行态，需要持久配置时请先新建或选择配置。",
++      label: "空配置运行态",
++    });
++  });
++});
++
++describe("createWebCommandResult", () => {
++  it("preserves kind, message and data payload", () => {
++    expect(
++      createWebCommandResult("degraded", "copied", { path: "/tmp/demo" }),
++    ).toEqual({
++      kind: "degraded",
++      message: "copied",
++      data: { path: "/tmp/demo" },
++    });
++  });
++});
++
++describe("assessRuntimeContract", () => {
++  it("blocks startup when package fingerprint mismatches", () => {
++    const expected = getExpectedRuntimeInfo();
++    expect(
++      assessRuntimeContract({
++        ...expected,
++        packageFingerprint: `${expected.packageFingerprint}-drift`,
++      }).status,
++    ).toBe("blocked");
++  });
++
++  it("warns on build drift when contract is still compatible", () => {
++    const expected = getExpectedRuntimeInfo();
++    const assessment = assessRuntimeContract({
++      ...expected,
++      buildId: `${expected.buildId}-next`,
++      gitCommit: "deadbeef",
++    });
++
++    expect(assessment.status).toBe("warning");
++    expect(assessment.warning?.code).toBe("DEPLOYMENT_DRIFT");
++  });
++});
+diff --git a/src/utils/monaco-worker-ignore.ts b/src/utils/monaco-worker-ignore.ts
+new file mode 100644
+index 0000000..980158d
+--- /dev/null
++++ b/src/utils/monaco-worker-ignore.ts
+@@ -0,0 +1,38 @@
++// These warnings are safe to ignore: they occur when Monaco models or workers are manually disposed.
++const ignoredGlobalErrorMessages = [
++  "Missing requestHandler or method:",
++  "Could not create web worker(s). Falling back to loading web worker code in main thread",
++  "Cannot use 'in' operator to search for 'then' in undefined",
++];
++
++const isIgnoredMessage = (message: string) =>
++  ignoredGlobalErrorMessages.some((snippet) => message.includes(snippet));
++
++export const isIgnoredMonacoWorkerError = (reason: unknown) => {
++  const message = String(
++    reason instanceof Error ? reason.message : (reason ?? ""),
++  );
++  return isIgnoredMessage(message);
++};
++
++const shouldIgnoreConsoleArgs = (args: unknown[]) =>
++  args.some((arg) => {
++    const message =
++      typeof arg === "string" ? arg : arg instanceof Error ? arg.message : "";
++    return isIgnoredMessage(message);
++  });
++
++export const patchMonacoWorkerConsole = () => {
++  const originalWarn = console.warn;
++  const originalError = console.error;
++
++  console.warn = (...args) => {
++    if (shouldIgnoreConsoleArgs(args)) return;
++    originalWarn(...args);
++  };
++
++  console.error = (...args) => {
++    if (shouldIgnoreConsoleArgs(args)) return;
++    originalError(...args);
++  };
++};
+diff --git a/src/utils/normalize-epoch.test.ts b/src/utils/normalize-epoch.test.ts
+new file mode 100644
+index 0000000..8c9ecfa
+--- /dev/null
++++ b/src/utils/normalize-epoch.test.ts
+@@ -0,0 +1,28 @@
++import { describe, expect, it } from "vitest";
++
++import {
++  normalizeEpochToMs,
++  normalizePlausibleEpochToMs,
++} from "./normalize-epoch";
++
++describe("normalizeEpochToMs", () => {
++  it("normalizes seconds to milliseconds", () => {
++    expect(normalizeEpochToMs(1_741_848_000)).toBe(1_741_848_000_000);
++  });
++
++  it("keeps millisecond timestamps unchanged", () => {
++    expect(normalizeEpochToMs(1_741_848_000_000)).toBe(1_741_848_000_000);
++  });
++});
++
++describe("normalizePlausibleEpochToMs", () => {
++  it("keeps current-era timestamps", () => {
++    expect(normalizePlausibleEpochToMs(1_741_848_000_000)).toBe(
++      1_741_848_000_000,
++    );
++  });
++
++  it("rejects implausibly large future timestamps", () => {
++    expect(normalizePlausibleEpochToMs(1_741_848_000_000_000)).toBe(0);
++  });
++});
+diff --git a/src/utils/normalize-epoch.ts b/src/utils/normalize-epoch.ts
+new file mode 100644
+index 0000000..acaecfa
+--- /dev/null
++++ b/src/utils/normalize-epoch.ts
+@@ -0,0 +1,20 @@
++const MILLISECOND_EPOCH_THRESHOLD = 1e11;
++const MAX_REASONABLE_EPOCH_MS = Date.UTC(2100, 0, 1);
++
++export const normalizeEpochToMs = (value?: number | null) => {
++  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
++    return 0;
++  }
++
++  // Some runtimes return epoch seconds while the LazyCat web runtime already
++  // returns epoch milliseconds for profile.updated.
++  return value >= MILLISECOND_EPOCH_THRESHOLD ? value : value * 1000;
++};
++
++export const normalizePlausibleEpochToMs = (value?: number | null) => {
++  const normalized = normalizeEpochToMs(value);
++  if (!normalized || normalized > MAX_REASONABLE_EPOCH_MS) {
++    return 0;
++  }
++  return normalized;
++};
+diff --git a/src/utils/parse-clash-log.test.ts b/src/utils/parse-clash-log.test.ts
+new file mode 100644
+index 0000000..d407d72
+--- /dev/null
++++ b/src/utils/parse-clash-log.test.ts
+@@ -0,0 +1,63 @@
++import { describe, expect, it } from "vitest";
++
++import { parseClashLogLine, parseClashLogLines } from "./parse-clash-log";
++
++describe("parseClashLogLine", () => {
++  it("parses Mihomo journal lines into ILogItem", () => {
++    expect(
++      parseClashLogLine(
++        'time="2026-03-12T15:16:32.190504926+08:00" level=info msg="Start initial configuration in progress"',
++      ),
++    ).toEqual({
++      time: "03-12 15:16:32",
++      type: "info",
++      payload: "Start initial configuration in progress",
++    });
++  });
++
++  it("normalizes warn and err levels", () => {
++    expect(
++      parseClashLogLine(
++        'time="2026-03-12T15:16:32.190504926+08:00" level=warn msg="warn line"',
++      ),
++    )?.toMatchObject({ type: "warning" });
++    expect(
++      parseClashLogLine(
++        'time="2026-03-12T15:16:32.190504926+08:00" level=err msg="err line"',
++      ),
++    )?.toMatchObject({ type: "error" });
++  });
++
++  it("ignores systemd and malformed lines", () => {
++    expect(
++      parseClashLogLine(
++        "Started mihomo.service - Mihomo (Clash Meta).",
++      ),
++    ).toBeNull();
++    expect(parseClashLogLine("")).toBeNull();
++    expect(parseClashLogLine("not a clash log")).toBeNull();
++  });
++});
++
++describe("parseClashLogLines", () => {
++  it("keeps only parseable Mihomo lines", () => {
++    expect(
++      parseClashLogLines([
++        'time="2026-03-12T15:16:32.190504926+08:00" level=info msg="line 1"',
++        "Started mihomo.service - Mihomo (Clash Meta).",
++        'time="2026-03-12T15:16:33.190504926+08:00" level=warning msg="line 2"',
++      ]),
++    ).toEqual([
++      {
++        time: "03-12 15:16:32",
++        type: "info",
++        payload: "line 1",
++      },
++      {
++        time: "03-12 15:16:33",
++        type: "warning",
++        payload: "line 2",
++      },
++    ]);
++  });
++});
+diff --git a/src/utils/parse-clash-log.ts b/src/utils/parse-clash-log.ts
+new file mode 100644
+index 0000000..32db85d
+--- /dev/null
++++ b/src/utils/parse-clash-log.ts
+@@ -0,0 +1,44 @@
++import dayjs from "dayjs";
++
++const MIHOMO_JOURNAL_LINE =
++  /^time="(.+?)"\s+level=(debug|info|warning|warn|error|err)\s+msg="([\s\S]*?)"$/i;
++
++const LEVEL_ALIAS: Record<string, ILogItem["type"]> = {
++  debug: "debug",
++  info: "info",
++  warning: "warning",
++  warn: "warning",
++  error: "error",
++  err: "error",
++};
++
++export const parseClashLogLine = (line: string): ILogItem | null => {
++  const trimmed = String(line || "").trim();
++  if (!trimmed) return null;
++
++  const match = trimmed.match(MIHOMO_JOURNAL_LINE);
++  if (!match) return null;
++
++  const [, rawTime, rawLevel, payload] = match;
++  const type = LEVEL_ALIAS[rawLevel.toLowerCase()];
++  const parsedTime = dayjs(rawTime);
++
++  if (!type || !parsedTime.isValid()) {
++    return null;
++  }
++
++  return {
++    time: parsedTime.format("MM-DD HH:mm:ss"),
++    type,
++    payload,
++  };
++};
++
++export const parseClashLogLines = (lines: string[]): ILogItem[] =>
++  lines.reduce<ILogItem[]>((acc, line) => {
++    const parsed = parseClashLogLine(line);
++    if (parsed) {
++      acc.push(parsed);
++    }
++    return acc;
++  }, []);

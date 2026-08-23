@@ -39,7 +39,10 @@ export default defineConfig([
       globals: globals.browser,
       parserOptions: {
         projectService: {
-          allowDefaultProject: ["src/polyfills/*.js"],
+          allowDefaultProject: [
+            "src/polyfills/*.js",
+            "vendor/clash-verge-rev/src/polyfills/*.js",
+          ],
         },
       },
     },
@@ -73,25 +76,21 @@ export default defineConfig([
       "@eslint-react/no-children-for-each": "error",
       "@eslint-react/no-children-map": "error",
       "@eslint-react/no-children-only": "error",
-      "@eslint-react/no-children-prop": "error",
+      "@eslint-react/jsx-no-children-prop": "error",
       "@eslint-react/no-children-to-array": "error",
       "@eslint-react/no-class-component": "error",
       "@eslint-react/no-clone-element": "error",
       "@eslint-react/no-create-ref": "error",
-      "@eslint-react/no-default-props": "error",
       "@eslint-react/no-direct-mutation-state": "error",
       "@eslint-react/no-implicit-key": "error",
-      "@eslint-react/no-prop-types": "error",
       "@eslint-react/no-set-state-in-component-did-mount": "error",
       "@eslint-react/no-set-state-in-component-did-update": "error",
       "@eslint-react/no-set-state-in-component-will-update": "error",
-      "@eslint-react/no-string-refs": "error",
       "@eslint-react/no-unstable-context-value": "warn",
       "@eslint-react/no-unstable-default-props": "warn",
       "@eslint-react/no-unused-class-component-members": "error",
       "@eslint-react/no-unused-state": "error",
-      "@eslint-react/no-useless-fragment": "warn",
-      "@eslint-react/prefer-destructuring-assignment": "warn",
+      "@eslint-react/jsx-no-useless-fragment": "warn",
 
       // TypeScript
       "@typescript-eslint/no-explicit-any": "off",
@@ -149,6 +148,16 @@ export default defineConfig([
         ...globals.browser,
         ...globals.node,
       },
+    },
+  },
+  {
+    files: ["vendor/clash-verge-rev/src/**/*.{js,ts,tsx}"],
+    rules: {
+      // The pinned upstream Web source uses its own single-quote/no-semicolon
+      // formatter. Keep the overlay source byte-stable and lint semantics-only.
+      "prettier/prettier": "off",
+      "import-x/order": "off",
+      "react-refresh/only-export-components": "off",
     },
   },
 ]);

@@ -16,7 +16,7 @@
     vergeApiSecret: "",
     mihomoBaseUrl: current.mihomoBaseUrl || "/api",
     vergeApiBaseUrl: current.vergeApiBaseUrl || "/verge-api",
-    appVersion: current.appVersion || "2.4.7-webport.0",
+    appVersion: current.appVersion || "2.5.2-webport.0",
     runtimeInfo: null,
     runtimeWarning: null
   };

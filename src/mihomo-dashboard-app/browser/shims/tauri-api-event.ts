@@ -9,6 +9,7 @@ export type UnlistenFn = () => void;
 
 export const TauriEvent = {
   DRAG_DROP: "tauri://drag-drop",
+  WINDOW_CLOSE_REQUESTED: "tauri://close-requested",
 } as const;
 
 export const listen = async <T>(

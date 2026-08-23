@@ -98,7 +98,7 @@ const buildProbeEnvelope = <T>(
 };
 
 const parseProbeResponse = async <T>(response: Response) => {
-  let payload: ProbeEnvelope<T> | null = null;
+  let payload: ProbeEnvelope<T>;
   const rawText = await response.text();
 
   try {

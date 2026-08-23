@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import copy
+import base64
+import gzip
 import importlib.util
+import ssl
 import time
 import unittest
 import urllib.error
+import urllib.request
 from pathlib import Path
 from subprocess import CalledProcessError, CompletedProcess
 from unittest.mock import patch
@@ -263,6 +267,22 @@ class MihomoVergeApiTests(unittest.TestCase):
             payload = MODULE.runtime_info_payload()
 
         self.assertEqual(payload["profileHealth"], profile_health)
+
+    def test_runtime_contract_probe_payload_contains_only_contract_fields(self) -> None:
+        contract = copy.deepcopy(MODULE.DEFAULT_RUNTIME_CONTRACT)
+        contract["capabilities"]["systemProxy"] = {
+            "mode": "enabled",
+            "reason": "incorrect override",
+        }
+        with patch.object(MODULE, "load_runtime_contract", return_value=contract):
+            payload = MODULE.runtime_contract_probe_payload()
+
+        self.assertEqual(payload["appVersion"], "2.5.2-webport.0")
+        self.assertEqual(payload["apiSchemaVersion"], "2026.08-lzc-v2")
+        self.assertEqual(payload["uiSchemaVersion"], "2026.08-lzc-v2")
+        self.assertEqual(payload["systemProxy"], {"mode": "enabled"})
+        self.assertNotIn("profileHealth", payload)
+        self.assertNotIn("secret", payload)
 
     def test_check_unlock_status_runs_items_in_parallel(self) -> None:
         test_items = [
@@ -582,6 +602,225 @@ rules:
                 MODULE.fetch_remote_profile("https://example.com/sub.yaml", {})
 
         self.assertEqual(ctx.exception.code, "PROFILE_FETCH_NETWORK_ERROR")
+
+    def test_runtime_contract_is_v252_webport(self) -> None:
+        self.assertEqual(MODULE.APP_VERSION, "2.5.2-webport.0")
+        self.assertEqual(MODULE.DEFAULT_RUNTIME_CONTRACT["apiSchemaVersion"], "2026.08-lzc-v2")
+        self.assertEqual(MODULE.DEFAULT_RUNTIME_CONTRACT["uiSchemaVersion"], "2026.08-lzc-v2")
+
+    def test_get_clash_mode_prefers_overlay_and_group_order_uses_runtime_config(self) -> None:
+        with patch.object(MODULE, "ensure_state"), patch.object(
+            MODULE, "load_overlay", return_value={"mode": "global"}
+        ):
+            self.assertEqual(MODULE.invoke_command("get_clash_mode", {}), "global")
+
+        with patch.object(MODULE, "ensure_state"), patch.object(
+            MODULE,
+            "controller_request",
+            return_value={
+                "proxy-groups": [
+                    {"name": "PROXY"},
+                    {"name": "fallback"},
+                    {"name": "PROXY"},
+                ]
+            },
+        ):
+            self.assertEqual(
+                MODULE.invoke_command("get_runtime_proxy_group_order", {}),
+                ["PROXY", "fallback"],
+            )
+
+    def test_provider_delay_encodes_provider_proxy_and_query_separately(self) -> None:
+        with patch.object(MODULE, "ensure_state"), patch.object(
+            MODULE, "controller_request", return_value={"delay": 321}
+        ) as controller_request:
+            result = MODULE.invoke_command(
+                "clash_api_get_provider_proxy_delay",
+                {
+                    "provider": "provider/one",
+                    "name": "node / one",
+                    "url": "https://example.test/p?q=a b",
+                    "timeout": 3210,
+                },
+            )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["latencyMs"], 321)
+        path = controller_request.call_args.args[1]
+        self.assertIn("/providers/proxies/provider%2Fone/node%20%2F%20one/delay?", path)
+        self.assertIn("url=https%3A%2F%2Fexample.test%2Fp%3Fq%3Da+b", path)
+
+    def test_provider_delay_maps_controller_timeout(self) -> None:
+        error = urllib.error.HTTPError(
+            "http://controller.test",
+            504,
+            "Gateway Timeout",
+            hdrs={},
+            fp=None,
+        )
+        with patch.object(MODULE, "ensure_state"), patch.object(
+            MODULE, "controller_request", side_effect=error
+        ):
+            result = MODULE.invoke_command(
+                "clash_api_get_provider_proxy_delay",
+                {"provider": "demo", "name": "node", "timeout": 1000},
+            )
+
+        self.assertEqual(result["status"], "timeout")
+        self.assertEqual(result["errorCode"], "timeout")
+
+    def test_fetch_remote_profile_decompresses_gzip_and_handles_empty_password_auth(self) -> None:
+        profile = (
+            "proxies:\n  - name: demo\n    type: direct\n"
+            "proxy-groups:\n  - name: PROXY\n    type: select\n    proxies: [demo]\n"
+            "rules:\n  - MATCH,PROXY\n"
+        ).encode("utf-8")
+
+        class FakeResponse:
+            headers = {
+                "Content-Encoding": "gzip",
+                "Content-Type": "application/x-yaml",
+                "subscription-userinfo": "",
+            }
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def getcode(self):
+                return self.status
+
+            def read(self):
+                return gzip.compress(profile)
+
+        class FakeOpener:
+            def __init__(self):
+                self.request = None
+
+            def open(self, request, timeout):
+                self.request = request
+                return FakeResponse()
+
+        opener = FakeOpener()
+        with patch.object(MODULE.urllib.request, "build_opener", return_value=opener):
+            payload, _extra, metadata = MODULE.fetch_remote_profile(
+                "https://user:@example.test/profile.yaml?token=synthetic",
+                {},
+            )
+
+        self.assertIn("proxy-groups:", payload)
+        self.assertEqual(metadata["url"], "https://example.test/profile.yaml")
+        self.assertEqual(
+            opener.request.headers["Authorization"],
+            "Basic " + base64.b64encode(b"user:").decode("ascii"),
+        )
+        self.assertNotIn("synthetic", opener.request.full_url)
+
+    def test_fetch_remote_profile_rejects_decompressed_payload_over_limit(self) -> None:
+        class FakeResponse:
+            headers = {"Content-Encoding": "gzip", "Content-Type": "application/x-yaml"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def getcode(self):
+                return 200
+
+            def read(self):
+                return gzip.compress(b"x" * 32)
+
+        class FakeOpener:
+            def open(self, *_args, **_kwargs):
+                return FakeResponse()
+
+        with patch.object(MODULE, "PROFILE_MAX_BYTES", 8), patch.object(
+            MODULE.urllib.request, "build_opener", return_value=FakeOpener()
+        ):
+            with self.assertRaises(MODULE.ApiError) as ctx:
+                MODULE.fetch_remote_profile("https://example.test/profile.yaml", {})
+
+        self.assertEqual(ctx.exception.code, "PROFILE_CONTENT_TOO_LARGE")
+
+    def test_profile_redirect_handler_removes_authorization_across_origins(self) -> None:
+        request = urllib.request.Request("https://example.test/profile.yaml")
+        request.add_header("Authorization", "Basic synthetic")
+        redirected = MODULE.ProfileRedirectHandler().redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {"location": "https://other.example/profile.yaml"},
+            "https://other.example/profile.yaml",
+        )
+
+        self.assertIsNotNone(redirected)
+        assert redirected is not None
+        self.assertNotIn("Authorization", redirected.headers)
+
+    def test_fetch_remote_profile_maps_tls_error_to_stable_code(self) -> None:
+        class FakeOpener:
+            def open(self, *_args, **_kwargs):
+                raise urllib.error.URLError(ssl.SSLError("handshake failed"))
+
+        with patch.object(MODULE.urllib.request, "build_opener", return_value=FakeOpener()):
+            with self.assertRaises(MODULE.ApiError) as ctx:
+                MODULE.fetch_remote_profile("https://example.test/profile.yaml", {})
+
+        self.assertEqual(ctx.exception.code, "PROFILE_FETCH_TLS_ERROR")
+        self.assertNotIn("handshake failed", ctx.exception.message)
+
+    def test_profile_validation_outcome_reports_busy_and_transient_empty(self) -> None:
+        with patch.object(MODULE, "ensure_state"), patch.object(
+            MODULE,
+            "get_profiles_state",
+            return_value={"current": "demo", "items": [{"uid": "demo"}]},
+        ), patch.object(
+            MODULE,
+            "normalize_profiles_state",
+            return_value=({"current": "", "items": []}, True),
+        ), patch.object(MODULE, "save_profiles_state"), patch.object(
+            MODULE, "mark_runtime_profile_degraded"
+        ), patch.object(MODULE, "append_operation_log"):
+            result = MODULE.invoke_command(
+                "patch_profiles_config",
+                {"profiles": {"current": ""}},
+            )
+        self.assertEqual(result, {"status": "skipped", "reason": "transient-empty-last-good"})
+
+        self.assertTrue(MODULE.PROFILE_MUTATION_LOCK.acquire(blocking=False))
+        try:
+            with patch.object(MODULE, "ensure_state"):
+                self.assertEqual(
+                    MODULE.invoke_command("enhance_profiles", {}),
+                    {"status": "busy"},
+                )
+        finally:
+            MODULE.PROFILE_MUTATION_LOCK.release()
+
+    def test_profile_validation_rolls_back_profile_state_on_apply_failure(self) -> None:
+        before = {"current": "old", "items": [{"uid": "old"}]}
+        after = {"current": "new", "items": [{"uid": "new"}]}
+        with patch.object(MODULE, "ensure_state"), patch.object(
+            MODULE, "get_profiles_state", return_value=before
+        ), patch.object(
+            MODULE, "normalize_profiles_state", return_value=(after, True)
+        ), patch.object(MODULE, "save_profiles_state") as save_profiles_state, patch.object(
+            MODULE, "apply_current_profile", side_effect=RuntimeError("synthetic apply failure")
+        ):
+            result = MODULE.invoke_command(
+                "patch_profiles_config",
+                {"profiles": {"current": "new"}},
+            )
+
+        self.assertEqual(result["status"], "invalid")
+        self.assertEqual(result["kind"], "PROFILE_APPLY_FAILED")
+        self.assertEqual(save_profiles_state.call_args_list[-1].args[0], before)
 
 
 if __name__ == "__main__":

@@ -431,7 +431,7 @@ fi
 cd "$APP_DIR"
 
 echo "Building Clash Verge Rev web assets ..."
-pnpm build >/dev/null
+npm exec --yes --package=pnpm@11.3.0 -- pnpm build >/dev/null
 
 if [[ ! -f "$APP_DIR/dist/index.html" ]]; then
   echo "ERROR: missing dashboard assets under $APP_DIR/dist (pnpm build failed or produced no index.html)" >&2
