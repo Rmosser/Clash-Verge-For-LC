@@ -44,6 +44,7 @@ steps:
       - bash -n infra/microserver/lzc-net-safe-apply scripts/mihomo-manager
       - node -e 'JSON.parse(require("node:fs").readFileSync(".harness/repo-contract.json", "utf8"))'
       - node -e 'JSON.parse(require("node:fs").readFileSync("docs/doc-sync-rules.json", "utf8"))'
+      - python3 -I -B scripts/check_docs.py --all
       - bash scripts/test.sh
       - corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app install --frozen-lockfile
       - corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app typecheck

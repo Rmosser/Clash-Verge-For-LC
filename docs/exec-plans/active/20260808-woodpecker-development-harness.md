@@ -1,10 +1,10 @@
-# Clash-Verge-For-LC Woodpecker Development Harness Candidate
+# Clash-Verge-For-LC Woodpecker Development Harness and Quality Entrypoints
 
 ## 任务分类
 
 - non-trivial / critical
-- 判定理由：修复真实前端 lint 债务，新增 PR/push CI control-plane workflow，
-  并为后续 GitHub required context 准备真实门禁证据。
+- 判定理由：保留已验证的 Woodpecker PR/push 门禁，并把文档完整性、仓库级测试入口
+  和当前 Active Plan 一并纳入可执行的质量反馈。
 
 ## 已读上下文与核心信念
 
@@ -15,6 +15,23 @@
 - 默认分支基线：`0d3610f1353a9a0242a9c54c7fd037f2e8da37d5`，full-history clone。
 - 核心信念：保守基线保持 `TUN=0`、`DNS=0`；controller 只监听微服 bridge，
   不暴露 LAN/WAN；真实订阅、token、secret 与节点凭据不进入 Git 或 CI。
+
+## 当前任务扩展：质量入口迁移（2026-08-23）
+
+本节是当前唯一 Active Plan 对本次 follow-up 的权威记录；上文保留已完成的
+Woodpecker harness 建设和平台证据，避免把历史 canary 当作本次变更的验收依据。
+
+- Baseline：`origin/main` 的 `a2d30df`，保留现有 `.harness`、治理门禁和
+  `.woodpecker/woodpecker-harness.yaml`。
+- Goal：增加 `docs/quality.md`、`scripts/check_docs.py` 和文档入口清单，令
+  required paths、Markdown 本地链接和入口链接在 CI 中可执行检查；同时让
+  `scripts/test.sh` 可从任意当前目录运行，并让本地 shell 语法检查覆盖仓库内 `.sh` 文件。
+- Scope：只修改文档/治理入口、`scripts/test.sh`、`scripts/lint.sh` 和现有 Woodpecker
+  harness 的检查顺序；不修改产品运行时、TUN/DNS、LPK、部署、secret 或 GitHub Actions。
+- Acceptance：文档检查在 clean checkout 通过；仓库级测试从根目录和非根目录均通过；
+  Woodpecker 继续执行 frozen install、dashboard unit、typecheck、lint 和 build。
+- Verification：`python3 -I -B scripts/check_docs.py --all`、`bash scripts/test.sh`、
+  `(cd docs && bash ../scripts/test.sh)`、全套 dashboard pnpm 检查和 exact-head PR check。
 
 ## Goal
 
@@ -36,6 +53,8 @@
 - 新增 `.woodpecker/woodpecker-harness.yaml`。
 - 建立当前唯一 Active Plan，同步 checkpoint、contract、docs index 与 doc-sync 清单；
   将已经合并到 main 的旧 runtime hardening Plan 归档。
+- Follow-up 增加 `docs/quality.md`、`scripts/check_docs.py`、入口清单和仓库级质量脚本，
+  并把文档检查接入现有 Woodpecker workflow。
 
 ## Acceptance
 
@@ -45,6 +64,8 @@
 - 以 exact `corepack pnpm@10.29.2` 运行 `scripts/test.sh` 之外的 frozen install、typecheck、test:unit、lint 与 build；测试环境固定 `TZ=Asia/Shanghai`，保持既有显式 `+08:00` 日志解析用例的语义；Vite build 使用 3072 MiB Node heap。标准 Docker backend 的单任务资源已从 4 GiB memory / 6 GiB memory+swap 调至 6 GiB / 8 GiB，并发仍为 1。
 - 不声明 secret、privileged、volume、Docker socket、publish 或 deploy。
 - 本地 worktree 与 clean `git archive` 验证均通过，不修改运行配置。
+- `check_docs.py` 覆盖 required paths、Markdown 本地链接和声明的入口链接；
+  `scripts/test.sh` 从非根目录调用不会依赖调用者的当前工作目录。
 
 ## 文档影响
 
@@ -58,7 +79,9 @@
 - `git ls-files -z -- '*.sh' | xargs -0 -r -n 1 bash -n`
 - `python3 -m json.tool .harness/repo-contract.json`
 - `python3 -m json.tool docs/doc-sync-rules.json`
+- `python3 -I -B scripts/check_docs.py --all`
 - `bash scripts/test.sh`
+- `(cd docs && bash ../scripts/test.sh)`
 - `corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app install --frozen-lockfile`
 - `corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app typecheck`
 - `corepack pnpm@10.29.2 --dir src/mihomo-dashboard-app test:unit`
@@ -77,6 +100,8 @@
   host mutation、TUN/DNS、LPK、deploy、真实凭据与真实订阅。
 - Change Claim：前端语义只移除无用 import/赋值并格式化，`.gitignore` 忽略 lint cache；
   新增单步 Node 22 workflow 与最小治理证据。
+- Follow-up Change Claim：新增文档质量映射和 checker，扩展仓库 `.sh` 语法扫描，
+  并令测试入口先切换到 repository root。
 - Validation Claim：committed diff、shell/JSON、frozen install、typecheck、unit、lint、build，
   本地与 clean archive 都必须通过。
 
@@ -106,6 +131,14 @@
 - Merge authority: expected-head squash merge; main and merge SHA reread exact before the push proof
 - Review supervision model: `trusted_agent_interpreted`
 
+## 当前任务 Review 与修复
+
+- PR：`#10`
+- 初始 reviewed head：`71451d949269778b347521b0a09b1759c4d428b1`
+- 初始结果：1 个 P1 与 2 个 P2；问题集中在 Active Plan 事实同步、非根目录测试入口
+  和 shell 语法覆盖范围。
+- Repair policy：一次集中修复后重新运行完整本地与 exact-head CI 验证；不重复请求 review。
+
 ## Repair Ledger
 
 | Attempt | Finding | Evidence | Result | Next action |
@@ -122,6 +155,7 @@
 | 9 | repaired exact head passed full validation and fresh Review | pipeline 15 success at `2541549b637cd03f1c429b5fae6828acea635b94`; independent Review `CLEAN / 0` with live head unchanged | record the exact Review without changing workflow or product bytes | run the fact-sync head through the same context and obtain incremental Review, then install the live required context |
 | 10 | Review fact sync and expected-head merge | pipeline 17 success and incremental `CLEAN / 0` at `6c3ce2f0386bf8fe4878012e68d1ace4d85d2785` | installed strict required context after live reread; squash merged exact head to `02ce1f391502fa9ca2531ca58240e8b46b0ef089` | verify main push and a failing PR is blocked |
 | 11 | platform machine gate proof | pipeline 18 main push success; PR #8 pipeline 19 same-context failure and live `BLOCKED` | closed PR #8 unmerged and deleted its remote branch; required context remained strict and all other protection fields unchanged | record final facts; keep `platform_gate_ready=false` because Review is not machine-enforced |
+| 12 | current quality-entrypoint Review | PR #10 exact head `71451d9` found one P1 and two P2 findings | concentrated repair updates the sole Active Plan, makes the test entrypoint cwd-independent, and expands `.sh` syntax coverage | run full repair verification and merge only after the exact head is green |
 
 ## Post-Merge Cleanup
 
