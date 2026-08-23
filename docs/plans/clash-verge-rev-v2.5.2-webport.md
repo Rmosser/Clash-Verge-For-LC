@@ -60,6 +60,10 @@
   Mihomo binary 与启动时间。opaque backup 只接受脚本生成的 `backup.<8 alnum>`，远程参数采用
   有限字符集。故障注入覆盖 delayed readiness、timeout、service failure、health 后不稳定、
   rollback/restore restart storm、Mihomo drift、回滚失败和路径穿越。
+- 2026-08-23：exact head `547cf03bd15a46969b525911f3d6788a9732911a` 的本地完整门禁与
+  候选 LPK build/lint 通过；Woodpecker pipeline 41 在 readiness 用例已经输出 `deploy_ok`
+  后因最小 CI 镜像没有测试断言所用的 `rg` 而失败。该失败不在 clone、产品代码或部署逻辑，
+  仅把测试断言改用镜像已有的 `grep -E`；新 head 必须重新通过全部本地门禁和 required context。
 - 2026-08-23：当前 `lzc-cli 2.0.9` 要求 LPK v2 package metadata；新增相邻
   `package.yml` 与 `en`/`zh` locale，把四条 routes/services 留在原 manifest，并把 icon 缩为
   `512x512` / `180768` bytes。`project lint` 无 warning，运行契约 hash

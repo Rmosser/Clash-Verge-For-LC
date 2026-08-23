@@ -258,7 +258,7 @@ run_rollback() {
 assert_output() {
   local file="$1"
   local pattern="$2"
-  rg -q -- "$pattern" "$file" || {
+  grep -Eq -- "$pattern" "$file" || {
     printf 'ASSERTION FAILED: %s missing from %s\n' "$pattern" "$file" >&2
     sed -n '1,120p' "$file" >&2
     return 1
@@ -268,7 +268,7 @@ assert_output() {
 assert_not_output() {
   local file="$1"
   local pattern="$2"
-  if rg -q -- "$pattern" "$file"; then
+  if grep -Eq -- "$pattern" "$file"; then
     printf 'ASSERTION FAILED: unexpected %s in %s\n' "$pattern" "$file" >&2
     sed -n '1,120p' "$file" >&2
     return 1
