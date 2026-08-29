@@ -9,7 +9,7 @@
 
 ## 当前基线
 
-截至 `2026-04-15`，当前推荐和已验证基线是：
+仓库当前支持的保守基线是：
 
 - `MIHOMO_TUN_ENABLE=0`
 - `MIHOMO_DNS_ENABLE=0`
@@ -18,7 +18,7 @@
 - `172.18.0.1:9091`：Verge API
 - `172.18.0.1:17890`：container proxy
 
-注意：`deploy_microserver.sh` 的脚本默认值仍是 `TUN=1`、`DNS=1`。要落当前基线，必须显式带环境变量。
+`deploy_microserver.sh` 默认使用该保守基线。生产命令仍显式带环境变量，便于审阅并避免本地 `.env` 覆盖意图。
 
 ## 两台机器的差异
 

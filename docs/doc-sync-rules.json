@@ -16,6 +16,8 @@
     "scripts/check_docs.py",
     "scripts/lint.sh",
     "scripts/test.sh",
+    "scripts/test_deploy_settings.sh",
+    "scripts/_lib_deploy_settings.sh",
     "src/mihomo-dashboard-app/package.json",
     "src/mihomo-dashboard-app/pnpm-lock.yaml",
     ".woodpecker/woodpecker-harness.yaml"
@@ -27,6 +29,14 @@
     "docs/README.md",
     "docs/quality.md",
     "docs/governance/development-change-evidence.md",
+    "docs/CURRENT_RUNTIME.md",
+    "docs/LAZYCAT_NETWORK_REPORT.md",
+    "docs/SECURITY.md",
+    "docs/HOST_NATIVE_RUNBOOK.md",
+    "docs/PACKAGING.md",
+    "docs/USER_GUIDE.md",
+    "docs/CONTAINER_PROXY_GUIDE.md",
+    "docs/CLASH_VERGE_WEB_SMOKE_CHECKLIST.md",
     "docs/plans/template.md",
     "scripts/README.md"
   ],
@@ -40,6 +50,7 @@
         "docs/CURRENT_RUNTIME.md",
         "docs/LAZYCAT_NETWORK_REPORT.md",
         "docs/SECURITY.md",
+        "docs/governance/development-change-evidence.md",
         "docs/plans"
       ]
     },

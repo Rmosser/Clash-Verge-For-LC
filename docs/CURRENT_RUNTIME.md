@@ -17,7 +17,7 @@
 
 ## 当前推荐基线
 
-截至 `2026-04-15`，当前已验证基线是：
+仓库当前支持的保守基线是：
 
 - `MIHOMO_TUN_ENABLE=0`
 - `MIHOMO_DNS_ENABLE=0`
@@ -26,11 +26,7 @@
 - `172.18.0.1:9091` 作为 Verge API
 - `172.18.0.1:17890` 作为容器显式代理入口
 
-注意：
-
-- `scripts/deploy_microserver.sh` 的脚本默认值仍是 `TUN=1`、`DNS=1`
-- 但当前仓库推荐和已验证基线不是脚本默认值
-- 要落当前基线，显式执行：
+`scripts/deploy_microserver.sh` 的 host-native 默认值与该基线一致。为便于审阅和目标机区分，运维命令仍建议显式写出：
 
 ```bash
 MICROSERVER_HOST=<box>.heiyu.space \

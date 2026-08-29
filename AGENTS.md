@@ -2,6 +2,12 @@
 
 本仓库在懒猫微服上运行 host-native Mihomo，并提供 LazyCat Web 控制台。Agent 从本文件进入，按任务只加载必要文档。
 
+## 权威与同步
+
+- 用户当前接受的目标定义本次意图；代码、测试和配置定义候选实际行为。
+- `docs/CURRENT_RUNTIME.md` 定义仓库支持的当前运行 contract；目标机是否已经符合它，必须运行时回读。
+- 修改行为时，同一候选内更新受影响的测试和 Current 文档；历史计划、事故和复盘不得覆盖当前实现。
+
 ## 安全边界
 
 - 修改 TUN、DNS、透明代理或容器出网前，先读 `docs/LAZYCAT_NETWORK_REPORT.md`。
@@ -18,9 +24,10 @@
 - 当前运行契约：[docs/CURRENT_RUNTIME.md](docs/CURRENT_RUNTIME.md)
 - 网络约束：[docs/LAZYCAT_NETWORK_REPORT.md](docs/LAZYCAT_NETWORK_REPORT.md)
 - 安全边界：[docs/SECURITY.md](docs/SECURITY.md)
+- 变更证据与交付收敛：[docs/governance/development-change-evidence.md](docs/governance/development-change-evidence.md)
 - 可选实施计划：[docs/plans/](docs/plans/)
 
-历史计划、事故和复盘仅供追溯，不作为当前运行 contract。复杂或长周期任务可以使用可选计划；普通任务不要求创建、归档或维护全局 Active Plan。
+从 [docs/index.md](docs/index.md) 的“按任务加载”表选择上下文；获得最小充分上下文后停止。复杂或长周期任务可以使用可选计划；普通任务不要求创建、归档或维护全局 Active Plan。
 
 ## Standard Quality
 

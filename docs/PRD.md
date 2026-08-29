@@ -24,7 +24,7 @@
 
 - “部署后由用户在浏览器里手填 controller secret”
 - “compose 是当前默认部署路径”
-- “脚本默认值就等于当前推荐基线”
+- “可选 compose 路径的默认值也等于 host-native 推荐基线”
 - “同一份 PRD 同时承担设计、实施、验收和当前运行 contract”
 
 ## 当前实现收敛

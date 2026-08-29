@@ -13,3 +13,6 @@ python3 -m unittest -v infra/microserver/test_mihomo_core_updater.py
 
 echo "==> Verge API deployment readiness tests"
 bash scripts/test_deploy_verge_api.sh
+
+echo "==> host-native deployment setting tests"
+bash scripts/test_deploy_settings.sh
