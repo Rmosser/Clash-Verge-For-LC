@@ -6,6 +6,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=/dev/null
 . "$ROOT/scripts/_lib_paths.sh"
 
+# shellcheck source=/dev/null
+. "$ROOT/scripts/_lib_deploy_settings.sh"
+
 # Optional local env override
 if [[ -f "$ROOT/.env" ]]; then
   set -a
@@ -33,9 +36,10 @@ RUNTIME_CONTRACT_LOCAL="$ROOT/src/mihomo-dashboard-app/runtime-contract.json"
 MMDB_LOCAL="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_COUNTRY_MMDB_LOCAL:-var/private/Country.mmdb}")"
 SECRET_LOCAL_FILE="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_SECRET_FILE_LOCAL:-var/private/mihomo.secret}")"
 VERGE_SECRET_LOCAL_FILE="$(lzc_resolve_path_from_root "$ROOT" "${VERGE_API_SECRET_FILE_LOCAL:-var/private/verge-api.secret}")"
-TUN_ENABLE="${MIHOMO_TUN_ENABLE:-1}" # 1=enabled (default), 0=disabled
-DNS_ENABLE="${MIHOMO_DNS_ENABLE:-1}" # 1=enabled (default), 0=disabled
-RESOLVED_VIA_MIHOMO="${MIHOMO_RESOLVED_VIA_MIHOMO:-1}" # 1=point systemd-resolved to 127.0.0.1:1053 when DNS is enabled
+mihomo_resolve_deploy_settings
+TUN_ENABLE="$MIHOMO_TUN_ENABLE"
+DNS_ENABLE="$MIHOMO_DNS_ENABLE"
+RESOLVED_VIA_MIHOMO="$MIHOMO_RESOLVED_VIA_MIHOMO"
 AUTO_TEST_URL="${MIHOMO_AUTO_TEST_URL-https://api.openai.com/v1/models}"
 DOH_PROXY_RULES_ENABLE="${MIHOMO_DOH_PROXY_RULES_ENABLE:-1}" # 1=enabled (default), 0=disabled
 INSTALL_NET_SAFE_APPLY="${LZC_NET_SAFE_APPLY_INSTALL:-1}" # 1=install (default), 0=skip
@@ -64,6 +68,7 @@ Options:
 
 Notes:
   - Default behavior keeps backward compatibility: deploy config/unit and only install core if missing.
+  - Host-native network defaults are conservative: TUN=0 and DNS=0; enabling either is explicit.
   - The default core release is pinned to v1.19.30; use --core-version to override it.
   - Use --upgrade-core --only-core --core-version <tag> for a core-only upgrade.
 USAGE

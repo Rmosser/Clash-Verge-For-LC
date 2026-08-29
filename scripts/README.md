@@ -7,6 +7,7 @@
 | 命令 | 覆盖范围 |
 | --- | --- |
 | `bash scripts/test.sh` | shell/Python 语法和微服 API 单元测试 |
+| `bash scripts/test_deploy_settings.sh` | host-native TUN/DNS 默认值、显式 opt-in 与非法值 fail-closed |
 | `bash scripts/lint.sh` | shell 语法和 Python 编译检查 |
 | `python3 -I -B scripts/check_docs.py --all` | 文档入口、必需路径和本地链接 |
 | `npm exec --yes --package=pnpm@11.3.0 -- pnpm --dir src/mihomo-dashboard-app test:unit` | dashboard 单元测试 |
@@ -56,6 +57,6 @@ Mihomo core 更新默认固定为 `v1.19.30`。升级时使用
 
 ## 当前最重要的执行约束
 
-- 当前已验证基线不是脚本默认值；要显式传 `MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0`
+- host-native 脚本默认使用 `MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0`；生产命令仍显式传值，避免 `.env` 隐式改变意图
 - 改网络前先看 [../docs/LAZYCAT_NETWORK_REPORT.md](../docs/LAZYCAT_NETWORK_REPORT.md)
 - 重启恢复和机器差异看 [../docs/HOST_NATIVE_RUNBOOK.md](../docs/HOST_NATIVE_RUNBOOK.md)
