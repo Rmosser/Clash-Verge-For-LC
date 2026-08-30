@@ -19,7 +19,6 @@ SSH_KEY="${MICROSERVER_SSH_KEY:-$HOME/.ssh/id_ed25519}"
 APP_DIR="$ROOT/src/mihomo-dashboard-app"
 LPK="$APP_DIR/mihomo-dashboard.lpk"
 APP_ID="cloud.lazycat.app.clash-verge-for-lc"
-LEGACY_APP_ID="cloud.lazycat.app.mihomo-dashboard"
 EXPECTED_URL="${MIHOMO_DASHBOARD_URL:-https://clash.rainierserver.heiyu.space}"
 EXPECTED_DOMAIN="${EXPECTED_URL#http://}"
 EXPECTED_DOMAIN="${EXPECTED_DOMAIN#https://}"
@@ -32,7 +31,7 @@ usage() {
 Usage: scripts/deploy_dashboard.sh [options]
 
 Options:
-  --clean-reset  Remove legacy dashboard residues and reset Verge local state before install
+  --clean-reset  Reset only the current dashboard app and Verge local state before install
   -h, --help     Show this help
 USAGE
 }
@@ -61,23 +60,12 @@ ssh_remote() {
 
 clean_reset_remote() {
   echo "Running clean reset on $SSH_USER@$HOST ..."
-  lzc-cli app uninstall "$LEGACY_APP_ID" >/dev/null 2>&1 || true
   lzc-cli app uninstall "$APP_ID" >/dev/null 2>&1 || true
 
-  ssh_remote bash -s -- "$EXPECTED_SUBDOMAIN" <<'REMOTE'
+  ssh_remote bash -s <<'REMOTE'
 set -euo pipefail
 
-target_domain="$1"
-legacy_app_id="cloud.lazycat.app.mihomo-dashboard"
 current_app_id="cloud.lazycat.app.clash-verge-for-lc"
-legacy_paths=(
-  "/lzcsys/data/system/pkgm/apps/${legacy_app_id}"
-  "/lzcsys/data/system/pkgm/run/${legacy_app_id}"
-  "/lzcsys/data/system/pkgm/deploy.var/${legacy_app_id}"
-  "/lzcsys/data/system/pkgm/lpks/${legacy_app_id}.lpk"
-  "/lzcsys/data/appcache/${legacy_app_id}"
-  "/lzcsys/data/appvar/${legacy_app_id}"
-)
 current_paths=(
   "/lzcsys/data/system/pkgm/apps/${current_app_id}"
   "/lzcsys/data/system/pkgm/run/${current_app_id}"
@@ -88,31 +76,18 @@ current_paths=(
   "/lzcsys/run/app/${current_app_id}"
 )
 
-for path in "${legacy_paths[@]}"; do
-  rm -rf "$path"
-done
-
 for path in "${current_paths[@]}"; do
   rm -rf "$path"
 done
 
-orphan_cleanup_file="$(mktemp)"
-
-python3 - <<'PY' "$target_domain" "$legacy_app_id" "$current_app_id" "$orphan_cleanup_file"
-import json
-import sys
+python3 - <<'PY' "$current_app_id"
 from pathlib import Path
 
-target_domain = sys.argv[1]
-legacy_app_id = sys.argv[2]
-current_app_id = sys.argv[3]
-orphan_cleanup_file = Path(sys.argv[4])
-markers = (
-    legacy_app_id.encode("utf-8"),
-    current_app_id.encode("utf-8"),
-)
+import sys
+
+current_app_id = sys.argv[1]
+markers = (current_app_id.encode("utf-8"),)
 root = Path("/lzcsys/data/system/pkgm/deploy.db")
-stale_domain_claimants = []
 for path in root.rglob("*"):
     if not path.is_file():
         continue
@@ -122,40 +97,7 @@ for path in root.rglob("*"):
         continue
     if any(marker in payload for marker in markers):
         path.unlink()
-        continue
-    if f'"domain":"{target_domain}"'.encode("utf-8") not in payload:
-        continue
-    start = payload.find(b"{")
-    if start < 0:
-        continue
-    try:
-        record = json.loads(payload[start:].decode("utf-8"))
-    except Exception:
-        continue
-    pkg_id = record.get("pkg_id") or record.get("deploy_id")
-    if not pkg_id:
-        continue
-    app_dir = Path("/lzcsys/data/system/pkgm/apps") / pkg_id
-    if app_dir.exists():
-        continue
-    stale_domain_claimants.append(pkg_id)
-    path.unlink()
-
-orphan_cleanup_file.write_text("\n".join(sorted(set(stale_domain_claimants))), encoding="utf-8")
 PY
-
-while IFS= read -r stale_pkg_id; do
-  [[ -n "$stale_pkg_id" ]] || continue
-  rm -rf \
-    "/lzcsys/data/system/pkgm/apps/${stale_pkg_id}" \
-    "/lzcsys/data/system/pkgm/run/${stale_pkg_id}" \
-    "/lzcsys/data/system/pkgm/deploy.var/${stale_pkg_id}" \
-    "/lzcsys/data/system/pkgm/lpks/${stale_pkg_id}.lpk" \
-    "/lzcsys/data/appcache/${stale_pkg_id}" \
-    "/lzcsys/data/appvar/${stale_pkg_id}" \
-    "/lzcsys/run/app/${stale_pkg_id}"
-done <"$orphan_cleanup_file"
-rm -f "$orphan_cleanup_file"
 
 rm -rf /var/lib/mihomo/verge
 install -d -m 750 /var/lib/mihomo

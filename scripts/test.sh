@@ -16,3 +16,6 @@ bash scripts/test_deploy_verge_api.sh
 
 echo "==> host-native deployment setting tests"
 bash scripts/test_deploy_settings.sh
+
+echo "==> legacy cleanup isolation tests"
+bash scripts/test_legacy_cleanup_isolation.sh
