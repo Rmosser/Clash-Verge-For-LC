@@ -64,13 +64,41 @@ done
 
 python3 - <<'PY' "$legacy_app_id"
 import sys
+import os
+import stat
 from pathlib import Path
 
 marker = sys.argv[1].encode("utf-8")
 root = Path("/lzcsys/data/system/pkgm/deploy.db")
-for path in root.rglob("*"):
-    if not path.is_file():
-        continue
+
+try:
+    root_mode = root.stat().st_mode
+except OSError as exc:
+    raise RuntimeError(f"cannot inspect deployment-record root {root}: {exc}") from exc
+if not stat.S_ISDIR(root_mode):
+    raise RuntimeError(f"deployment-record root is not a directory: {root}")
+
+
+def fail_walk(exc: OSError) -> None:
+    raise RuntimeError(f"cannot traverse deployment records: {exc}") from exc
+
+
+def record_files():
+    for directory, _directories, filenames in os.walk(
+        root, topdown=True, onerror=fail_walk, followlinks=False
+    ):
+        for filename in filenames:
+            path = Path(directory) / filename
+            try:
+                mode = path.lstat().st_mode
+            except OSError as exc:
+                raise RuntimeError(f"cannot stat deployment record {path}: {exc}") from exc
+            if not stat.S_ISREG(mode):
+                raise RuntimeError(f"unexpected non-regular deployment record: {path}")
+            yield path
+
+
+for path in record_files():
     try:
         payload = path.read_bytes()
     except OSError as exc:
@@ -78,9 +106,7 @@ for path in root.rglob("*"):
     if marker in payload:
         path.unlink()
 
-for path in root.rglob("*"):
-    if not path.is_file():
-        continue
+for path in record_files():
     try:
         payload = path.read_bytes()
     except OSError as exc:
