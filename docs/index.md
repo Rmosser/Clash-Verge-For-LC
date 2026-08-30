@@ -26,6 +26,7 @@
 
 - [../README.md](../README.md)：项目定位、快速开始和用户入口。
 - [USER_GUIDE.md](USER_GUIDE.md)：用户指南、订阅导入、Docker 代理和常见问题。
+- [CONTAINER_PROXY_GUIDE.md](CONTAINER_PROXY_GUIDE.md)：开发容器使用宿主机代理的配置与诊断。
 - [CURRENT_RUNTIME.md](CURRENT_RUNTIME.md)：当前运行 contract。
 - [LAZYCAT_NETWORK_REPORT.md](LAZYCAT_NETWORK_REPORT.md)：TUN、控制面绕行、容器出网和网络风险。
 - [SECURITY.md](SECURITY.md)：controller 隔离、secret 管理和安全边界。
