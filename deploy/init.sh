@@ -7,7 +7,12 @@ CFG="$DIR/config.yaml"
 CFG_EXAMPLE="$DIR/config.yaml.example"
 SECRET_FILE="$DIR/secret.txt"
 
-TUN_ENABLE="${MIHOMO_TUN_ENABLE:-1}" # 1=enabled (default), 0=disabled
+# Keep the optional Docker path on the same fail-closed 0/1 contract as the
+# canonical host-native deployment path.
+# shellcheck source=/dev/null
+. "$DIR/../scripts/_lib_deploy_settings.sh"
+mihomo_resolve_deploy_settings
+TUN_ENABLE="$MIHOMO_TUN_ENABLE"
 
 if [[ ! -f "$CFG" ]]; then
   cp "$CFG_EXAMPLE" "$CFG"
@@ -40,4 +45,3 @@ fi
 
 mkdir -p "$DIR/data"
 echo "OK: init complete (config=$CFG)" >&2
-

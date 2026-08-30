@@ -31,17 +31,19 @@ docker compose up -d
 
 默认情况下：
 
-- `MIHOMO_TUN_ENABLE=1`
+- `MIHOMO_TUN_ENABLE=0`
 - `external-controller` 必须保持 `172.18.0.1:9090`
 - `secret` 会在为空时生成到 `deploy/secret.txt`
 
 ## TUN 开关
 
-关闭 TUN：
+TUN 默认关闭。只有完成 [网络变更约束](../docs/LAZYCAT_NETWORK_REPORT.md) 中的前置条件后才显式开启：
 
 ```bash
-MIHOMO_TUN_ENABLE=0 ./init.sh
+MIHOMO_TUN_ENABLE=1 ./init.sh
 ```
+
+只接受 `0` 或 `1`；其他值会在修改配置前退出。
 
 ## 当前限制
 
