@@ -65,14 +65,14 @@
 关键证据：
 
 - 部署脚本默认会开启 TUN：
-  - [scripts/deploy_microserver.sh](/Users/rinier/Projects/lazyCat/Clash-Verge-For-LC/scripts/deploy_microserver.sh#L149)
+  - [scripts/deploy_microserver.sh](../../scripts/deploy_microserver.sh#L149)
 - 基础 TUN 配置是：
   - `stack: system`
   - `auto-route: true`
   - `strict-route: true`
-  - 位置见 [infra/mihomo/config.base.yaml](/Users/rinier/Projects/lazyCat/Clash-Verge-For-LC/infra/mihomo/config.base.yaml#L55)
+  - 位置见 [infra/mihomo/config.base.yaml](../../infra/mihomo/config.base.yaml#L55)
 - 部署脚本会在远端直接重启 `mihomo`：
-  - [scripts/deploy_microserver.sh](/Users/rinier/Projects/lazyCat/Clash-Verge-For-LC/scripts/deploy_microserver.sh#L507)
+  - [scripts/deploy_microserver.sh](../../scripts/deploy_microserver.sh#L507)
 
 为什么它危险：
 
@@ -90,8 +90,8 @@
 关键证据：
 
 - 部署脚本默认会把 DNS 块重写为仓库里的“known-good DNS”：
-  - [scripts/deploy_microserver.sh](/Users/rinier/Projects/lazyCat/Clash-Verge-For-LC/scripts/deploy_microserver.sh#L155)
-  - [scripts/patch_remote_mihomo_config.py](/Users/rinier/Projects/lazyCat/Clash-Verge-For-LC/scripts/patch_remote_mihomo_config.py#L31)
+  - [scripts/deploy_microserver.sh](../../scripts/deploy_microserver.sh#L155)
+  - [scripts/patch_remote_mihomo_config.py](../../scripts/patch_remote_mihomo_config.py#L31)
 - 这个 DNS 块写死了：
   - `192.168.1.1`
   - `fe80::1`
@@ -109,11 +109,11 @@
 关键证据：
 
 - 仓库模板明确把这两条规则写成“应存在”：
-  - [infra/mihomo/config.base.yaml](/Users/rinier/Projects/lazyCat/Clash-Verge-For-LC/infra/mihomo/config.base.yaml#L96)
+  - [infra/mihomo/config.base.yaml](../../infra/mihomo/config.base.yaml#L96)
 - 但 `patch_remote_mihomo_config.py` 并不会强制补这两条 DIRECT 规则
 - 它只是把这两条规则当作“插入锚点”来放置强制 PROXY / DoH 规则：
-  - [scripts/patch_remote_mihomo_config.py](/Users/rinier/Projects/lazyCat/Clash-Verge-For-LC/scripts/patch_remote_mihomo_config.py#L105)
-  - [scripts/patch_remote_mihomo_config.py](/Users/rinier/Projects/lazyCat/Clash-Verge-For-LC/scripts/patch_remote_mihomo_config.py#L373)
+  - [scripts/patch_remote_mihomo_config.py](../../scripts/patch_remote_mihomo_config.py#L105)
+  - [scripts/patch_remote_mihomo_config.py](../../scripts/patch_remote_mihomo_config.py#L373)
 
 这意味着：
 
@@ -137,7 +137,7 @@
   - 局域网接口
   - 懒猫内网接口
   - 多个容器 bridge
-  - 位置见 [docs/LAZYCAT_NETWORK_REPORT.md](/Users/rinier/Projects/lazyCat/Clash-Verge-For-LC/docs/LAZYCAT_NETWORK_REPORT.md)
+  - 位置见 [docs/LAZYCAT_NETWORK_REPORT.md](../LAZYCAT_NETWORK_REPORT.md)
 - 当前绕行主要是“按目标地址排除”
 
 风险点：
@@ -155,14 +155,14 @@
   - 写入 systemd unit
   - 校验配置
   - 直接 `systemctl restart mihomo`
-  - 见 [scripts/deploy_microserver.sh](/Users/rinier/Projects/lazyCat/Clash-Verge-For-LC/scripts/deploy_microserver.sh#L504)
+  - 见 [scripts/deploy_microserver.sh](../../scripts/deploy_microserver.sh#L504)
 
 ### 控制面探活在部署脚本里本来就被视为关键健康信号
 
 - 部署脚本重启后会探：
   - `http://172.18.0.1:9090/version`
   - `http://172.18.0.1:9091/healthz`
-  - 见 [scripts/deploy_microserver.sh](/Users/rinier/Projects/lazyCat/Clash-Verge-For-LC/scripts/deploy_microserver.sh#L520)
+  - 见 [scripts/deploy_microserver.sh](../../scripts/deploy_microserver.sh#L520)
 - 这说明我们自己的部署逻辑也承认：
   - 控制器可达
   - Verge API 可达
@@ -234,7 +234,7 @@ MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 bash scripts/deploy_microserver.sh
 
 仓库里已有手工回滚入口：
 
-- [scripts/mihomo-manager](/Users/rinier/Projects/lazyCat/Clash-Verge-For-LC/scripts/mihomo-manager)
+- [scripts/mihomo-manager](../../scripts/mihomo-manager)
 
 可用命令：
 

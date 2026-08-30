@@ -14,6 +14,10 @@ from urllib.parse import unquote
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "docs" / "doc-sync-rules.json"
 LINK_RE = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
+LOCAL_ABSOLUTE_RE = re.compile(r"(?:file://|/Users/)")
+VENDOR_BOUNDARY = (
+    ROOT / "src" / "mihomo-dashboard-app" / "vendor" / "clash-verge-rev" / "README.local.txt"
+)
 
 
 def fail(message: str) -> None:
@@ -81,9 +85,15 @@ def main() -> int:
         markdown = path_from_root(relative)
         if not markdown.is_file():
             fail(f"markdown path is not a file: {relative}")
+        if LOCAL_ABSOLUTE_RE.search(markdown.read_text(encoding="utf-8")):
+            fail(f"non-portable local path in markdown: {relative}")
         for raw, target in local_links(markdown):
             if not target.exists():
                 fail(f"broken link: {relative} -> {raw}")
+
+    vendor_boundary = VENDOR_BOUNDARY.read_text(encoding="utf-8")
+    if "not local repository authority" not in vendor_boundary or "complete upstream repository" not in vendor_boundary:
+        fail("vendor README.local.txt must explain the partial upstream snapshot boundary")
 
     entries = manifest.get("entrypoint_links")
     if not isinstance(entries, list):

@@ -20,6 +20,7 @@
     "scripts/_lib_deploy_settings.sh",
     "src/mihomo-dashboard-app/package.json",
     "src/mihomo-dashboard-app/pnpm-lock.yaml",
+    "src/mihomo-dashboard-app/vendor/clash-verge-rev/README.local.txt",
     ".woodpecker/woodpecker-harness.yaml"
   ],
   "markdown_paths": [
@@ -37,6 +38,7 @@
     "docs/USER_GUIDE.md",
     "docs/CONTAINER_PROXY_GUIDE.md",
     "docs/CLASH_VERGE_WEB_SMOKE_CHECKLIST.md",
+    "docs/planning/2026-03-12-clash-post-deploy-network-incident.md",
     "docs/plans/template.md",
     "scripts/README.md"
   ],
@@ -61,6 +63,7 @@
         "quality.md",
         "../scripts/README.md",
         "CURRENT_RUNTIME.md",
+        "CONTAINER_PROXY_GUIDE.md",
         "LAZYCAT_NETWORK_REPORT.md",
         "SECURITY.md",
         "governance/development-change-evidence.md",
