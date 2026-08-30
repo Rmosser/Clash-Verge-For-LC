@@ -72,7 +72,7 @@ marker = sys.argv[1].encode("utf-8")
 root = Path("/lzcsys/data/system/pkgm/deploy.db")
 
 try:
-    root_mode = root.stat().st_mode
+    root_mode = root.lstat().st_mode
 except OSError as exc:
     raise RuntimeError(f"cannot inspect deployment-record root {root}: {exc}") from exc
 if not stat.S_ISDIR(root_mode):
@@ -84,9 +84,17 @@ def fail_walk(exc: OSError) -> None:
 
 
 def record_files():
-    for directory, _directories, filenames in os.walk(
+    for directory, directories, filenames in os.walk(
         root, topdown=True, onerror=fail_walk, followlinks=False
     ):
+        for child in directories:
+            path = Path(directory) / child
+            try:
+                mode = path.lstat().st_mode
+            except OSError as exc:
+                raise RuntimeError(f"cannot stat deployment-record directory {path}: {exc}") from exc
+            if not stat.S_ISDIR(mode):
+                raise RuntimeError(f"unexpected non-directory deployment-record entry: {path}")
         for filename in filenames:
             path = Path(directory) / filename
             try:
