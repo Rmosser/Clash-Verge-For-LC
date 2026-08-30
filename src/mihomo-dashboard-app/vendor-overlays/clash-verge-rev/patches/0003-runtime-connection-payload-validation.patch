@@ -1,0 +1,168 @@
+diff --git a/src/hooks/use-connection-data.ts b/src/hooks/use-connection-data.ts
+index 5ad13e2..42eb86c 100644
+--- a/src/hooks/use-connection-data.ts
++++ b/src/hooks/use-connection-data.ts
+@@ -17,6 +17,79 @@ const initConnData: ConnectionMonitorData = {
+   closedConnections: [],
+ }
+ 
++const isRecord = (value: unknown): value is Record<string, unknown> =>
++  typeof value === 'object' && value !== null && !Array.isArray(value)
++
++const isFiniteNumber = (value: unknown): value is number =>
++  typeof value === 'number' && Number.isFinite(value)
++
++const isString = (value: unknown): value is string => typeof value === 'string'
++
++const isStringArray = (value: unknown): value is string[] =>
++  Array.isArray(value) && value.every(isString)
++
++const isConnectionMetadata = (
++  value: unknown,
++): value is IConnectionsItem['metadata'] => {
++  if (!isRecord(value)) return false
++
++  const requiredKeys = [
++    'network',
++    'type',
++    'host',
++    'sourceIP',
++    'sourcePort',
++    'destinationPort',
++  ]
++  if (!requiredKeys.every((key) => isString(value[key]))) return false
++
++  const optionalKeys = [
++    'destinationIP',
++    'remoteDestination',
++    'process',
++    'processPath',
++  ]
++  return optionalKeys.every(
++    (key) => value[key] === undefined || isString(value[key]),
++  )
++}
++
++const isConnectionItem = (value: unknown): value is IConnectionsItem => {
++  if (!isRecord(value)) return false
++
++  return (
++    isString(value.id) &&
++    value.id.length > 0 &&
++    isConnectionMetadata(value.metadata) &&
++    isFiniteNumber(value.upload) &&
++    isFiniteNumber(value.download) &&
++    isString(value.start) &&
++    isStringArray(value.chains) &&
++    isString(value.rule) &&
++    isString(value.rulePayload)
++  )
++}
++
++export const parseConnectionsPayload = (
++  value: unknown,
++): IConnections | null => {
++  if (!isRecord(value)) return null
++  if (!isFiniteNumber(value.downloadTotal) || !isFiniteNumber(value.uploadTotal)) {
++    return null
++  }
++
++  const connections = value.connections
++  if (!Array.isArray(connections) || !connections.every(isConnectionItem)) {
++    return null
++  }
++
++  return {
++    downloadTotal: value.downloadTotal,
++    uploadTotal: value.uploadTotal,
++    connections,
++  }
++}
++
+ interface ConnectionMonitorData {
+   uploadTotal: number
+   downloadTotal: number
+@@ -219,14 +292,21 @@ const flushPendingMessage = () => {
+   pendingMessageData = null
+   if (!messageData || !hasConnectionSubscribers()) return
+ 
+-  let payload: IConnections
++  let parsed: unknown
+   try {
+-    payload = JSON.parse(messageData) as IConnections
++    parsed = JSON.parse(messageData)
+   } catch (err) {
+     console.error('[Connections] Failed to parse websocket payload', err)
+     return
+   }
+ 
++  const payload = parseConnectionsPayload(parsed)
++  if (!payload) {
++    console.error('[Connections] Ignoring invalid websocket payload')
++    void reconnectConnectionSocket()
++    return
++  }
++
+   lastFlushAt = Date.now()
+   connectionSummary = mergeConnectionSummary(payload)
+   notifySummaryListeners()
+diff --git a/src/hooks/use-connection-data.test.ts b/src/hooks/use-connection-data.test.ts
+new file mode 100644
+index 0000000..15cd290
+--- /dev/null
++++ b/src/hooks/use-connection-data.test.ts
+@@ -0,0 +1,54 @@
++import { describe, expect, it } from 'vitest'
++
++import { parseConnectionsPayload } from './use-connection-data'
++
++const validConnection = {
++  id: 'connection-1',
++  metadata: {
++    network: 'tcp',
++    type: 'HTTP',
++    host: 'example.test',
++    sourceIP: '127.0.0.1',
++    sourcePort: '12345',
++    destinationPort: '443',
++  },
++  upload: 12,
++  download: 34,
++  start: '2026-08-31T00:00:00Z',
++  chains: ['Proxy'],
++  rule: 'MATCH',
++  rulePayload: 'Proxy',
++}
++
++describe('Mihomo connections websocket payload parser', () => {
++  it('accepts a complete snapshot', () => {
++    expect(
++      parseConnectionsPayload({
++        uploadTotal: 12,
++        downloadTotal: 34,
++        connections: [validConnection],
++      }),
++    ).toEqual({
++      uploadTotal: 12,
++      downloadTotal: 34,
++      connections: [validConnection],
++    })
++  })
++
++  it('rejects malformed rows and non-finite counters before merging', () => {
++    const snapshot = {
++      uploadTotal: 12,
++      downloadTotal: 34,
++      connections: [validConnection],
++    }
++
++    expect(parseConnectionsPayload({ ...snapshot, connections: [null] })).toBeNull()
++    expect(
++      parseConnectionsPayload({
++        ...snapshot,
++        connections: [{ ...validConnection, metadata: null }],
++      }),
++    ).toBeNull()
++    expect(parseConnectionsPayload({ ...snapshot, uploadTotal: Number.NaN })).toBeNull()
++  })
++})
