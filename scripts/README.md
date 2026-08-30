@@ -25,7 +25,7 @@
 | --- | --- | --- |
 | `deploy_microserver.sh` | 部署或重种宿主机运行时 | 下发 `mihomo`、config、systemd units、Verge API、container proxy、可选 DNS 同步 |
 | `deploy_verge_api.sh` | 只更新 rainierdev Verge API/runtime contract | 成对备份、部署或恢复 API Python、unit metadata 和 runtime contract；不读取 `.env` 或 Mihomo secret |
-| `deploy_dashboard.sh` | 安装或重装懒猫 dashboard 应用 | 构建并安装 LPK，校验 `/api`、`/verge-api` 和 websocket 链路 |
+| `deploy_dashboard.sh` | 安装或重装懒猫 dashboard 应用 | 构建并安装 LPK，校验 `/api`、`/verge-api` 和 websocket 链路；`--clean-reset` 只清理当前 app/state |
 | `build_dashboard_release.sh` | 只出可分发 LPK | 在 `output/release/<version>/` 生成版本化安装包 |
 | `install_host_native_bootstrap.sh` | 给 `rainierdev` / `rainierspace` 安装开机自举 | 采样当前 live host-native 部署并安装 root user-systemd bootstrap |
 
@@ -41,6 +41,7 @@ Mihomo core 更新默认固定为 `v1.19.30`。升级时使用
 | `selfcheck.sh` | 想快速看宿主机链路是否健康 | 检查服务状态、controller、`/verge-api/public-config`、绕行探针 |
 | `mihomo-manager` | 需要远程 status/logs/reload/restart/rollback | 通过 SSH 包装常用运维动作 |
 | `patch_remote_mihomo_config.py` | 想补丁化远端 `config.yaml` | 保持 secret、TUN、DNS、rules patch 的一致写法 |
+| `cleanup_legacy_dashboard.sh` | 经人工盘点后一次性删除退役 dashboard app ID | 默认只打印精确目标；仅显式 `--execute` 删除旧 app 的路径/部署记录并逐项读回，不触及当前 app |
 
 ## 可选或专项脚本
 
