@@ -16,16 +16,28 @@ fi
 HOST="${MICROSERVER_HOST:-rainierserver.heiyu.space}"
 SSH_USER="${MICROSERVER_SSH_USER:-root}"
 SSH_KEY="${MICROSERVER_SSH_KEY:-$HOME/.ssh/id_ed25519}"
+LAZYCAT_BOX="${LAZYCAT_BOX:-}"
 LEGACY_APP_ID="cloud.lazycat.app.mihomo-dashboard"
 
 if [[ "${1:-}" != "--execute" ]]; then
   echo "One-time cleanup for legacy app ID: $LEGACY_APP_ID"
   echo "Target: $SSH_USER@$HOST"
+  echo "LazyCat box: ${LAZYCAT_BOX:-not set (required for --execute)}"
   echo "No changes made. Re-run with --execute after reviewing the exact target."
   exit 0
 fi
 if [[ $# -ne 1 ]]; then
   echo "ERROR: usage: scripts/cleanup_legacy_dashboard.sh [--execute]" >&2
+  exit 2
+fi
+
+if [[ -z "$LAZYCAT_BOX" ]]; then
+  echo "ERROR: LAZYCAT_BOX is required to bind lzc-cli to the reviewed target" >&2
+  exit 2
+fi
+current_box="$(lzc-cli box default)"
+if [[ "$current_box" != "$LAZYCAT_BOX" ]]; then
+  echo "ERROR: lzc-cli default box '$current_box' does not match reviewed LAZYCAT_BOX '$LAZYCAT_BOX'" >&2
   exit 2
 fi
 
@@ -61,10 +73,20 @@ for path in root.rglob("*"):
         continue
     try:
         payload = path.read_bytes()
-    except OSError:
-        continue
+    except OSError as exc:
+        raise RuntimeError(f"cannot read deployment record {path}: {exc}") from exc
     if marker in payload:
         path.unlink()
+
+for path in root.rglob("*"):
+    if not path.is_file():
+        continue
+    try:
+        payload = path.read_bytes()
+    except OSError as exc:
+        raise RuntimeError(f"cannot verify deployment record {path}: {exc}") from exc
+    if marker in payload:
+        raise RuntimeError(f"legacy deployment record still exists: {path}")
 PY
 
 for path in "${legacy_paths[@]}"; do
@@ -73,11 +95,6 @@ for path in "${legacy_paths[@]}"; do
     exit 1
   fi
 done
-
-if grep -RIl --fixed-strings "$legacy_app_id" /lzcsys/data/system/pkgm/deploy.db 2>/dev/null | grep -q .; then
-  echo "ERROR: legacy deployment record still exists" >&2
-  exit 1
-fi
 
 echo "Legacy dashboard cleanup complete: $legacy_app_id"
 REMOTE

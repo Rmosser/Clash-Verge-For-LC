@@ -14,6 +14,8 @@ fi
 grep -q 'LEGACY_APP_ID="cloud.lazycat.app.mihomo-dashboard"' "$CLEANUP"
 grep -q 'No changes made' "$CLEANUP"
 grep -q 'legacy path still exists' "$CLEANUP"
+grep -q 'LAZYCAT_BOX is required' "$CLEANUP"
+grep -q 'cannot verify deployment record' "$CLEANUP"
 
 output="$(bash "$CLEANUP")"
 grep -q 'No changes made' <<<"$output"
