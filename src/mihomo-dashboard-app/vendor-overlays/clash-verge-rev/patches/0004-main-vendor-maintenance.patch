@@ -1,0 +1,711 @@
+diff --git a/src/components/proxy/proxy-groups.tsx b/src/components/proxy/proxy-groups.tsx
+index 7c52ca0..9fdce30 100644
+--- a/src/components/proxy/proxy-groups.tsx
++++ b/src/components/proxy/proxy-groups.tsx
+@@ -24,6 +24,10 @@ import { useVerge } from '@/hooks/use-verge'
+ import { useProxiesData } from '@/providers/app-data-context'
+ import { calcuProxies } from '@/services/cmds'
+ import delayManager from '@/services/delay'
++import {
++  getProxyScrollPosition,
++  saveProxyScrollPosition,
++} from '@/services/proxy-scroll-positions'
+ import { useQuery } from '@/services/query-client'
+ import { debugLog } from '@/utils/debug'
+ 
+@@ -125,34 +129,15 @@ function useProxyRenderState(
+ 
+   const saveScrollPosition = useCallback(
+     (scrollTop: number) => {
+-      const scrollPositions = localStorage.getItem('proxy-scroll-positions')
+-        ? JSON.parse(localStorage.getItem('proxy-scroll-positions') ?? '{}')
+-        : {}
+-      scrollPositions[scrollPositionKey] = scrollTop
+-      try {
+-        localStorage.setItem(
+-          'proxy-scroll-positions',
+-          JSON.stringify(scrollPositions),
+-        )
+-      } catch (e) {
+-        console.error('Error saving scroll position:', e)
+-      }
++      saveProxyScrollPosition(scrollPositionKey, scrollTop)
+     },
+     [scrollPositionKey],
+   )
+ 
+-  const getScrollPosition = useCallback(() => {
+-    try {
+-      const savedPositions = localStorage.getItem('proxy-scroll-positions')
+-      if (savedPositions) {
+-        const positions = JSON.parse(savedPositions)
+-        const savedPosition = positions[scrollPositionKey]
+-        return savedPosition ?? 0
+-      }
+-    } catch (e) {
+-      console.error('Error restoring scroll position:', e)
+-    }
+-  }, [scrollPositionKey])
++  const getScrollPosition = useCallback(
++    () => getProxyScrollPosition(scrollPositionKey),
++    [scrollPositionKey],
++  )
+ 
+   return {
+     verge,
+diff --git a/src/components/setting/mods/backup-config-viewer.tsx b/src/components/setting/mods/backup-config-viewer.tsx
+index 5e3fb8e..581aeac 100644
+--- a/src/components/setting/mods/backup-config-viewer.tsx
++++ b/src/components/setting/mods/backup-config-viewer.tsx
+@@ -18,6 +18,7 @@ import { saveWebdavConfig, createWebdavBackup } from '@/services/cmds'
+ import { showNotice } from '@/services/notice-service'
+ import {
+   buildWebdavSignature,
++  clearWebdavStatus,
+   getWebdavStatus,
+   setWebdavStatus,
+ } from '@/services/webdav-status'
+@@ -132,7 +133,7 @@ export const BackupConfigViewer = memo(
+               : current,
+           false,
+         )
+-        setWebdavStatus(signature, 'unknown')
++        clearWebdavStatus()
+         showNotice.success('settings.modals.backup.messages.webdavConfigSaved')
+         await onSaveSuccess(signature)
+       } catch (error) {
+diff --git a/src/services/proxy-scroll-positions.test.ts b/src/services/proxy-scroll-positions.test.ts
+new file mode 100644
+index 0000000..be67d71
+--- /dev/null
++++ b/src/services/proxy-scroll-positions.test.ts
+@@ -0,0 +1,108 @@
++import { afterEach, describe, expect, it, vi } from 'vitest'
++
++import {
++  getProxyScrollPosition,
++  PROXY_SCROLL_POSITIONS_KEY,
++  PROXY_SCROLL_POSITIONS_SCHEMA_VERSION,
++  saveProxyScrollPosition,
++} from './proxy-scroll-positions'
++
++const createStorage = () => {
++  const values = new Map<string, string>()
++  return {
++    getItem: vi.fn((key: string) => values.get(key) ?? null),
++    setItem: vi.fn((key: string, value: string) => values.set(key, value)),
++    removeItem: vi.fn((key: string) => values.delete(key)),
++  } as unknown as Storage
++}
++
++afterEach(() => {
++  vi.restoreAllMocks()
++})
++
++describe('proxy scroll position storage', () => {
++  it('migrates v2.4.7 rule and global positions in place', () => {
++    const storage = createStorage()
++    storage.setItem(
++      PROXY_SCROLL_POSITIONS_KEY,
++      JSON.stringify({ rule: 120, global: 240 }),
++    )
++
++    expect(getProxyScrollPosition('rule:normal', storage)).toBe(120)
++    expect(JSON.parse(storage.getItem(PROXY_SCROLL_POSITIONS_KEY) ?? '')).toEqual(
++      {
++        version: PROXY_SCROLL_POSITIONS_SCHEMA_VERSION,
++        'rule:normal': 120,
++        'global:normal': 240,
++      },
++    )
++    expect(getProxyScrollPosition('global:normal', storage)).toBe(240)
++  })
++
++  it('accepts existing new keys and adds an explicit schema version', () => {
++    const storage = createStorage()
++    storage.setItem(
++      PROXY_SCROLL_POSITIONS_KEY,
++      JSON.stringify({ 'rule:normal': 80 }),
++    )
++
++    expect(getProxyScrollPosition('rule:normal', storage)).toBe(80)
++    expect(JSON.parse(storage.getItem(PROXY_SCROLL_POSITIONS_KEY) ?? '')).toEqual(
++      { version: PROXY_SCROLL_POSITIONS_SCHEMA_VERSION, 'rule:normal': 80 },
++    )
++  })
++
++  it('drops unknown schema versions and malformed stored values', () => {
++    const storage = createStorage()
++    storage.setItem(
++      PROXY_SCROLL_POSITIONS_KEY,
++      JSON.stringify({ version: PROXY_SCROLL_POSITIONS_SCHEMA_VERSION + 1 }),
++    )
++    expect(getProxyScrollPosition('rule:normal', storage)).toBeUndefined()
++    expect(storage.getItem(PROXY_SCROLL_POSITIONS_KEY)).toBeNull()
++
++    storage.setItem(PROXY_SCROLL_POSITIONS_KEY, 'not-json')
++    expect(getProxyScrollPosition('global:normal', storage)).toBeUndefined()
++    expect(storage.getItem(PROXY_SCROLL_POSITIONS_KEY)).toBeNull()
++  })
++
++  it('removes legacy fields when writing a migrated key', () => {
++    const storage = createStorage()
++    storage.setItem(
++      PROXY_SCROLL_POSITIONS_KEY,
++      JSON.stringify({ version: PROXY_SCROLL_POSITIONS_SCHEMA_VERSION, rule: 120 }),
++    )
++
++    saveProxyScrollPosition('rule:normal', 300, storage)
++    expect(JSON.parse(storage.getItem(PROXY_SCROLL_POSITIONS_KEY) ?? '')).toEqual(
++      {
++        version: PROXY_SCROLL_POSITIONS_SCHEMA_VERSION,
++        'rule:normal': 300,
++      },
++    )
++  })
++
++  it('treats a throwing localStorage getter as unavailable', () => {
++    const originalDescriptor = Object.getOwnPropertyDescriptor(
++      globalThis,
++      'localStorage',
++    )
++    Object.defineProperty(globalThis, 'localStorage', {
++      configurable: true,
++      get() {
++        throw new Error('storage is unavailable')
++      },
++    })
++
++    try {
++      expect(getProxyScrollPosition('rule:normal')).toBeUndefined()
++      expect(() => saveProxyScrollPosition('rule:normal', 300)).not.toThrow()
++    } finally {
++      if (originalDescriptor) {
++        Object.defineProperty(globalThis, 'localStorage', originalDescriptor)
++      } else {
++        Reflect.deleteProperty(globalThis, 'localStorage')
++      }
++    }
++  })
++})
+diff --git a/src/services/proxy-scroll-positions.ts b/src/services/proxy-scroll-positions.ts
+new file mode 100644
+index 0000000..24c0a78
+--- /dev/null
++++ b/src/services/proxy-scroll-positions.ts
+@@ -0,0 +1,127 @@
++export const PROXY_SCROLL_POSITIONS_KEY = 'proxy-scroll-positions'
++export const PROXY_SCROLL_POSITIONS_SCHEMA_VERSION = 2
++
++const LEGACY_SCROLL_POSITION_KEYS = ['rule', 'global'] as const
++
++type StoredScrollPositions = Record<string, unknown>
++
++const getStorage = (): Storage | null => {
++  try {
++    return globalThis.localStorage ?? null
++  } catch {
++    return null
++  }
++}
++
++const isRecord = (value: unknown): value is StoredScrollPositions =>
++  typeof value === 'object' && value !== null && !Array.isArray(value)
++
++const isScrollPosition = (value: unknown): value is number =>
++  typeof value === 'number' && Number.isFinite(value) && value >= 0
++
++const legacyKeyFor = (scrollPositionKey: string) => {
++  if (!scrollPositionKey.endsWith(':normal')) return null
++
++  const mode = scrollPositionKey.slice(0, -':normal'.length)
++  return LEGACY_SCROLL_POSITION_KEYS.includes(
++    mode as (typeof LEGACY_SCROLL_POSITION_KEYS)[number],
++  )
++    ? mode
++    : null
++}
++
++const clearStoredPositions = (storage: Storage) => {
++  try {
++    storage.removeItem(PROXY_SCROLL_POSITIONS_KEY)
++  } catch {
++    // Storage can be unavailable in private browsing or when quota is denied.
++  }
++}
++
++const persistPositions = (storage: Storage, positions: StoredScrollPositions) => {
++  try {
++    storage.setItem(
++      PROXY_SCROLL_POSITIONS_KEY,
++      JSON.stringify(positions),
++    )
++  } catch (error) {
++    console.error('Error saving scroll position:', error)
++  }
++}
++
++const loadPositions = (storage: Storage): StoredScrollPositions | null => {
++  let raw: string | null
++  try {
++    raw = storage.getItem(PROXY_SCROLL_POSITIONS_KEY)
++  } catch {
++    return null
++  }
++  if (!raw) return null
++
++  let parsed: unknown
++  try {
++    parsed = JSON.parse(raw)
++  } catch {
++    clearStoredPositions(storage)
++    return null
++  }
++  if (!isRecord(parsed)) {
++    clearStoredPositions(storage)
++    return null
++  }
++
++  if (
++    parsed.version !== undefined &&
++    parsed.version !== PROXY_SCROLL_POSITIONS_SCHEMA_VERSION
++  ) {
++    clearStoredPositions(storage)
++    return null
++  }
++
++  const positions = { ...parsed }
++  let changed = parsed.version !== PROXY_SCROLL_POSITIONS_SCHEMA_VERSION
++
++  for (const legacyKey of LEGACY_SCROLL_POSITION_KEYS) {
++    const newKey = `${legacyKey}:normal`
++    if (!isScrollPosition(positions[newKey]) && isScrollPosition(positions[legacyKey])) {
++      positions[newKey] = positions[legacyKey]
++      changed = true
++    }
++    if (legacyKey in positions) {
++      delete positions[legacyKey]
++      changed = true
++    }
++  }
++
++  positions.version = PROXY_SCROLL_POSITIONS_SCHEMA_VERSION
++  if (changed) persistPositions(storage, positions)
++  return positions
++}
++
++export const getProxyScrollPosition = (
++  scrollPositionKey: string,
++  storage = getStorage(),
++): number | undefined => {
++  if (!storage) return undefined
++
++  const positions = loadPositions(storage)
++  const savedPosition = positions?.[scrollPositionKey]
++  return isScrollPosition(savedPosition) ? savedPosition : undefined
++}
++
++export const saveProxyScrollPosition = (
++  scrollPositionKey: string,
++  scrollTop: number,
++  storage = getStorage(),
++) => {
++  if (!storage || !isScrollPosition(scrollTop)) return
++
++  const positions = loadPositions(storage) ?? {
++    version: PROXY_SCROLL_POSITIONS_SCHEMA_VERSION,
++  }
++  const legacyKey = legacyKeyFor(scrollPositionKey)
++  if (legacyKey) delete positions[legacyKey]
++  positions[scrollPositionKey] = scrollTop
++  positions.version = PROXY_SCROLL_POSITIONS_SCHEMA_VERSION
++  persistPositions(storage, positions)
++}
+diff --git a/src/services/webdav-status.test.ts b/src/services/webdav-status.test.ts
+new file mode 100644
+index 0000000..2f151fb
+--- /dev/null
++++ b/src/services/webdav-status.test.ts
+@@ -0,0 +1,211 @@
++import { afterEach, describe, expect, it, vi } from 'vitest'
++
++import {
++  buildWebdavSignature,
++  clearWebdavStatus,
++  getWebdavStatus,
++  setWebdavStatus,
++  WEBDAV_STATUS_KEY,
++  WEBDAV_STATUS_SCHEMA_VERSION,
++  WEBDAV_STATUS_TTL_MS,
++} from './webdav-status'
++
++const NOW = 1_700_000_000_000
++
++const createStorage = () => {
++  const values = new Map<string, string>()
++  return {
++    getItem: vi.fn((key: string) => values.get(key) ?? null),
++    setItem: vi.fn((key: string, value: string) => values.set(key, value)),
++    removeItem: vi.fn((key: string) => values.delete(key)),
++  } as unknown as Storage
++}
++
++const config = {
++  webdav_url: 'https://dav.example.test/backup',
++  webdav_username: 'alice',
++  webdav_password: 'do-not-store-this',
++}
++
++afterEach(() => {
++  vi.unstubAllGlobals()
++  vi.restoreAllMocks()
++})
++
++describe('WebDAV status storage', () => {
++  it('uses an endpoint and username identity without persisting the password', () => {
++    const storage = createStorage()
++    vi.stubGlobal('localStorage', storage)
++    vi.spyOn(Date, 'now').mockReturnValue(NOW)
++
++    const signature = buildWebdavSignature(config)
++    setWebdavStatus(signature, 'ready')
++
++    const raw = storage.getItem(WEBDAV_STATUS_KEY) ?? ''
++    const payload = JSON.parse(raw) as Record<string, unknown>
++    expect(signature).toBe(
++      JSON.stringify([config.webdav_url, config.webdav_username]),
++    )
++    expect(raw).not.toContain(config.webdav_password)
++    expect(payload.version).toBe(WEBDAV_STATUS_SCHEMA_VERSION)
++    expect(payload.updatedAt).toBe(NOW)
++    expect(getWebdavStatus(signature)).toBe('ready')
++  })
++
++  it('removes expired status instead of returning stale state', () => {
++    const storage = createStorage()
++    vi.stubGlobal('localStorage', storage)
++    vi.spyOn(Date, 'now').mockReturnValue(NOW)
++    const signature = buildWebdavSignature(config)
++
++    storage.setItem(
++      WEBDAV_STATUS_KEY,
++      JSON.stringify({
++        version: WEBDAV_STATUS_SCHEMA_VERSION,
++        signature,
++        status: 'ready',
++        updatedAt: NOW - WEBDAV_STATUS_TTL_MS - 1,
++      }),
++    )
++
++    expect(getWebdavStatus(signature)).toBe('unknown')
++    expect(storage.getItem(WEBDAV_STATUS_KEY)).toBeNull()
++  })
++
++  it('clears legacy password-bearing entries without migrating them', () => {
++    const storage = createStorage()
++    vi.stubGlobal('localStorage', storage)
++    vi.spyOn(Date, 'now').mockReturnValue(NOW)
++    const signature = buildWebdavSignature(config)
++    const legacySignature = JSON.stringify([
++      config.webdav_url,
++      config.webdav_username,
++      config.webdav_password,
++    ])
++
++    storage.setItem(
++      WEBDAV_STATUS_KEY,
++      JSON.stringify({
++        signature: legacySignature,
++        status: 'ready',
++        updatedAt: NOW,
++      }),
++    )
++
++    expect(getWebdavStatus(signature)).toBe('unknown')
++    expect(storage.getItem(WEBDAV_STATUS_KEY)).toBeNull()
++  })
++
++  it('clears password-bearing fields even when the signature is current', () => {
++    const storage = createStorage()
++    vi.stubGlobal('localStorage', storage)
++    vi.spyOn(Date, 'now').mockReturnValue(NOW)
++    const signature = buildWebdavSignature(config)
++
++    storage.setItem(
++      WEBDAV_STATUS_KEY,
++      JSON.stringify({
++        version: WEBDAV_STATUS_SCHEMA_VERSION,
++        signature,
++        status: 'ready',
++        updatedAt: NOW,
++        password: config.webdav_password,
++      }),
++    )
++
++    expect(getWebdavStatus(signature)).toBe('unknown')
++    expect(storage.getItem(WEBDAV_STATUS_KEY)).toBeNull()
++  })
++
++  it('clears unknown schema versions and explicit invalidation', () => {
++    const storage = createStorage()
++    vi.stubGlobal('localStorage', storage)
++    vi.spyOn(Date, 'now').mockReturnValue(NOW)
++    const signature = buildWebdavSignature(config)
++
++    storage.setItem(
++      WEBDAV_STATUS_KEY,
++      JSON.stringify({
++        version: WEBDAV_STATUS_SCHEMA_VERSION + 1,
++        signature,
++        status: 'ready',
++        updatedAt: NOW,
++      }),
++    )
++    expect(getWebdavStatus(signature)).toBe('unknown')
++    expect(storage.getItem(WEBDAV_STATUS_KEY)).toBeNull()
++
++    setWebdavStatus(signature, 'ready')
++    clearWebdavStatus()
++    expect(storage.getItem(WEBDAV_STATUS_KEY)).toBeNull()
++  })
++
++  it('removes status for an empty configuration or explicit unknown state', () => {
++    const storage = createStorage()
++    vi.stubGlobal('localStorage', storage)
++    vi.spyOn(Date, 'now').mockReturnValue(NOW)
++    const signature = buildWebdavSignature(config)
++
++    setWebdavStatus(signature, 'ready')
++    expect(getWebdavStatus('')).toBe('unknown')
++    expect(storage.getItem(WEBDAV_STATUS_KEY)).toBeNull()
++
++    setWebdavStatus(signature, 'ready')
++    setWebdavStatus(signature, 'unknown')
++    expect(storage.getItem(WEBDAV_STATUS_KEY)).toBeNull()
++    expect(
++      buildWebdavSignature({ webdav_password: config.webdav_password }),
++    ).toBe('')
++  })
++
++  it('clears an empty stored value as corrupted data', () => {
++    const storage = createStorage()
++    vi.stubGlobal('localStorage', storage)
++    const signature = buildWebdavSignature(config)
++
++    storage.setItem(WEBDAV_STATUS_KEY, '')
++
++    expect(getWebdavStatus(signature)).toBe('unknown')
++    expect(storage.getItem(WEBDAV_STATUS_KEY)).toBeNull()
++  })
++
++  it('does not write a legacy password-bearing signature', () => {
++    const storage = createStorage()
++    vi.stubGlobal('localStorage', storage)
++    const legacySignature = JSON.stringify([
++      config.webdav_url,
++      config.webdav_username,
++      config.webdav_password,
++    ])
++
++    setWebdavStatus(legacySignature, 'ready')
++
++    expect(storage.getItem(WEBDAV_STATUS_KEY)).toBeNull()
++  })
++
++  it('treats a throwing localStorage getter as unavailable', () => {
++    const signature = buildWebdavSignature(config)
++    const originalDescriptor = Object.getOwnPropertyDescriptor(
++      globalThis,
++      'localStorage',
++    )
++    Object.defineProperty(globalThis, 'localStorage', {
++      configurable: true,
++      get() {
++        throw new Error('storage is unavailable')
++      },
++    })
++
++    try {
++      expect(getWebdavStatus(signature)).toBe('unknown')
++      expect(() => clearWebdavStatus()).not.toThrow()
++      expect(() => setWebdavStatus(signature, 'ready')).not.toThrow()
++    } finally {
++      if (originalDescriptor) {
++        Object.defineProperty(globalThis, 'localStorage', originalDescriptor)
++      } else {
++        Reflect.deleteProperty(globalThis, 'localStorage')
++      }
++    }
++  })
++})
+diff --git a/src/services/webdav-status.ts b/src/services/webdav-status.ts
+index b964b3f..6fb8eb9 100644
+--- a/src/services/webdav-status.ts
++++ b/src/services/webdav-status.ts
+@@ -1,13 +1,16 @@
+ export type WebdavStatus = 'unknown' | 'ready' | 'failed'
+ 
++export const WEBDAV_STATUS_KEY = 'webdav_status_cache'
++export const WEBDAV_STATUS_SCHEMA_VERSION = 1
++export const WEBDAV_STATUS_TTL_MS = 5 * 60 * 1000
++
+ interface WebdavStatusCache {
++  version: typeof WEBDAV_STATUS_SCHEMA_VERSION
+   signature: string
+-  status: WebdavStatus
++  status: Exclude<WebdavStatus, 'unknown'>
+   updatedAt: number
+ }
+ 
+-const WEBDAV_STATUS_KEY = 'webdav_status_cache'
+-
+ export const buildWebdavSignature = (
+   verge?: Pick<
+     IVergeConfig,
+@@ -16,40 +19,131 @@ export const buildWebdavSignature = (
+ ) => {
+   const url = verge?.webdav_url?.trim() ?? ''
+   const username = verge?.webdav_username?.trim() ?? ''
+-  const password = verge?.webdav_password ?? ''
+ 
+-  if (!url && !username && !password) return ''
++  if (!url || !username) return ''
++
++  return JSON.stringify([url, username])
++}
++
++const isPasswordFreeSignature = (value: unknown): value is string => {
++  if (typeof value !== 'string') return false
+ 
+-  return JSON.stringify([url, username, password])
++  try {
++    const parts: unknown = JSON.parse(value)
++    return (
++      Array.isArray(parts) &&
++      parts.length === 2 &&
++      parts.every((part) => typeof part === 'string')
++    )
++  } catch {
++    return false
++  }
+ }
+ 
+-const canUseStorage = () => typeof localStorage !== 'undefined'
++const isRecord = (value: unknown): value is Record<string, unknown> =>
++  typeof value === 'object' && value !== null && !Array.isArray(value)
++
++const isWebdavStatusCache = (value: unknown): value is WebdavStatusCache => {
++  if (!isRecord(value)) return false
++
++  const keys = Object.keys(value)
++  if (
++    keys.length !== 4 ||
++    !['version', 'signature', 'status', 'updatedAt'].every((key) =>
++      keys.includes(key),
++    )
++  ) {
++    return false
++  }
++
++  return (
++    value.version === WEBDAV_STATUS_SCHEMA_VERSION &&
++    isPasswordFreeSignature(value.signature) &&
++    (value.status === 'ready' || value.status === 'failed') &&
++    typeof value.updatedAt === 'number'
++  )
++}
++
++const isValidTimestamp = (value: unknown, now: number) =>
++  typeof value === 'number' &&
++  Number.isInteger(value) &&
++  Number.isFinite(value) &&
++  value > 0 &&
++  value <= now &&
++  now - value <= WEBDAV_STATUS_TTL_MS
++
++const getStorage = (): Storage | null => {
++  try {
++    return globalThis.localStorage ?? null
++  } catch {
++    return null
++  }
++}
++
++export const clearWebdavStatus = () => {
++  const storage = getStorage()
++  if (!storage) return
++
++  try {
++    storage.removeItem(WEBDAV_STATUS_KEY)
++  } catch {
++    // Storage can be unavailable in private browsing or when quota is denied.
++  }
++}
+ 
+ export const getWebdavStatus = (signature: string): WebdavStatus => {
+-  if (!signature || !canUseStorage()) return 'unknown'
++  if (!signature || !isPasswordFreeSignature(signature)) {
++    clearWebdavStatus()
++    return 'unknown'
++  }
++  const storage = getStorage()
++  if (!storage) return 'unknown'
+ 
+-  const raw = localStorage.getItem(WEBDAV_STATUS_KEY)
+-  if (!raw) return 'unknown'
++  let raw: string | null
++  try {
++    raw = storage.getItem(WEBDAV_STATUS_KEY)
++  } catch {
++    return 'unknown'
++  }
++  if (raw === null) return 'unknown'
+ 
+   try {
+-    const data = JSON.parse(raw) as Partial<WebdavStatusCache>
+-    if (!data || data.signature !== signature) return 'unknown'
+-    return data.status === 'ready' || data.status === 'failed'
+-      ? data.status
+-      : 'unknown'
++    const data: unknown = JSON.parse(raw)
++    if (!isWebdavStatusCache(data) || data.signature !== signature) {
++      clearWebdavStatus()
++      return 'unknown'
++    }
++
++    if (!isValidTimestamp(data.updatedAt, Date.now())) {
++      clearWebdavStatus()
++      return 'unknown'
++    }
++
++    return data.status
+   } catch {
++    clearWebdavStatus()
+     return 'unknown'
+   }
+ }
+ 
+ export const setWebdavStatus = (signature: string, status: WebdavStatus) => {
+-  if (!signature || !canUseStorage()) return
++  if (!signature || !isPasswordFreeSignature(signature) || status === 'unknown') {
++    clearWebdavStatus()
++    return
++  }
++  const storage = getStorage()
++  if (!storage) return
+ 
+   const payload: WebdavStatusCache = {
++    version: WEBDAV_STATUS_SCHEMA_VERSION,
+     signature,
+     status,
+     updatedAt: Date.now(),
+   }
+ 
+-  localStorage.setItem(WEBDAV_STATUS_KEY, JSON.stringify(payload))
++  try {
++    storage.setItem(WEBDAV_STATUS_KEY, JSON.stringify(payload))
++  } catch {
++    // Storage can be unavailable in private browsing or when quota is denied.
++  }
+ }
+
