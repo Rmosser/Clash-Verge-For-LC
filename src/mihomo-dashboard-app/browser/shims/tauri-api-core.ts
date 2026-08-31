@@ -15,6 +15,11 @@ import {
   vergeInvoke,
 } from "../runtime";
 
+import {
+  normalizeSystemInfo,
+  normalizeTestDelay,
+} from "./web-command-contracts";
+
 const maybeSerializeRegisteredPath = async (
   value: unknown,
 ): Promise<unknown> => {
@@ -97,41 +102,66 @@ export const invoke = async <T>(
     string,
     unknown
   >;
-  const rawResult = await vergeInvoke<any>(cmd, payload);
+  const rawResult = await vergeInvoke<unknown>(cmd, payload);
   const result =
     cmd === "validate_dns_config"
       ? normalizeDnsValidationOutcome(rawResult)
-      : rawResult;
+      : cmd === "test_delay"
+        ? normalizeTestDelay(rawResult)
+        : cmd === "get_system_info"
+          ? normalizeSystemInfo(rawResult)
+          : rawResult;
+  const resultRecord =
+    result && typeof result === "object" && !Array.isArray(result)
+      ? (result as Record<string, unknown>)
+      : null;
   if (isWebCommandResult(result)) {
     return result as T;
   }
 
   if (
     cmd === "export_local_backup" &&
-    result?.filename &&
-    result?.content_b64
+    typeof resultRecord?.filename === "string" &&
+    typeof resultRecord.content_b64 === "string"
   ) {
-    const buffer = Uint8Array.from(atob(result.content_b64), (char) =>
+    const buffer = Uint8Array.from(atob(resultRecord.content_b64), (char) =>
       char.charCodeAt(0),
     );
     saveBlob(
-      new Blob([buffer], { type: result.content_type ?? "application/gzip" }),
-      result.download_name ?? basename(result.filename),
+      new Blob([buffer], {
+        type:
+          typeof resultRecord.content_type === "string"
+            ? resultRecord.content_type
+            : "application/gzip",
+      }),
+      typeof resultRecord.download_name === "string"
+        ? resultRecord.download_name
+        : basename(resultRecord.filename),
     );
     return createWebCommandResult("success", "已开始下载备份文件。", {
-      filename: result.download_name ?? basename(result.filename),
+      filename:
+        typeof resultRecord.download_name === "string"
+          ? resultRecord.download_name
+          : basename(resultRecord.filename),
     }) as T;
   }
 
-  if (cmd === "view_profile" && result?.filename && result?.content) {
+  if (
+    cmd === "view_profile" &&
+    typeof resultRecord?.filename === "string" &&
+    typeof resultRecord.content === "string"
+  ) {
     saveBlob(
-      new Blob([result.content], {
-        type: result.content_type ?? "text/plain; charset=utf-8",
+      new Blob([resultRecord.content], {
+        type:
+          typeof resultRecord.content_type === "string"
+            ? resultRecord.content_type
+            : "text/plain; charset=utf-8",
       }),
-      basename(result.filename),
+      basename(resultRecord.filename),
     );
     return createWebCommandResult("success", "已开始下载配置文件。", {
-      filename: basename(result.filename),
+      filename: basename(resultRecord.filename),
     }) as T;
   }
 
@@ -139,8 +169,8 @@ export const invoke = async <T>(
     const text =
       typeof result === "string"
         ? result
-        : typeof result?.text === "string"
-          ? result.text
+        : typeof resultRecord?.text === "string"
+          ? resultRecord.text
           : "";
     if (!text) {
       return createWebCommandResult(
@@ -159,15 +189,14 @@ export const invoke = async <T>(
     (cmd === "open_app_dir" ||
       cmd === "open_core_dir" ||
       cmd === "open_logs_dir") &&
-    result?.path &&
-    typeof result.path === "string"
+    typeof resultRecord?.path === "string"
   ) {
-    await navigator.clipboard.writeText(result.path);
+    await navigator.clipboard.writeText(resultRecord.path);
     return createWebCommandResult(
       "degraded",
       getWebActionPolicy("directoryOpen").reason,
       {
-        path: result.path,
+        path: resultRecord.path,
         policy: getWebActionPolicy("directoryOpen"),
       },
     ) as T;
@@ -175,29 +204,33 @@ export const invoke = async <T>(
 
   if (
     cmd === "export_diagnostic_info" &&
-    result?.filename &&
-    result?.content_b64
+    typeof resultRecord?.filename === "string" &&
+    typeof resultRecord.content_b64 === "string"
   ) {
-    const buffer = Uint8Array.from(atob(result.content_b64), (char) =>
+    const buffer = Uint8Array.from(atob(resultRecord.content_b64), (char) =>
       char.charCodeAt(0),
     );
     saveBlob(
       new Blob([buffer], {
-        type: result.content_type ?? "application/json",
+        type:
+          typeof resultRecord.content_type === "string"
+            ? resultRecord.content_type
+            : "application/json",
       }),
-      result.download_name ?? basename(result.filename),
+      typeof resultRecord.download_name === "string"
+        ? resultRecord.download_name
+        : basename(resultRecord.filename),
     );
     return createWebCommandResult("success", "已开始下载诊断文件。", {
-      filename: result.download_name ?? basename(result.filename),
+      filename:
+        typeof resultRecord.download_name === "string"
+          ? resultRecord.download_name
+          : basename(resultRecord.filename),
     }) as T;
   }
 
-  if (
-    cmd === "copy_icon_file" &&
-    result?.path &&
-    typeof result.path === "string"
-  ) {
-    return result.path as T;
+  if (cmd === "copy_icon_file" && typeof resultRecord?.path === "string") {
+    return resultRecord.path as T;
   }
 
   if (
@@ -214,13 +247,13 @@ export const invoke = async <T>(
   }
 
   if (cmd === "patch_clash_config") {
-    if (result?.secret && typeof result.secret === "string") {
+    if (typeof resultRecord?.secret === "string") {
       const mutableWindow = window as unknown as {
         __LZCAPP_MIHOMO__?: ReturnType<typeof getLzcConfig>;
       };
       mutableWindow.__LZCAPP_MIHOMO__ = {
         ...getLzcConfig(),
-        secret: result.secret,
+        secret: resultRecord.secret,
       };
     }
     dispatchAppEvent("verge://refresh-clash-config", null);
