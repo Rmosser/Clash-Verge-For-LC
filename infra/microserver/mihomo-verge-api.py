@@ -5,6 +5,7 @@ import base64
 import concurrent.futures
 import copy
 import datetime as dt
+import hashlib
 import gzip
 import grp
 import io
@@ -22,6 +23,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -33,6 +35,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from contextvars import ContextVar
 
 MODULE_DIR = str(Path(__file__).resolve().parent)
 if MODULE_DIR not in sys.path:
@@ -78,6 +81,26 @@ OPERATIONS_LOG_PATH = LOGS_DIR / "operations.log"
 VERGE_API_SECRET_PATH = Path(
     os.environ.get("VERGE_API_SECRET_FILE", "/etc/mihomo/verge-api.secret")
 )
+
+LOG_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar(
+    "mihomo_verge_log_context", default=None
+)
+OPERATIONS_LOG_LOCK = threading.Lock()
+
+SENSITIVE_QUERY_PARAMETER_RE = re.compile(
+    r"([?&](?:token|access_token|api_key|apikey|key|secret|password|passwd|auth|authorization|cookie|webhook)=)[^&#\s]*",
+    re.IGNORECASE,
+)
+SENSITIVE_ASSIGNMENT_RE = re.compile(
+    r"((?:token|access_token|api_key|apikey|key|secret|password|passwd|auth|authorization|cookie|webhook)\b\s*[:=]\s*)([^,;\s}\]]+)",
+    re.IGNORECASE,
+)
+BEARER_RE = re.compile(r"(\bBearer\s+)[^\s]+", re.IGNORECASE)
+BASIC_RE = re.compile(r"(\bBasic\s+)[^\s]+", re.IGNORECASE)
+COOKIE_HEADER_RE = re.compile(
+    r"(\bCookie:\s*)[^\s\r\n;]+(?:;\s*[^\s\r\n;]+)*", re.IGNORECASE
+)
+URL_USERINFO_RE = re.compile(r"(\b[a-z][a-z0-9+.-]*://)[^/\s@]+@", re.IGNORECASE)
 
 MIHOMO_CONFIG_PATH = Path("/etc/mihomo/config.yaml")
 MIHOMO_STATE_DIR = Path("/var/lib/mihomo")
@@ -455,10 +478,61 @@ def ensure_dirs() -> None:
         path.mkdir(parents=True, exist_ok=True)
 
 
-def append_operation_log(message: str) -> None:
+def sanitize_log_text(message: object) -> str:
+    """Remove credentials from operation messages and HTTP request lines."""
+    text = str(message)
+    text = URL_USERINFO_RE.sub(r"\1<redacted>@", text)
+    text = SENSITIVE_QUERY_PARAMETER_RE.sub(r"\1<redacted>", text)
+    text = BEARER_RE.sub(r"\1<redacted>", text)
+    text = BASIC_RE.sub(r"\1<redacted>", text)
+    text = COOKIE_HEADER_RE.sub(r"\1<redacted>", text)
+    return SENSITIVE_ASSIGNMENT_RE.sub(r"\1<redacted>", text)
+
+
+def profile_uid_for_log(raw: object) -> str:
+    """Correlate a profile without persisting the profile identifier itself."""
+    value = str(raw).strip()
+    if not value:
+        return "<empty>"
+    return "uid_hash=" + hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:12]
+
+
+def set_log_context(**updates: object) -> None:
+    context = dict(LOG_CONTEXT.get() or {})
+    for key, value in updates.items():
+        if value is not None and str(value):
+            context[key] = str(value)
+    LOG_CONTEXT.set(context)
+
+
+def _log_context_prefix() -> str:
+    context = LOG_CONTEXT.get() or {}
+    fields = []
+    if context.get("request_id"):
+        fields.append(f"request_id={context['request_id']}")
+    if context.get("command"):
+        fields.append(f"command={sanitize_log_text(context['command'])}")
+    if context.get("profile_uid"):
+        fields.append(f"profile_uid={profile_uid_for_log(context['profile_uid'])}")
+    if context.get("stage"):
+        fields.append(f"stage={sanitize_log_text(context['stage'])}")
+    return f"[{ ' '.join(fields) }] " if fields else ""
+
+
+def append_operation_log(message: str, *, error: BaseException | None = None) -> None:
     ensure_dirs()
-    with OPERATIONS_LOG_PATH.open("a", encoding="utf-8") as handle:
-        handle.write(f"[{iso_now()}] {message}\n")
+    rendered = sanitize_log_text(message)
+    if error is not None:
+        traceback_text = " | ".join(
+            line.strip()
+            for line in traceback.format_exception(error)
+            if line.strip()
+        )
+        rendered = f"{rendered}; cause={sanitize_log_text(traceback_text)}"
+    line = f"[{iso_now()}] {_log_context_prefix()}{rendered}\n"
+    with OPERATIONS_LOG_LOCK:
+        with OPERATIONS_LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(line)
 
 
 def atomic_write_bytes(path: Path, payload: bytes, mode: int | None = None) -> None:
@@ -480,7 +554,11 @@ def load_json(path: Path, default: Any) -> Any:
         return copy.deepcopy(default)
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
+        append_operation_log(
+            f"state load failed path={path} error={type(exc).__name__}",
+            error=exc,
+        )
         return copy.deepcopy(default)
 
 
@@ -2149,7 +2227,8 @@ def current_profile_item() -> dict[str, Any]:
         profiles["current"] = str(recovered.get("uid") or "")
         save_profiles_state(profiles)
         append_operation_log(
-            f"recovered missing current profile -> {profiles['current']}"
+            "recovered missing current profile -> "
+            f"profile_uid={profile_uid_for_log(profiles['current'])}"
         )
         return recovered
 
@@ -2364,11 +2443,28 @@ def apply_runtime_text(new_text: str, log_message: str) -> None:
         run_command(["systemctl", "restart", "mihomo"])
         wait_for_controller()
         append_operation_log(log_message)
-    except Exception:
+    except Exception as exc:
+        append_operation_log(
+            "runtime apply failed; restoring previous Mihomo configuration",
+            error=exc,
+        )
         atomic_write_text(MIHOMO_CONFIG_PATH, previous, 0o640)
         if previous_stat is not None:
             ensure_mihomo_config_owner(MIHOMO_CONFIG_PATH)
-        run_command(["systemctl", "restart", "mihomo"], check=False)
+        try:
+            rollback = run_command(["systemctl", "restart", "mihomo"], check=False)
+        except Exception as rollback_exc:
+            append_operation_log(
+                "Mihomo configuration rollback restart failed",
+                error=rollback_exc,
+            )
+        else:
+            if rollback.returncode == 0:
+                append_operation_log("Mihomo configuration rollback restart succeeded")
+            else:
+                append_operation_log(
+                    f"Mihomo configuration rollback restart failed returncode={rollback.returncode}"
+                )
         raise
 
 
@@ -2376,7 +2472,11 @@ def apply_current_profile() -> None:
     item = current_profile_item()
     new_text, _ = build_runtime_text(item)
     try:
-        apply_runtime_text(new_text, f"applied profile {item['uid']}")
+        set_log_context(profile_uid=item["uid"], stage="apply")
+        apply_runtime_text(
+            new_text,
+            f"applied profile profile_uid={profile_uid_for_log(item['uid'])}",
+        )
     except Exception as exc:
         mark_runtime_profile_degraded(f"应用活动配置失败: {exc}")
         raise
@@ -2397,8 +2497,13 @@ def apply_runtime_for_current_or_empty_state() -> None:
     new_text, _, item = build_runtime_text_for_current_or_empty_state()
     try:
         if item:
-            apply_runtime_text(new_text, f"applied profile {item['uid']}")
+            set_log_context(profile_uid=item["uid"], stage="apply")
+            apply_runtime_text(
+                new_text,
+                f"applied profile profile_uid={profile_uid_for_log(item['uid'])}",
+            )
         else:
+            set_log_context(stage="apply")
             apply_runtime_text(new_text, "applied empty runtime profile")
     except Exception as exc:
         mark_runtime_profile_degraded(f"应用运行时配置失败: {exc}")
@@ -3013,6 +3118,7 @@ def public_config_payload() -> dict[str, Any]:
 
 
 def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
+    set_log_context(command=cmd)
     ensure_state()
 
     if cmd == "get_profiles":
@@ -3025,6 +3131,7 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
         return get_runtime_proxy_group_order()
 
     if cmd == "create_profile":
+        set_log_context(stage="write")
         item = args.get("item") or {}
         file_data = args.get("fileData")
         create_profile_item(item, file_data)
@@ -3034,6 +3141,7 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
         if not PROFILE_MUTATION_LOCK.acquire(blocking=False):
             return {"status": "busy"}
         url = str(args.get("url") or "")
+        set_log_context(stage="fetch")
         option = args.get("option") or default_profile_option()
         try:
             profiles_before = get_profiles_state()
@@ -3042,6 +3150,7 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
                 {"type": "remote", "url": url, "option": option},
                 None,
             )
+            set_log_context(profile_uid=record.get("uid"), stage="write")
             profiles_after = get_profiles_state()
             current_uid = str(profiles_after.get("current") or "")
             activated_current = current_uid == str(record.get("uid") or "")
@@ -3059,12 +3168,14 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
                 }
             )
         except Exception as exc:
+            append_operation_log("profile import failed", error=exc)
             return validation_invalid(exc, fallback_code="PROFILE_IMPORT_FAILED")
         finally:
             PROFILE_MUTATION_LOCK.release()
 
     if cmd == "view_profile":
         uid = str(args.get("index") or "")
+        set_log_context(profile_uid=uid, stage="read")
         return {
             "filename": f"{uid}.yaml",
             "content": profile_path(uid).read_text(encoding="utf-8"),
@@ -3073,10 +3184,12 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
 
     if cmd == "read_profile_file":
         uid = str(args.get("index") or "")
+        set_log_context(profile_uid=uid, stage="read")
         return profile_path(uid).read_text(encoding="utf-8")
 
     if cmd == "save_profile_file":
         uid = str(args.get("index") or "")
+        set_log_context(profile_uid=uid, stage="write")
         if not PROFILE_MUTATION_LOCK.acquire(blocking=False):
             return {"status": "busy"}
         path = profile_path(uid)
@@ -3086,6 +3199,7 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
             update_profile_file(uid, str(args.get("fileData") or ""))
             return validation_valid()
         except Exception as exc:
+            append_operation_log("profile file save/apply failed", error=exc)
             if previous_file is None:
                 path.unlink(missing_ok=True)
             else:
@@ -3097,11 +3211,13 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
 
     if cmd == "patch_profile":
         uid = str(args.get("index") or "")
+        set_log_context(profile_uid=uid, stage="write")
         patch_profile_record(uid, args.get("profile") or {})
         return None
 
     if cmd == "update_profile":
         uid = str(args.get("index") or "")
+        set_log_context(profile_uid=uid, stage="fetch")
         profiles = get_profiles_state()
         item = next((entry for entry in profiles.get("items") or [] if entry.get("uid") == uid), None)
         if not item:
@@ -3116,15 +3232,19 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
                     mark_runtime_profile_degraded(f"刷新活动订阅失败: {exc}")
                 raise
             atomic_write_text(profile_path(uid), payload)
+            set_log_context(stage="write")
             item["updated"] = now_ms()
             item["extra"] = extra
             save_profiles_state(profiles)
             if profiles.get("current") == uid:
+                set_log_context(stage="apply")
                 apply_current_profile()
         return None
 
     if cmd == "delete_profile":
-        delete_profile_record(str(args.get("index") or ""))
+        uid = str(args.get("index") or "")
+        set_log_context(profile_uid=uid, stage="write")
+        delete_profile_record(uid)
         return None
 
     if cmd == "reorder_profile":
@@ -3146,6 +3266,7 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
         if not PROFILE_MUTATION_LOCK.acquire(blocking=False):
             return {"status": "busy"}
         profiles_before = get_profiles_state()
+        set_log_context(stage="write")
         try:
             profiles = copy.deepcopy(profiles_before)
             patch = args.get("profiles") or {}
@@ -3165,6 +3286,7 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
             save_profiles_state(profiles)
             if profiles.get("current") != previous_current:
                 if profiles.get("current"):
+                    set_log_context(profile_uid=profiles["current"], stage="apply")
                     apply_current_profile()
                 elif explicit_empty_patch:
                     apply_empty_profile_runtime()
@@ -3180,9 +3302,11 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
                         "reason": "transient-empty-last-good",
                     }
             elif not profiles.get("current") and explicit_empty_patch:
+                set_log_context(stage="apply")
                 apply_empty_profile_runtime()
             return outcome
         except Exception as exc:
+            append_operation_log("profile configuration apply failed", error=exc)
             save_profiles_state(profiles_before)
             return validation_invalid(exc, fallback_code="PROFILE_APPLY_FAILED")
         finally:
@@ -3191,6 +3315,7 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
     if cmd == "enhance_profiles":
         if not PROFILE_MUTATION_LOCK.acquire(blocking=False):
             return {"status": "busy"}
+        set_log_context(stage="apply")
         try:
             profiles = get_profiles_state()
             if profiles.get("current"):
@@ -3203,8 +3328,10 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
                 )
             return validation_valid()
         except ApiError as exc:
+            append_operation_log("profile enhancement failed", error=exc)
             return validation_invalid(exc, fallback_code="PROFILE_APPLY_FAILED")
         except Exception as exc:
+            append_operation_log("profile enhancement failed", error=exc)
             return validation_invalid(
                 ApiError(
                     "PROFILE_APPLY_FAILED",
@@ -3737,6 +3864,9 @@ class VergeApiHandler(BaseHTTPRequestHandler):
         return False
 
     def route_request(self, head_only: bool = False) -> None:
+        request_id = uuid.uuid4().hex
+        self._request_id = request_id
+        LOG_CONTEXT.set({"request_id": request_id})
         ensure_state()
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/healthz":
@@ -3858,11 +3988,14 @@ class VergeApiHandler(BaseHTTPRequestHandler):
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 payload = json.loads(self.rfile.read(length) or b"{}")
-                result = invoke_command(str(payload.get("cmd") or ""), payload.get("args") or {})
+                command = str(payload.get("cmd") or "")
+                LOG_CONTEXT.set({"request_id": request_id, "command": command})
+                result = invoke_command(command, payload.get("args") or {})
                 self.send_json(result if result is not None else None)
             except Exception as exc:
-                append_operation_log(f"invoke error: {exc}")
+                append_operation_log(f"invoke error: {exc}", error=exc)
                 payload, status = exception_envelope(exc)
+                payload["requestId"] = request_id
                 self.send_json(payload, status=status)
             return
 
