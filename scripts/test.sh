@@ -19,3 +19,6 @@ bash scripts/test_deploy_settings.sh
 
 echo "==> legacy cleanup isolation tests"
 bash scripts/test_legacy_cleanup_isolation.sh
+
+echo "==> rollback snapshot contract fixture"
+python3 -B scripts/test_rollback_snapshot_contract.py

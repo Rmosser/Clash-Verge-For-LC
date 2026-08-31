@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # shellcheck source=/dev/null
 . "$ROOT/scripts/_lib_paths.sh"
+. "$ROOT/scripts/_lib_deploy_settings.sh"
 
 # Optional local env override
 if [[ -f "$ROOT/.env" ]]; then
@@ -17,11 +18,25 @@ fi
 HOST="${MICROSERVER_HOST:-rainierserver.heiyu.space}"
 SSH_USER="${MICROSERVER_SSH_USER:-root}"
 SSH_KEY="${MICROSERVER_SSH_KEY:-$HOME/.ssh/id_ed25519}"
-CONTROLLER_URL="${MIHOMO_CONTROLLER_URL:-http://172.18.0.1:9090}"
-VERGE_API_URL="${MIHOMO_VERGE_API_URL:-http://172.18.0.1:9091}"
+readonly REVIEWED_CONTROLLER_URL="http://172.18.0.1:9090"
+readonly REVIEWED_VERGE_API_URL="http://172.18.0.1:9091"
+if [[ -n "${MIHOMO_CONTROLLER_URL:-}" && "$MIHOMO_CONTROLLER_URL" != "$REVIEWED_CONTROLLER_URL" ]]; then
+  echo "ERROR: MIHOMO_CONTROLLER_URL is not configurable; refusing an unreviewed credential destination" >&2
+  exit 2
+fi
+if [[ -n "${MIHOMO_VERGE_API_URL:-}" && "$MIHOMO_VERGE_API_URL" != "$REVIEWED_VERGE_API_URL" ]]; then
+  echo "ERROR: MIHOMO_VERGE_API_URL is not configurable; refusing an unreviewed credential destination" >&2
+  exit 2
+fi
+CONTROLLER_URL="$REVIEWED_CONTROLLER_URL"
+VERGE_API_URL="$REVIEWED_VERGE_API_URL"
+
+# Prepare the reviewed SSH identity even for status-only checks.  A caller
+# supplied MIHOMO_KNOWN_HOSTS_FILE is never trusted or reused.
+mihomo_prepare_readonly_identity "$HOST" "$SSH_USER"
 
 ssh_remote() {
-  ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$SSH_USER@$HOST" "$@"
+  ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" "$SSH_USER@$HOST" "$@"
 }
 
 detect_mode() {
@@ -60,6 +75,10 @@ from pathlib import Path
 import sys
 import urllib.request
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
 url = sys.argv[1].rstrip("/") + "/version"
 secret = ""
 for line in Path("/etc/mihomo/config.yaml").read_text(encoding="utf-8").splitlines():
@@ -69,7 +88,8 @@ for line in Path("/etc/mihomo/config.yaml").read_text(encoding="utf-8").splitlin
 if not secret:
     raise SystemExit("missing controller secret on remote microserver")
 request = urllib.request.Request(url, headers={"Authorization": f"Bearer {secret}"})
-with urllib.request.urlopen(request, timeout=10) as response:
+opener = urllib.request.build_opener(NoRedirect)
+with opener.open(request, timeout=10) as response:
     sys.stdout.buffer.write(response.read())
     sys.stdout.write("\n")
 PY
@@ -84,11 +104,16 @@ import sys
 import urllib.parse
 import urllib.request
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
 token = Path("/etc/mihomo/verge-api.secret").read_text(encoding="utf-8").strip()
 if not token:
     raise SystemExit("missing verge-api secret on remote microserver")
 url = sys.argv[1].rstrip("/") + "/public-config?token=" + urllib.parse.quote(token, safe="")
-with urllib.request.urlopen(url, timeout=10) as response:
+opener = urllib.request.build_opener(NoRedirect)
+with opener.open(url, timeout=10) as response:
     print(f"HTTP {response.status}")
 PY
 REMOTE
@@ -123,6 +148,10 @@ from pathlib import Path
 import sys
 import urllib.request
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
 secret = ""
 for line in Path("/etc/mihomo/config.yaml").read_text(encoding="utf-8").splitlines():
     if line.lstrip().startswith("secret:"):
@@ -132,7 +161,8 @@ request = urllib.request.Request(
     sys.argv[1].rstrip("/") + "/version",
     headers={"Authorization": f"Bearer {secret}"},
 )
-with urllib.request.urlopen(request, timeout=5) as response:
+opener = urllib.request.build_opener(NoRedirect)
+with opener.open(request, timeout=5) as response:
     response.read()
 PY
 }

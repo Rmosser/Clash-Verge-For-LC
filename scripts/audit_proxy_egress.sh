@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # shellcheck source=/dev/null
 . "$ROOT/scripts/_lib_paths.sh"
+. "$ROOT/scripts/_lib_deploy_settings.sh"
 
 # Optional local env override
 if [[ -f "$ROOT/.env" ]]; then
@@ -17,7 +18,12 @@ fi
 HOST="${MICROSERVER_HOST:-rainierserver.heiyu.space}"
 SSH_USER="${MICROSERVER_SSH_USER:-root}"
 SSH_KEY="${MICROSERVER_SSH_KEY:-$HOME/.ssh/id_ed25519}"
-CONTROLLER_URL="${MIHOMO_CONTROLLER_URL:-http://172.18.0.1:9090}"
+readonly REVIEWED_CONTROLLER_URL="http://172.18.0.1:9090"
+if [[ -n "${MIHOMO_CONTROLLER_URL:-}" && "$MIHOMO_CONTROLLER_URL" != "$REVIEWED_CONTROLLER_URL" ]]; then
+  echo "ERROR: MIHOMO_CONTROLLER_URL is not configurable; refusing an unreviewed credential destination" >&2
+  exit 2
+fi
+CONTROLLER_URL="$REVIEWED_CONTROLLER_URL"
 
 TIMEOUT_MS="${TIMEOUT_MS:-8000}"
 V4_TEST_URL="${V4_TEST_URL:-http://www.gstatic.com/generate_204}"
@@ -53,8 +59,12 @@ if [[ "${1:-}" == "--json" ]]; then
   JSON_ONLY=1
 fi
 
+# Read-only audits still bind their transport to the checked-in host/key map;
+# an environment-provided known_hosts file cannot widen that trust.
+mihomo_prepare_readonly_identity "$HOST" "$SSH_USER"
+
 ssh_remote() {
-  ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$SSH_USER@$HOST" "$@"
+  ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" "$SSH_USER@$HOST" "$@"
 }
 
 # The controller secret never leaves the microserver: extracted remotely and only
@@ -87,6 +97,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
 controller = os.environ.get("CONTROLLER_URL", "http://172.18.0.1:9090").rstrip("/")
 secret = os.environ.get("SECRET", "")
 timeout_ms = int(os.environ.get("TIMEOUT_MS", "8000"))
@@ -103,7 +117,8 @@ ctx = ssl.create_default_context()
 
 def _get_json(url: str, http_timeout_s: float = 10.0):
     req = urllib.request.Request(url, headers=hdr)
-    with urllib.request.urlopen(req, timeout=http_timeout_s, context=ctx) as r:
+    opener = urllib.request.build_opener(NoRedirect, urllib.request.HTTPSHandler(context=ctx))
+    with opener.open(req, timeout=http_timeout_s) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
@@ -176,4 +191,3 @@ print(
 )
 PY
 REMOTE
-

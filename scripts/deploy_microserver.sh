@@ -50,9 +50,12 @@ UPGRADE_CORE=0
 ONLY_CORE=0
 NO_ROLLBACK=0
 CORE_VERSION_ARG=""
+CONFIRM_APPLY=0
 
 ssh_remote() {
-  ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$SSH_USER@$HOST" "$@"
+  ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+    -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
+    "$SSH_USER@$HOST" "$@"
 }
 
 usage() {
@@ -64,6 +67,7 @@ Options:
   --core-version <tag>      Upgrade/install exact release tag (default: v1.19.30)
   --only-core               Upgrade core only (skip config/unit/mmdb deploy)
   --no-rollback             Disable automatic rollback on upgrade failure
+  --confirm                 Confirm the approved host and SSH fingerprint before mutating it
   -h, --help                Show this help
 
 Notes:
@@ -93,6 +97,9 @@ while [[ $# -gt 0 ]]; do
     --no-rollback)
       NO_ROLLBACK=1
       ;;
+    --confirm)
+      CONFIRM_APPLY=1
+      ;;
     -h|--help)
       usage
       exit 0
@@ -111,9 +118,11 @@ if [[ "$ONLY_CORE" == "1" && "$UPGRADE_CORE" != "1" ]]; then
   exit 1
 fi
 
+mihomo_require_apply_confirmation "$HOST" "$SSH_USER" "$CONFIRM_APPLY" "deploy_microserver"
+
 TS="$(date +%Y%m%d-%H%M%S)"
 TMPDIR_LOCAL="$(mktemp -d)"
-cleanup() { rm -rf "$TMPDIR_LOCAL"; }
+cleanup() { rm -rf "$TMPDIR_LOCAL"; mihomo_cleanup_known_hosts; }
 trap cleanup EXIT
 
 PATCHED_CFG_LOCAL="$TMPDIR_LOCAL/mihomo.config.patched.$TS.yaml"
@@ -325,16 +334,16 @@ if [[ ! -f "$CORE_UPDATER_LOCAL" || ! -f "$VERGE_API_LOCAL" ]]; then
   echo "  - $VERGE_API_LOCAL" >&2
   exit 1
 fi
-scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
   "$CORE_UPDATER_LOCAL" "$SSH_USER@$HOST:$TMP_CORE_UPDATER" >/dev/null
-scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
   "$VERGE_API_LOCAL" "$SSH_USER@$HOST:$TMP_VERGE_API" >/dev/null
 
 if [[ "$ONLY_CORE" != "1" ]]; then
-  scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
     "$PATCHED_CFG_LOCAL" "$SSH_USER@$HOST:$TMP_CFG" >/dev/null
 
-  scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
     "$UNIT_LOCAL" "$SSH_USER@$HOST:$TMP_UNIT" >/dev/null
 
   if [[ ! -f "$VERGE_API_LOCAL" || ! -f "$VERGE_API_UNIT_LOCAL" || ! -f "$RUNTIME_CONTRACT_LOCAL" ]]; then
@@ -352,22 +361,22 @@ if [[ "$ONLY_CORE" != "1" ]]; then
     exit 1
   fi
 
-  scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
     "$VERGE_API_UNIT_LOCAL" "$SSH_USER@$HOST:$TMP_VERGE_API_UNIT" >/dev/null
-  scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
     "$RESOLVED_SYNC_LOCAL" "$SSH_USER@$HOST:$TMP_RESOLVED_SYNC" >/dev/null
-  scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
     "$RESOLVED_SYNC_UNIT_LOCAL" "$SSH_USER@$HOST:$TMP_RESOLVED_SYNC_UNIT" >/dev/null
-  scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
     "$RUNTIME_CONTRACT_LOCAL" "$SSH_USER@$HOST:$TMP_RUNTIME_CONTRACT" >/dev/null
   printf '%s\n' "$VERGE_API_SECRET_EFFECTIVE" | \
-    ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+    ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
       "$SSH_USER@$HOST" "cat > '$TMP_VERGE_SECRET'"
 
   # Optional: sync Country.mmdb if present locally.
   if [[ -f "$MMDB_LOCAL" ]]; then
     echo "Uploading Country.mmdb ..."
-    scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
       "$MMDB_LOCAL" "$SSH_USER@$HOST:/tmp/Country.mmdb.$TS" >/dev/null
   else
     echo "NOTE: $MMDB_LOCAL not found; skipping Country.mmdb upload." >&2
@@ -376,9 +385,9 @@ if [[ "$ONLY_CORE" != "1" ]]; then
   # Optional: install the DNS change safety tool (no execution by default).
   if [[ "$INSTALL_NET_SAFE_APPLY" == "1" && -f "$ROOT/infra/microserver/lzc-net-safe-apply" ]]; then
     echo "Installing lzc-net-safe-apply ..."
-    scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
       "$ROOT/infra/microserver/lzc-net-safe-apply" "$SSH_USER@$HOST:/tmp/lzc-net-safe-apply.$TS" >/dev/null
-    ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+    ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
       "$SSH_USER@$HOST" \
       TS="$TS" \
       bash -s <<'NETSAFE'
@@ -399,14 +408,14 @@ if [[ "$CONTAINER_PROXY_ENABLE" == "1" && "$ONLY_CORE" != "1" ]]; then
   fi
 
   echo "Uploading mihomo-container-proxy units ..."
-  scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
     "$CONTAINER_PROXY_SOCKET_LOCAL" "$SSH_USER@$HOST:$TMP_CONTAINER_PROXY_SOCKET" >/dev/null
-  scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
     "$CONTAINER_PROXY_SERVICE_LOCAL" "$SSH_USER@$HOST:$TMP_CONTAINER_PROXY_SERVICE" >/dev/null
 fi
 
 echo "Applying on microserver ..."
-ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+    ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
   "$SSH_USER@$HOST" \
   TS="$TS" \
   TMP_CFG="$TMP_CFG" \
@@ -459,24 +468,275 @@ prev_version=""
 new_version=""
 core_attempted=0
 core_changed=0
+mutation_started=0
 
 command -v curl >/dev/null 2>&1 || { echo "ERROR: curl not found on microserver" >&2; exit 1; }
 command -v gzip >/dev/null 2>&1 || { echo "ERROR: gzip not found on microserver" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 not found on microserver" >&2; exit 1; }
 
-install -d -o root -g root -m 755 "$rollback_dir"
-install -d -o root -g root -m 755 "$(dirname "$core_updater")"
-install -o root -g root -m 755 "$TMP_CORE_UPDATER" "$core_updater"
-if [[ -f "$verge_api_bin" ]]; then
-  verge_api_backup="$rollback_dir/mihomo-verge-api.${TS}.bak"
-  cp -a "$verge_api_bin" "$verge_api_backup"
-  chmod 700 "$verge_api_backup"
-fi
-install -o root -g root -m 755 "$TMP_VERGE_API" "$verge_api_bin"
-rm -f "$TMP_CORE_UPDATER" "$TMP_VERGE_API"
+install -d -o root -g root -m 755 /run/lock
+exec 9>/run/lock/clash-verge-deploy.lock
+flock -n 9 || { echo "ERROR: another Clash-Verge deployment is active" >&2; exit 1; }
 
-touch "$log_file"
-chmod 600 "$log_file" || true
+assert_no_symlink_components() {
+  python3 - "$@" <<'PY'
+import stat
+import sys
+from pathlib import Path
+
+for raw in sys.argv[1:]:
+    path = Path(raw)
+    if not path.is_absolute():
+        raise SystemExit(f"unsafe non-absolute path: {path}")
+    current = Path(path.anchor)
+    for component in path.parts[1:]:
+        current /= component
+        try:
+            mode = current.lstat().st_mode
+        except FileNotFoundError:
+            break
+        if stat.S_ISLNK(mode):
+            raise SystemExit(f"refusing symlink path component: {current}")
+PY
+}
+
+snapshot_dir="$rollback_dir/full-deploy-${TS}"
+assert_no_symlink_components "$rollback_dir" "$snapshot_dir"
+install -d -o root -g root -m 700 "$rollback_dir"
+if [[ -e "$snapshot_dir" || -L "$snapshot_dir" ]]; then
+  echo "ERROR: snapshot path already exists; refusing to mix deployments" >&2
+  exit 1
+fi
+install -d -o root -g root -m 700 "$snapshot_dir"
+snapshot_manifest="$snapshot_dir/manifest.tsv"
+snapshot_service_state="$snapshot_dir/service-state.tsv"
+: > "$snapshot_manifest"
+: > "$snapshot_service_state"
+
+snapshot_target() {
+  local path="$1" index backup type size digest archive_digest mode uid gid
+  assert_no_symlink_components "$path"
+  index=$((snapshot_index + 1))
+  snapshot_index="$index"
+  backup="target-${index}"
+  if [[ ! -e "$path" ]]; then
+    printf '%s\tmissing\t-\t0\t-\t-\t-\t-\t-\t-\n' "$path" >> "$snapshot_manifest"
+    return 0
+  fi
+  [[ ! -L "$path" ]] || return 1
+  mode="$(stat -c '%a' -- "$path")"
+  uid="$(stat -c '%u' -- "$path")"
+  gid="$(stat -c '%g' -- "$path")"
+  if [[ -f "$path" ]]; then
+    type=file
+    size="$(stat -c '%s' -- "$path")"
+    cp -a -- "$path" "$snapshot_dir/$backup"
+  elif [[ -d "$path" ]]; then
+    type=directory
+    size=0
+    digest="$(tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+      -cf - -C / "${path#/}" | sha256sum | awk '{print $1}')"
+    tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+      -czf "$snapshot_dir/$backup.tar.gz" -C / "${path#/}"
+    backup="$backup.tar.gz"
+  else
+    echo "ERROR: unsupported snapshot target type: $path" >&2
+    return 1
+  fi
+  if [[ "$type" == file ]]; then
+    digest="$(sha256sum -- "$path" | awk '{print $1}')"
+  fi
+  archive_digest="$(sha256sum -- "$snapshot_dir/$backup" | awk '{print $1}')"
+  [[ "$archive_digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s\tpresent\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$path" "$type" "$size" "$digest" "$backup" "$archive_digest" "$mode" "$uid" "$gid" \
+    >> "$snapshot_manifest"
+}
+
+snapshot_index=0
+snapshot_targets=(
+  "$cfg" "$unit" "$container_proxy_socket" "$container_proxy_service"
+  "$verge_api_service" "$verge_api_secret" "$verge_api_bin"
+  "$resolved_sync_service" "$resolved_sync_bin" "$resolved_sync_dropin_dir"
+  "$runtime_contract" "/var/lib/mihomo/Country.mmdb" "/var/lib/mihomo/verge"
+)
+for snapshot_path in "${snapshot_targets[@]}"; do
+  snapshot_target "$snapshot_path"
+done
+snapshot_services=(mihomo.service mihomo-verge-api.service mihomo-container-proxy.socket mihomo-resolved-sync.service)
+for snapshot_service in "${snapshot_services[@]}"; do
+  service_exists=0
+  if systemctl cat "$snapshot_service" >/dev/null 2>&1 ||
+     systemctl list-unit-files --no-legend "$snapshot_service" 2>/dev/null |
+       awk -v unit="$snapshot_service" '$1 == unit {found = 1} END {exit !found}'; then
+    service_exists=1
+  fi
+  if [[ "$service_exists" == "1" ]]; then
+    snapshot_active="$(systemctl is-active "$snapshot_service" 2>/dev/null || true)"
+    snapshot_enabled="$(systemctl is-enabled "$snapshot_service" 2>/dev/null || true)"
+    # Failed/unknown states cannot be recreated deterministically. Refuse the
+    # deployment before any target mutation rather than claiming a rollback.
+    case "$snapshot_active" in active|inactive) ;; *) exit 1 ;; esac
+    case "$snapshot_enabled" in enabled|disabled|static|masked) ;; *) exit 1 ;; esac
+    printf '%s\t%s\t%s\n' "$snapshot_service" "$snapshot_active" "$snapshot_enabled" >> "$snapshot_service_state"
+  else
+    printf '%s\tabsent\tabsent\n' "$snapshot_service" >> "$snapshot_service_state"
+  fi
+done
+sha256sum -- "$snapshot_manifest" > "$snapshot_dir/manifest.sha256"
+sha256sum -- "$snapshot_service_state" > "$snapshot_dir/service-state.sha256"
+
+snapshot_target_digest() {
+  local path="$1"
+  if [[ -f "$path" ]]; then
+    sha256sum -- "$path" | awk '{print $1}'
+  elif [[ -d "$path" ]]; then
+    tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+      -cf - -C / "${path#/}" | sha256sum | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+verify_snapshot() {
+  local path state type size digest backup archive_digest mode uid gid actual
+  local snapshot_service snapshot_active snapshot_enabled
+  [[ -f "$snapshot_manifest" && -f "$snapshot_dir/manifest.sha256" &&
+     -f "$snapshot_service_state" && -f "$snapshot_dir/service-state.sha256" ]] || return 1
+  sha256sum -c "$snapshot_dir/manifest.sha256" >/dev/null || return 1
+  sha256sum -c "$snapshot_dir/service-state.sha256" >/dev/null || return 1
+  while IFS=$'\t' read -r snapshot_service snapshot_active snapshot_enabled; do
+    [[ -n "$snapshot_service" ]] || continue
+    case "$snapshot_service" in
+      mihomo.service|mihomo-verge-api.service|mihomo-container-proxy.socket|mihomo-resolved-sync.service) ;;
+      *) return 1 ;;
+    esac
+    if [[ "$snapshot_active" == absent ]]; then
+      [[ "$snapshot_enabled" == absent ]] || return 1
+    else
+      case "$snapshot_active" in active|inactive) ;; *) return 1 ;; esac
+      case "$snapshot_enabled" in enabled|disabled|static|masked) ;; *) return 1 ;; esac
+    fi
+  done < "$snapshot_service_state"
+  while IFS=$'\t' read -r path state type size digest backup archive_digest mode uid gid; do
+    [[ "$path" == "$cfg" || "$path" == "$unit" || "$path" == "$container_proxy_socket" ||
+       "$path" == "$container_proxy_service" || "$path" == "$verge_api_service" ||
+       "$path" == "$verge_api_secret" || "$path" == "$verge_api_bin" ||
+       "$path" == "$resolved_sync_service" || "$path" == "$resolved_sync_bin" ||
+       "$path" == "$resolved_sync_dropin_dir" || "$path" == "$runtime_contract" ||
+       "$path" == /var/lib/mihomo/Country.mmdb || "$path" == /var/lib/mihomo/verge ]] || return 1
+    assert_no_symlink_components "$path"
+   if [[ "$state" == present ]]; then
+      [[ "$type" == file || "$type" == directory ]] || return 1
+      [[ "$backup" =~ ^target-[0-9]+(\.tar\.gz)?$ && "$digest" =~ ^[0-9a-f]{64}$ &&
+         "$archive_digest" =~ ^[0-9a-f]{64}$ && "$mode" =~ ^[0-7]{1,4}$ &&
+         "$uid" =~ ^[0-9]+$ && "$gid" =~ ^[0-9]+$ ]] || return 1
+     [[ -e "$snapshot_dir/$backup" && ! -L "$snapshot_dir/$backup" ]] || return 1
+      actual="$(sha256sum -- "$snapshot_dir/$backup" | awk '{print $1}')"
+      [[ "$actual" == "$archive_digest" ]] || return 1
+      if [[ "$type" == file ]]; then
+        [[ "$size" =~ ^[0-9]+$ && ! "$backup" =~ \.tar\.gz$ && "$actual" == "$digest" ]] || return 1
+      else
+        [[ "$size" =~ ^[0-9]+$ && "$backup" =~ \.tar\.gz$ ]] || return 1
+        tar -tzf "$snapshot_dir/$backup" >/dev/null || return 1
+      fi
+    elif [[ "$state" != missing || "$type" != - || "$size" != 0 || "$digest" != - ||
+             "$backup" != - || "$archive_digest" != - || "$mode" != - || "$uid" != - || "$gid" != - ]]; then
+     return 1
+   fi
+  done < "$snapshot_manifest"
+}
+
+restore_full_snapshot() {
+  local unknown_marker="$snapshot_dir/UNKNOWN"
+  local path state type size digest backup archive_digest mode uid gid
+  local snapshot_service snapshot_active snapshot_enabled actual_active actual_enabled load_state unit_file_count
+  verify_snapshot || return 1
+  printf 'rollback_status=UNKNOWN\n' > "$unknown_marker"
+  while IFS=$'\t' read -r path state type size digest backup archive_digest mode uid gid; do
+    assert_no_symlink_components "$path"
+    if [[ "$state" == present ]]; then
+      if [[ "$type" == file ]]; then
+        install -d -o root -g root -m 755 "$(dirname "$path")"
+        install -o "$uid" -g "$gid" -m "$mode" "$snapshot_dir/$backup" "$path"
+      elif [[ "$type" == directory ]]; then
+        rm -rf -- "$path"
+        install -d -o root -g root -m 755 "$(dirname "$path")"
+        tar -xzf "$snapshot_dir/$backup" -C /
+        chmod "$mode" "$path"
+        chown "$uid:$gid" "$path"
+      else
+        return 1
+      fi
+    else
+      rm -rf -- "$path"
+    fi
+  done < "$snapshot_manifest"
+  while IFS=$'\t' read -r snapshot_service snapshot_active snapshot_enabled; do
+    if [[ "$snapshot_active" == absent ]]; then
+      # A unit file can have been removed while systemd still keeps the unit
+      # loaded/running.  Stop and disable it before daemon-reload; otherwise a
+      # rollback that only removes the file leaves a newly-created service
+      # active while reporting success.
+      systemctl disable --now "$snapshot_service" >/dev/null 2>&1 || true
+      systemctl stop "$snapshot_service" >/dev/null 2>&1 || true
+    fi
+  done < "$snapshot_service_state"
+  systemctl daemon-reload
+  while IFS=$'\t' read -r snapshot_service snapshot_active snapshot_enabled; do
+    [[ "$snapshot_active" == absent ]] && continue
+    case "$snapshot_enabled" in
+      enabled) systemctl unmask "$snapshot_service" >/dev/null 2>&1 || true; systemctl enable "$snapshot_service" >/dev/null ;;
+      disabled) systemctl unmask "$snapshot_service" >/dev/null 2>&1 || true; systemctl disable "$snapshot_service" >/dev/null 2>&1 || true ;;
+      static) systemctl unmask "$snapshot_service" >/dev/null 2>&1 || true ;;
+      masked) systemctl mask "$snapshot_service" >/dev/null ;;
+      *) return 1 ;;
+    esac
+    case "$snapshot_active" in
+      active) systemctl start "$snapshot_service" >/dev/null ;;
+      inactive) systemctl stop "$snapshot_service" >/dev/null 2>&1 || true ;;
+      *) return 1 ;;
+    esac
+  done < "$snapshot_service_state"
+  while IFS=$'\t' read -r path state type size digest backup archive_digest mode uid gid; do
+    if [[ "$state" == present ]]; then
+      [[ -e "$path" && ! -L "$path" ]] || return 1
+      [[ "$(snapshot_target_digest "$path")" == "$digest" ]] || return 1
+      [[ "$(stat -c '%a' -- "$path")" == "$mode" &&
+         "$(stat -c '%u' -- "$path")" == "$uid" &&
+         "$(stat -c '%g' -- "$path")" == "$gid" ]] || return 1
+    else
+      [[ ! -e "$path" && ! -L "$path" ]] || return 1
+    fi
+  done < "$snapshot_manifest"
+  while IFS=$'\t' read -r snapshot_service snapshot_active snapshot_enabled; do
+    if [[ "$snapshot_active" == absent ]]; then
+      actual_active="$(systemctl is-active "$snapshot_service" 2>/dev/null || true)"
+      actual_enabled="$(systemctl is-enabled "$snapshot_service" 2>/dev/null || true)"
+      load_state="$(systemctl show "$snapshot_service" --property=LoadState --value 2>/dev/null || true)"
+      unit_file_count="$(systemctl list-unit-files --no-legend "$snapshot_service" 2>/dev/null |
+        awk -v unit="$snapshot_service" '$1 == unit {count += 1} END {print count + 0}')"
+      case "$actual_active" in
+        active) return 1 ;;
+        inactive|failed|unknown) ;;
+        *) return 1 ;;
+      esac
+      [[ "$load_state" == not-found ]] || return 1
+      [[ "$actual_enabled" == not-found || -z "$actual_enabled" ]] || return 1
+      [[ "$unit_file_count" == 0 ]] || return 1
+      continue
+    fi
+    [[ "$(systemctl is-active "$snapshot_service" 2>/dev/null || true)" == "$snapshot_active" ]] || return 1
+    [[ "$(systemctl is-enabled "$snapshot_service" 2>/dev/null || true)" == "$snapshot_enabled" ]] || return 1
+  done < "$snapshot_service_state"
+  rm -f -- "$unknown_marker"
+  [[ ! -e "$unknown_marker" ]]
+}
+
+if [[ -f "$verge_api_bin" ]]; then
+  verge_api_backup="$snapshot_dir/target-7"
+  [[ -f "$verge_api_backup" ]] || verge_api_backup=""
+fi
 
 log() {
   local msg="$1"
@@ -625,14 +885,16 @@ rollback_core() {
     return
   fi
   log "Rolling back core through the shared updater."
-  python3 "$core_updater" rollback \
-    --target latest \
-    --binary "$mihomo_bin" \
-    --state-dir /var/lib/mihomo \
-    --config "$cfg" \
-    --service mihomo \
-    --controller-url http://172.18.0.1:9090 \
-    || log "ERROR: shared Mihomo core rollback failed"
+  if ! python3 "$core_updater" rollback \
+      --target latest \
+      --binary "$mihomo_bin" \
+      --state-dir /var/lib/mihomo \
+      --config "$cfg" \
+      --service mihomo \
+      --controller-url http://172.18.0.1:9090; then
+    log "ERROR: shared Mihomo core rollback failed"
+    return 1
+  fi
 }
 
 restore_verge_api_if_needed() {
@@ -647,19 +909,41 @@ restore_verge_api_if_needed() {
 err_handler() {
   local rc=$?
   local line="$1"
+  local rollback_failed=0
   trap - ERR
   log "ERROR at line $line (exit=$rc)."
   if [[ "$core_attempted" == "1" ]]; then
     if [[ "$core_changed" == "1" ]]; then
-      rollback_core
+      rollback_core || rollback_failed=1
     else
       log "Core was not switched before failure; keeping previous binary."
     fi
   fi
-  restore_verge_api_if_needed
+  if [[ "$ONLY_CORE" == "1" ]]; then
+    restore_verge_api_if_needed || rollback_failed=1
+  elif [[ "$mutation_started" == "1" ]]; then
+    if ! restore_full_snapshot; then
+      rollback_failed=1
+      log "ERROR: full deployment rollback failed; preserve $snapshot_dir/UNKNOWN and reconcile manually"
+    fi
+  fi
+  if [[ "$rollback_failed" == "1" ]]; then
+    log "ERROR: deployment failed with rollback status UNKNOWN"
+  fi
   exit "$rc"
 }
 trap 'err_handler "$LINENO"' ERR
+
+touch "$log_file"
+chmod 600 "$log_file" || true
+mutation_started=1
+install -d -o root -g root -m 755 "$(dirname "$core_updater")"
+install -o root -g root -m 755 "$TMP_CORE_UPDATER" "$core_updater"
+if [[ -n "$verge_api_backup" ]]; then
+  chmod 700 "$verge_api_backup"
+fi
+install -o root -g root -m 755 "$TMP_VERGE_API" "$verge_api_bin"
+rm -f "$TMP_CORE_UPDATER" "$TMP_VERGE_API"
 
 if [[ -x "$mihomo_bin" ]]; then
   prev_version="$(extract_version "$mihomo_bin" || true)"
@@ -707,15 +991,10 @@ if [[ "$ONLY_CORE" == "1" ]]; then
 fi
 
 if [[ "$ONLY_CORE" != "1" ]]; then
-  # Backups
-  if [[ -f "$cfg" ]]; then
-    bak_cfg="${cfg}.bak.${TS}"
-    cp -a "$cfg" "$bak_cfg"
-  fi
-  if [[ -f "$unit" ]]; then
-    bak_unit="${unit}.bak.${TS}"
-    cp -a "$unit" "$bak_unit"
-  fi
+  # The immutable snapshot was captured before any target write.  Keep its
+  # exact entries in the receipt instead of creating ad-hoc basename backups.
+  bak_cfg="$snapshot_dir/target-1"
+  bak_unit="$snapshot_dir/target-2"
 
   # Ensure directories exist
   id mihomo >/dev/null 2>&1 || useradd --system --home /var/lib/mihomo --shell /usr/sbin/nologin mihomo

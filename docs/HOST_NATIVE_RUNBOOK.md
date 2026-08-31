@@ -41,10 +41,10 @@
 ### 1. 重种宿主机基线
 
 ```bash
-MICROSERVER_HOST=<box>.heiyu.space \
+MICROSERVER_HOST=rainierdev.heiyu.space \
 MIHOMO_TUN_ENABLE=0 \
 MIHOMO_DNS_ENABLE=0 \
-bash scripts/deploy_microserver.sh
+bash scripts/deploy_microserver.sh --confirm
 ```
 
 用途：
@@ -58,10 +58,10 @@ bash scripts/deploy_microserver.sh
 ### 2. 安装或重装 dashboard
 
 ```bash
-MICROSERVER_HOST=<box>.heiyu.space \
-LAZYCAT_BOX=<boxname> \
-MIHOMO_DASHBOARD_URL=https://clash.<boxname>.heiyu.space \
-bash scripts/deploy_dashboard.sh
+MICROSERVER_HOST=rainierdev.heiyu.space \
+LAZYCAT_BOX=rainierserver \
+MIHOMO_DASHBOARD_URL=https://clash.rainierserver.heiyu.space \
+bash scripts/deploy_dashboard.sh --confirm
 ```
 
 ## Mihomo core-only 升级
@@ -74,7 +74,7 @@ core-only 路径不重写配置、systemd unit、TUN、DNS 或 container proxy�
 ```bash
 MICROSERVER_HOST=rainierdev.heiyu.space \
 MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 \
-bash scripts/deploy_microserver.sh \
+bash scripts/deploy_microserver.sh --confirm \
   --upgrade-core --only-core --core-version v1.19.30
 ```
 
@@ -85,7 +85,7 @@ bash scripts/deploy_microserver.sh \
 手动回滚：
 
 ```bash
-bash scripts/mihomo-manager rollback-core
+bash scripts/mihomo-manager rollback-core --confirm
 ```
 
 升级后至少检查：
@@ -105,14 +105,14 @@ bash scripts/selfcheck.sh
 
 ```bash
 MICROSERVER_HOST=rainierdev.heiyu.space \
-bash scripts/install_host_native_bootstrap.sh
+bash scripts/install_host_native_bootstrap.sh --confirm
 ```
 
 ### 生产机
 
 ```bash
 MICROSERVER_HOST=rainierspace.heiyu.space \
-bash scripts/install_host_native_bootstrap.sh
+bash scripts/install_host_native_bootstrap.sh --confirm
 ```
 
 这条路径当前已部署，但还没做真实 reboot 验证。
@@ -121,15 +121,10 @@ bash scripts/install_host_native_bootstrap.sh
 
 ### `rainierdev`
 
-先人工解锁磁盘，再验：
+先人工解锁磁盘，再运行受身份守卫的只读自检：
 
 ```bash
-ssh root@rainierdev.heiyu.space '
-  loginctl show-user root -p Linger -p State
-  systemctl --user is-active lzc-mihomo-bootstrap.service
-  systemctl is-active mihomo.service mihomo-verge-api.service mihomo-container-proxy.socket
-  ss -lntp | grep -E "(:7890|:9090|:9091|:17890)" || true
-'
+MICROSERVER_HOST=rainierdev.heiyu.space bash scripts/selfcheck.sh
 ```
 
 健康标准：
@@ -144,10 +139,7 @@ ssh root@rainierdev.heiyu.space '
 生产机先看宿主机运行链是否还在：
 
 ```bash
-ssh root@rainierspace.heiyu.space '
-  systemctl is-active mihomo.service mihomo-verge-api.service mihomo-container-proxy.socket
-  ss -lntp | grep -E "(:7890|:9090|:9091|:17890)" || true
-'
+MICROSERVER_HOST=rainierspace.heiyu.space bash scripts/selfcheck.sh
 ```
 
 如果失败，优先走“重种宿主机基线 + 重装 dashboard”，不要先做零散修补。
@@ -186,8 +178,9 @@ ssh root@rainierspace.heiyu.space '
 最保守的止血命令：
 
 ```bash
-MICROSERVER_HOST=<box>.heiyu.space \
-MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 bash scripts/deploy_microserver.sh
+MICROSERVER_HOST=rainierdev.heiyu.space \
+MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 \
+bash scripts/deploy_microserver.sh --confirm
 ```
 
 如果已经在宿主机上，且要立刻释放 TUN：

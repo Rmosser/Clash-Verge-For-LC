@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # shellcheck source=/dev/null
 . "$ROOT/scripts/_lib_paths.sh"
+. "$ROOT/scripts/_lib_deploy_settings.sh"
 
 # Optional local env override
 if [[ -f "$ROOT/.env" ]]; then
@@ -17,12 +18,27 @@ fi
 HOST="${MICROSERVER_HOST:-rainierserver.heiyu.space}"
 SSH_USER="${MICROSERVER_SSH_USER:-root}"
 SSH_KEY="${MICROSERVER_SSH_KEY:-$HOME/.ssh/id_ed25519}"
+CONFIRM_APPLY=0
 
 DROPIN_DIR="/etc/systemd/resolved.conf.d"
 DROPIN_FILE="$DROPIN_DIR/90-lzc-no-aaaa.conf"
 
+if [[ "${1:-}" == "--confirm" && "$#" -eq 1 ]]; then
+  CONFIRM_APPLY=1
+elif [[ "$#" -gt 0 ]]; then
+  echo "Usage: scripts/block_aaaa_resolved.sh [--confirm]" >&2
+  exit 2
+fi
+if [[ "$CONFIRM_APPLY" != "1" ]]; then
+  echo "Plan only: would write ${DROPIN_FILE} and restart systemd-resolved on ${SSH_USER}@${HOST}."
+  exit 0
+fi
+mihomo_require_apply_confirmation "$HOST" "$SSH_USER" "$CONFIRM_APPLY" "block_aaaa_resolved"
+
 ssh_remote() {
-  ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$SSH_USER@$HOST" "$@"
+  ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+    -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
+    "$SSH_USER@$HOST" "$@"
 }
 
 echo "Applying AAAA refusal via systemd-resolved drop-in on $SSH_USER@$HOST ..."

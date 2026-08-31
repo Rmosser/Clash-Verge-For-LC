@@ -23,11 +23,11 @@
 
 | 脚本 | 什么时候用 | 会改什么 |
 | --- | --- | --- |
-| `deploy_microserver.sh` | 部署或重种宿主机运行时 | 下发 `mihomo`、config、systemd units、Verge API、container proxy、可选 DNS 同步 |
-| `deploy_verge_api.sh` | 只更新 rainierdev Verge API/runtime contract | 成对备份、部署或恢复 API Python、unit metadata 和 runtime contract；不读取 `.env` 或 Mihomo secret |
-| `deploy_dashboard.sh` | 安装或重装懒猫 dashboard 应用 | 构建并安装 LPK，校验 `/api`、`/verge-api` 和 websocket 链路；`--clean-reset` 只清理当前 app/state |
+| `deploy_microserver.sh --confirm` | 部署或重种宿主机运行时 | 下发 `mihomo`、config、systemd units、Verge API、container proxy、可选 DNS 同步；必须显式确认并通过固定 host/key 守卫 |
+| `deploy_verge_api.sh --confirm` | 只更新 rainierdev Verge API/runtime contract | 成对备份、部署或恢复 API Python、unit metadata 和 runtime contract；不读取 `.env` 或 Mihomo secret，写入/回滚必须显式确认 |
+| `deploy_dashboard.sh --confirm` | 安装或重装懒猫 dashboard 应用 | 构建并安装 LPK，校验 `/api`、`/verge-api` 和 websocket 链路；`--clean-reset` 只清理当前 app/state，且确认后才运行 |
 | `build_dashboard_release.sh` | 只出可分发 LPK | 在 `output/release/<version>/` 生成版本化安装包 |
-| `install_host_native_bootstrap.sh` | 给 `rainierdev` / `rainierspace` 安装开机自举 | 采样当前 live host-native 部署并安装 root user-systemd bootstrap |
+| `install_host_native_bootstrap.sh --confirm` | 给 `rainierdev` / `rainierspace` 安装开机自举 | 采样当前 live host-native 部署并安装 root user-systemd bootstrap；必须显式确认并通过固定 host/key 守卫 |
 
 Mihomo core 更新默认固定为 `v1.19.30`。升级时使用
 `deploy_microserver.sh --upgrade-core --only-core --core-version <tag>`；
@@ -38,10 +38,10 @@ Mihomo core 更新默认固定为 `v1.19.30`。升级时使用
 
 | 脚本 | 什么时候用 | 输出或效果 |
 | --- | --- | --- |
-| `selfcheck.sh` | 想快速看宿主机链路是否健康 | 检查服务状态、controller、`/verge-api/public-config`、绕行探针 |
-| `mihomo-manager` | 需要远程 status/logs/reload/restart/rollback | 通过 SSH 包装常用运维动作 |
+| `selfcheck.sh` | 想快速看宿主机链路是否健康 | 检查服务状态、controller、`/verge-api/public-config`、绕行探针；只读身份预检失败即停止 |
+| `mihomo-manager` | 需要远程 status/logs/version 或受确认的变更 | status/logs/version 只读；reload/restart/update/upgrade/rollback/secret show 必须显式目标与 `--confirm` |
 | `patch_remote_mihomo_config.py` | 想补丁化远端 `config.yaml` | 保持 secret、TUN、DNS、rules patch 的一致写法 |
-| `cleanup_legacy_dashboard.sh` | 经人工盘点后一次性删除退役 dashboard app ID | 默认只打印精确目标；仅显式 `--execute` 删除旧 app 的路径/部署记录并逐项读回，不触及当前 app |
+| `cleanup_legacy_dashboard.sh` | 经人工盘点后一次性删除退役 dashboard app ID | 默认只打印精确目标；仅显式 `--execute --confirm` 在固定 `rainierserver` box 上执行，并先保存校验过的可恢复快照 |
 
 ## 可选或专项脚本
 
@@ -59,5 +59,7 @@ Mihomo core 更新默认固定为 `v1.19.30`。升级时使用
 ## 当前最重要的执行约束
 
 - host-native 脚本默认使用 `MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0`；生产命令仍显式传值，避免 `.env` 隐式改变意图
+- 所有会连接宿主机的命令都先用仓内 checked-in host→SSH fingerprint 映射准备临时 known_hosts；不要直接使用裸 `ssh`/`scp` 或手工 `MIHOMO_KNOWN_HOSTS_FILE`
+- 写入、删除、重启、安装、升级和回滚必须带脚本规定的 `--confirm`；只读 `selfcheck.sh`、`audit_proxy_egress.sh`、`mihomo-manager status/logs/version` 仍会执行只读身份预检
 - 改网络前先看 [../docs/LAZYCAT_NETWORK_REPORT.md](../docs/LAZYCAT_NETWORK_REPORT.md)
 - 重启恢复和机器差异看 [../docs/HOST_NATIVE_RUNBOOK.md](../docs/HOST_NATIVE_RUNBOOK.md)
