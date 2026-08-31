@@ -45,12 +45,15 @@ output/release/<version>/
 需要宿主机运行时：
 
 ```bash
-MICROSERVER_HOST=<box>.heiyu.space \
-MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 bash scripts/deploy_microserver.sh
+MICROSERVER_HOST=rainierdev.heiyu.space \
+MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 \
+bash scripts/deploy_microserver.sh --confirm
 ```
 
 需要把 dashboard 直接装到当前 `lzc-cli` 选中的盒子：
 
 ```bash
-bash scripts/deploy_dashboard.sh
+MICROSERVER_HOST=rainierdev.heiyu.space \
+LAZYCAT_BOX=rainierserver \
+bash scripts/deploy_dashboard.sh --confirm
 ```

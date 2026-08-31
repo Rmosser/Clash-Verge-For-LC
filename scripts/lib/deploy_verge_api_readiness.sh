@@ -11,6 +11,11 @@ set -Eeuo pipefail
 : "${REMOTE_CONTRACT:?}"
 : "${REMOTE_ROLLBACK_ROOT:?}"
 
+# This helper is uploaded by a repository-owned wrapper, but its environment
+# is still untrusted at the shell boundary.  Keep the write surface fixed even
+# when somebody invokes the uploaded helper directly.
+[[ "$REMOTE_ROLLBACK_ROOT" == /* ]] || exit 2
+
 READINESS_TIMEOUT_SECONDS="${READINESS_TIMEOUT_SECONDS:-30}"
 READINESS_POLL_INTERVAL_SECONDS="${READINESS_POLL_INTERVAL_SECONDS:-1}"
 MIHOMO_BIN="${MIHOMO_BIN:-/usr/local/bin/mihomo}"
@@ -52,6 +57,138 @@ readiness_failure=""
 restore_failure=""
 restore_health=0
 runtime_probe=""
+if [[ -d /run ]]; then
+  readonly DEPLOY_LOCK_PATH=/run/lock/clash-verge-deploy.lock
+else
+  # The offline contract tests run on macOS, where /run is absent.  The real
+  # Linux target always takes the fixed /run/lock path above.
+  readonly DEPLOY_LOCK_PATH=/tmp/clash-verge-deploy.lock
+fi
+
+assert_no_symlink_components() {
+  python3 - "$@" <<'PY'
+import stat
+import sys
+from pathlib import Path
+
+for raw in sys.argv[1:]:
+    path = Path(raw)
+    if not path.is_absolute():
+        raise SystemExit(f"unsafe non-absolute path: {path}")
+    current = Path(path.anchor)
+    for component in path.parts[1:]:
+        current /= component
+        try:
+            mode = current.lstat().st_mode
+        except FileNotFoundError:
+            break
+        except OSError as exc:
+            raise SystemExit(f"cannot inspect path {current}: {exc}") from exc
+        if stat.S_ISLNK(mode):
+            target = current.readlink()
+            if (str(current), str(target)) not in {
+                ("/var", "private/var"),
+                ("/tmp", "private/tmp"),
+                ("/var", "/private/var"),
+                ("/tmp", "/private/tmp"),
+            }:
+                raise SystemExit(f"refusing symlink path component: {current}")
+PY
+}
+
+assert_no_symlink_components "$REMOTE_ROLLBACK_ROOT" "$REMOTE_API" "$REMOTE_UNIT" "$REMOTE_CONTRACT"
+
+capture_api_service_state() {
+  local active enabled
+  active="$(systemctl is-active mihomo-verge-api.service 2>/dev/null || true)"
+  enabled="$(systemctl is-enabled mihomo-verge-api.service 2>/dev/null || true)"
+  case "$active" in active|inactive|failed|unknown) ;; *) return 1 ;; esac
+  case "$enabled" in enabled|disabled|static|masked|unknown) ;; *) return 1 ;; esac
+  printf '%s\t%s\n' "$active" "$enabled"
+}
+
+restore_api_service_state() {
+  local active enabled
+  IFS=$'\t' read -r active enabled < "$1"
+  case "$enabled" in
+    enabled) systemctl enable mihomo-verge-api.service >/dev/null ;;
+    disabled) systemctl disable mihomo-verge-api.service >/dev/null 2>&1 || true ;;
+    static|unknown) : ;;
+    masked) systemctl mask mihomo-verge-api.service >/dev/null ;;
+    *) return 1 ;;
+  esac
+  case "$active" in
+    active) systemctl start mihomo-verge-api.service >/dev/null ;;
+    inactive|failed|unknown) systemctl stop mihomo-verge-api.service >/dev/null 2>&1 || true ;;
+    *) return 1 ;;
+  esac
+  [[ "$(systemctl is-active mihomo-verge-api.service 2>/dev/null || true)" == "$active" &&
+     "$(systemctl is-enabled mihomo-verge-api.service 2>/dev/null || true)" == "$enabled" ]]
+}
+
+file_size() {
+  local path="$1"
+  local size
+  if size="$(stat -c '%s' -- "$path" 2>/dev/null)"; then
+    printf '%s\n' "$size"
+    return 0
+  fi
+  if size="$(stat -f '%z' -- "$path" 2>/dev/null)"; then
+    printf '%s\n' "$size"
+    return 0
+  fi
+  return 1
+}
+
+write_backup_manifest() {
+  local destination="$1"
+  local path name type size digest
+  : > "$destination/manifest.tsv"
+  for path in "$REMOTE_API" "$REMOTE_UNIT" "$REMOTE_CONTRACT"; do
+    [[ -f "$path" && ! -L "$path" ]] || return 1
+    name="${path##*/}"
+    type=regular
+    size="$(file_size "$path")"
+    digest="$(sha256sum -- "$path" | awk '{print $1}')"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$path" "$name" "$type" "$size" "$digest" \
+      >> "$destination/manifest.tsv"
+  done
+  sha256sum -- "$destination/manifest.tsv" > "$destination/manifest.sha256"
+  printf '%s\n' "$(capture_api_service_state)" > "$destination/service-state.tsv"
+  sha256sum -- "$destination/service-state.tsv" > "$destination/service-state.sha256"
+}
+
+verify_backup_manifest() {
+  local destination="$1"
+  [[ -d "$destination" && -f "$destination/manifest.tsv" &&
+     -f "$destination/manifest.sha256" && -f "$destination/service-state.tsv" &&
+     -f "$destination/service-state.sha256" ]] || return 1
+  sha256sum -c "$destination/manifest.sha256" >/dev/null || return 1
+  sha256sum -c "$destination/service-state.sha256" >/dev/null || return 1
+  local path name type size digest actual
+  while IFS=$'\t' read -r path name type size digest; do
+    [[ "$path" == "$REMOTE_API" || "$path" == "$REMOTE_UNIT" || "$path" == "$REMOTE_CONTRACT" ]] || return 1
+    [[ "$name" =~ ^(api\.py|unit|runtime-contract\.json)$ ]] || return 1
+    [[ "$type" == regular && "$size" =~ ^[0-9]+$ && "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+    [[ -f "$destination/$name" && ! -L "$destination/$name" ]] || return 1
+    [[ "$(file_size "$destination/$name")" == "$size" ]] || return 1
+    actual="$(sha256sum -- "$destination/$name" | awk '{print $1}')"
+    [[ "$actual" == "$digest" ]] || return 1
+  done < "$destination/manifest.tsv"
+  (( $(wc -l < "$destination/manifest.tsv") == 3 ))
+}
+
+verify_restored_manifest() {
+  local destination="$1"
+  local path name type size digest actual
+  while IFS=$'\t' read -r path name type size digest; do
+    [[ -f "$path" && ! -L "$path" ]] || return 1
+    [[ "$(file_size "$path")" == "$size" ]] || return 1
+    actual="$(sha256sum -- "$path" | awk '{print $1}')"
+    [[ "$actual" == "$digest" ]] || return 1
+  done < "$destination/manifest.tsv"
+  restore_api_service_state "$destination/service-state.tsv"
+}
 
 quiet_install() {
   "$INSTALL_BIN" "$@" >/dev/null 2>&1
@@ -256,13 +393,12 @@ restore_backup() {
   restore_failure=""
   restore_health=0
 
-  if [[ ! -d "$backup_dir" ||
-        ! -f "$backup_dir/api.py" ||
-        ! -f "$backup_dir/unit" ||
-        ! -f "$backup_dir/runtime-contract.json" ]]; then
+  if ! verify_backup_manifest "$backup_dir"; then
     restore_failure="backup_incomplete"
     return 20
   fi
+  local unknown_marker="$backup_dir/UNKNOWN"
+  printf 'rollback_status=UNKNOWN\n' > "$unknown_marker"
 
   quiet_install -o root -g root -m 755 "$backup_dir/api.py" "$REMOTE_API" || install_failed=1
   quiet_install -o root -g root -m 644 "$backup_dir/unit" "$REMOTE_UNIT" || install_failed=1
@@ -303,6 +439,15 @@ restore_backup() {
     restore_failure="${readiness_failure:-api_unstable}"
     return 28
   fi
+  if ! verify_restored_manifest "$backup_dir"; then
+    restore_failure="restore_readback_failed"
+    return 29
+  fi
+  rm -f -- "$unknown_marker"
+  [[ ! -e "$unknown_marker" ]] || {
+    restore_failure="unknown_marker_cleanup_failed"
+    return 30
+  }
 }
 
 report_candidate_failure() {
@@ -416,16 +561,31 @@ report_rollback_failure() {
 }
 
 run_rollback() {
+  install -d -m 755 "$(dirname "$DEPLOY_LOCK_PATH")"
+  exec 9>"$DEPLOY_LOCK_PATH"
+  flock -n 9 || {
+    printf 'ERROR: another Clash-Verge deployment is active\n' >&2
+    return 1
+  }
   [[ "$backup_id" =~ ^backup\.[A-Za-z0-9]{8}$ ]] || {
     printf 'ERROR: invalid opaque backup id\n' >&2
     return 2
   }
   backup_dir="$REMOTE_ROLLBACK_ROOT/$backup_id"
-  [[ -d "$backup_dir" && -f "$backup_dir/api.py" && -f "$backup_dir/unit" &&
-     -f "$backup_dir/runtime-contract.json" ]] || {
+  [[ "$backup_dir" == "$REMOTE_ROLLBACK_ROOT/$backup_id" ]] || {
+    printf 'ERROR: invalid rollback path\n' >&2
+    return 2
+  }
+  assert_no_symlink_components "$backup_dir" || {
+    printf 'ERROR: rollback path has symlink component\n' >&2
+    return 2
+  }
+  verify_backup_manifest "$backup_dir" || {
     printf 'ERROR: requested backup is incomplete\n' >&2
     return 1
   }
+  local unknown_marker="$backup_dir/UNKNOWN"
+  printf 'rollback_status=UNKNOWN\n' > "$unknown_marker"
   if ! capture_mihomo_state; then
     printf 'ERROR: rollback_failed reason=mihomo_baseline_unavailable stop=1\n' >&2
     return 3
@@ -459,6 +619,11 @@ run_rollback() {
   if ! verify_api_stable "$expected_nrestarts"; then
     report_rollback_failure "${readiness_failure:-api_unstable}" 1
   fi
+  if ! verify_restored_manifest "$backup_dir"; then
+    report_rollback_failure "restore_readback_failed" 1
+  fi
+  rm -f -- "$unknown_marker"
+  [[ ! -e "$unknown_marker" ]] || report_rollback_failure "unknown_marker_cleanup_failed" 1
   printf 'rollback_ok backup_id=%s api_pair_health=1 mihomo_unchanged=1\n' "$backup_id"
 }
 
@@ -469,6 +634,12 @@ run_deploy() {
   : "${EXPECTED_BUILD_ID:?}"
   : "${EXPECTED_GIT_COMMIT:?}"
 
+  install -d -m 755 "$(dirname "$DEPLOY_LOCK_PATH")"
+  exec 9>"$DEPLOY_LOCK_PATH"
+  flock -n 9 || {
+    printf 'ERROR: another Clash-Verge deployment is active\n' >&2
+    return 1
+  }
   if ! "$INSTALL_BIN" -d -o root -g root -m 700 "$REMOTE_ROLLBACK_ROOT" >/dev/null 2>&1; then
     printf 'ERROR: candidate_failed reason=rollback_root_unavailable api_pair_restored=0 stop=1\n' >&2
     return 1
@@ -480,7 +651,8 @@ run_deploy() {
   backup_id="${backup_dir##*/}"
   if ! quiet_install -o root -g root -m 755 "$REMOTE_API" "$backup_dir/api.py" ||
      ! quiet_install -o root -g root -m 644 "$REMOTE_UNIT" "$backup_dir/unit" ||
-     ! quiet_install -o root -g root -m 644 "$REMOTE_CONTRACT" "$backup_dir/runtime-contract.json"; then
+     ! quiet_install -o root -g root -m 644 "$REMOTE_CONTRACT" "$backup_dir/runtime-contract.json" ||
+     ! write_backup_manifest "$backup_dir"; then
     printf 'ERROR: candidate_failed reason=backup_capture_failed api_pair_restored=0 stop=1\n' >&2
     return 1
   fi

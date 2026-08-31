@@ -72,7 +72,7 @@
 
 ```bash
 MICROSERVER_HOST=<box>.heiyu.space \
-MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 bash scripts/deploy_microserver.sh
+MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 bash scripts/deploy_microserver.sh --confirm
 ```
 
 3. 你知道 `lzc-net-safe-apply` 的 DNS 自动回滚流程
@@ -112,7 +112,7 @@ MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 bash scripts/deploy_microserver.sh
 
 ```bash
 export LZC_NET_ROLLBACK_DNS="192.168.1.1 fe80::1"
-lzc-net-safe-apply apply-dns <iface> 223.5.5.5 119.29.29.29
+lzc-net-safe-apply apply-dns <iface> 223.5.5.5 119.29.29.29 --confirm
 ```
 
 外部验证通过后再确认：

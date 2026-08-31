@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # shellcheck source=/dev/null
 . "$ROOT/scripts/_lib_paths.sh"
+. "$ROOT/scripts/_lib_deploy_settings.sh"
 
 # Optional local env override
 if [[ -f "$ROOT/.env" ]]; then
@@ -17,9 +18,14 @@ fi
 HOST="${MICROSERVER_HOST:-rainierserver.heiyu.space}"
 SSH_USER="${MICROSERVER_SSH_USER:-root}"
 SSH_KEY="${MICROSERVER_SSH_KEY:-$HOME/.ssh/id_ed25519}"
+readonly REVIEWED_CONTROLLER_URL="http://172.18.0.1:9090"
+if [[ -n "${MIHOMO_CONTROLLER_URL:-}" && "$MIHOMO_CONTROLLER_URL" != "$REVIEWED_CONTROLLER_URL" ]]; then
+  echo "ERROR: MIHOMO_CONTROLLER_URL is not configurable; refusing an unreviewed credential destination" >&2
+  exit 2
+fi
+CONTROLLER_URL="$REVIEWED_CONTROLLER_URL"
 
 SECRET_LOCAL_FILE="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_SECRET_FILE_LOCAL:-var/private/mihomo.secret}")"
-CONTROLLER_URL="${MIHOMO_CONTROLLER_URL:-http://172.18.0.1:9090}"
 
 usage() {
   cat <<'EOF_USAGE'
@@ -29,33 +35,69 @@ Commands:
   status                    Show service/container status
   logs [-f]                 Show logs (add -f to follow)
   config-test               Validate /etc/mihomo/config.yaml (remote)
-  reload                    PUT /configs?force=true
-  restart-core              POST /restart
-  update-geo                POST /upgrade/geo
+  reload --confirm          PUT /configs?force=true
+  restart-core --confirm    POST /restart
+  update-geo --confirm      POST /upgrade/geo
   version                   GET /version
-  secret show               Print controller secret (local file or remote /etc/mihomo/config.yaml)
-  upgrade-core [version]    One-click core upgrade (default: v1.19.30)
-  rollback-core [target]    Rollback core from backup (default: latest)
+  secret show --confirm-secret
+                            Print controller secret (explicit disclosure confirmation required)
+  upgrade-core [version] --confirm
+                            One-click core upgrade (default: v1.19.30)
+  rollback-core [target] --confirm
+                            Rollback core from backup (default: latest)
                             target=latest or full backup path
 
 Env (optional, see .env.example):
   MICROSERVER_HOST, MICROSERVER_SSH_USER, MICROSERVER_SSH_KEY
   MIHOMO_CONTROLLER_URL (default: http://172.18.0.1:9090)
   MIHOMO_SECRET or MIHOMO_SECRET_FILE_LOCAL
+  Host keys are checked against the repository-reviewed host map; callers
+  cannot override the accepted fingerprint.
 EOF_USAGE
 }
 
 cmd="${1:-}"
 shift || true
 
+CONFIRM_APPLY=0
+CONFIRM_SECRET=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --confirm) CONFIRM_APPLY=1; shift ;;
+    --confirm-secret) CONFIRM_SECRET=1; shift ;;
+    *) break ;;
+  esac
+done
+
 if [[ -z "$cmd" || "$cmd" == "help" || "$cmd" == "--help" || "$cmd" == "-h" ]]; then
   usage
   exit 0
 fi
 
+# All manager commands, including status/logs/version, use a fresh reviewed
+# host-key file.  Never honor a manually supplied MIHOMO_KNOWN_HOSTS_FILE.
+mihomo_prepare_readonly_identity "$HOST" "$SSH_USER"
+
 ssh_remote() {
-  ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$SSH_USER@$HOST" "$@"
+  ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+    -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
+    "$SSH_USER@$HOST" "$@"
 }
+
+mihomo_validate_target_host "$HOST"
+
+case "$cmd" in
+  reload|restart-core|update-geo|upgrade-core|rollback-core)
+    mihomo_require_apply_confirmation "$HOST" "$SSH_USER" "$CONFIRM_APPLY" "mihomo-manager $cmd"
+    ;;
+  secret)
+    [[ "${1:-}" == "show" && "$CONFIRM_SECRET" == "1" ]] || {
+      echo "ERROR: secret show requires --confirm-secret and is never printed by default." >&2
+      exit 2
+    }
+    mihomo_require_apply_confirmation "$HOST" "$SSH_USER" "1" "mihomo-manager secret disclosure"
+    ;;
+esac
 
 detect_mode() {
   if ssh_remote "systemctl list-unit-files --no-pager 2>/dev/null | awk '{print \$1}' | grep -qx mihomo.service"; then
@@ -198,7 +240,7 @@ REMOTE
       show)
         secret="$(get_secret_preferred)"
         if [[ -z "$secret" ]]; then
-          echo "ERROR: secret not found (set MIHOMO_SECRET or create $SECRET_LOCAL_FILE)" >&2
+        echo "ERROR: secret not found (set MIHOMO_SECRET or create $SECRET_LOCAL_FILE)" >&2
           exit 1
         fi
         echo "$secret"
@@ -212,7 +254,7 @@ REMOTE
 
   upgrade-core)
     version="${1:-${MIHOMO_VERSION:-v1.19.30}}"
-    "$ROOT/scripts/deploy_microserver.sh" --upgrade-core --only-core --core-version "$version"
+    "$ROOT/scripts/deploy_microserver.sh" --upgrade-core --only-core --core-version "$version" --confirm
     ;;
 
   rollback-core)

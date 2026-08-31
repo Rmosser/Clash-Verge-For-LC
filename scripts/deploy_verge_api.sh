@@ -23,10 +23,11 @@ REMOTE_ROLLBACK_ROOT="/var/lib/mihomo/rollback/clash-verge-webport"
 
 ACTION="deploy"
 ROLLBACK_ID=""
+CONFIRM_APPLY=0
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/deploy_verge_api.sh [--rollback <opaque-backup-id>]
+Usage: scripts/deploy_verge_api.sh [--rollback <opaque-backup-id>] --confirm
 
 Deploys or restores the Verge API/runtime-contract pair on rainierdev only.
 The script never reads .env, Mihomo config, subscriptions, nodes, or secrets.
@@ -35,6 +36,8 @@ Environment overrides:
   MICROSERVER_HOST       must remain rainierdev.heiyu.space
   MICROSERVER_SSH_USER   defaults to root
   MICROSERVER_SSH_KEY    defaults to ~/.ssh/id_ed25519
+  The repository-reviewed host map supplies the SHA256 fingerprint; it is not
+  caller configurable.
 USAGE
 }
 
@@ -45,6 +48,10 @@ while [[ $# -gt 0 ]]; do
       ACTION="rollback"
       ROLLBACK_ID="$2"
       shift 2
+      ;;
+    --confirm)
+      CONFIRM_APPLY=1
+      shift
       ;;
     -h|--help)
       usage
@@ -73,10 +80,17 @@ command -v scp >/dev/null 2>&1 || { echo "ERROR: scp is required" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 is required" >&2; exit 1; }
 [[ -f "$REMOTE_HELPER" ]] || { echo "ERROR: missing Verge API deployment helper" >&2; exit 1; }
 
+# Do this before uploading files or invoking the remote helper.  Rollback is a
+# mutation too, so it uses the same explicit target/identity gate.
+source "$ROOT/scripts/_lib_deploy_settings.sh"
+MIHOMO_APPROVED_HOST="$TARGET_HOST"
+mihomo_require_apply_confirmation "$HOST" "$SSH_USER" "$CONFIRM_APPLY" "deploy_verge_api"
+
 ssh_args=(
   -i "$SSH_KEY"
   -o BatchMode=yes
-  -o StrictHostKeyChecking=accept-new
+  -o StrictHostKeyChecking=yes
+  -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}"
 )
 
 if [[ "$ACTION" == "rollback" ]]; then

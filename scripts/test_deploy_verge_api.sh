@@ -62,6 +62,27 @@ case "$command_name" in
   is-active)
     [[ "$unit" == mihomo-verge-api.service ]] || exit 1
     [[ "$(<"$state/api_state")" == active ]]
+    cat "$state/api_state"
+    ;;
+  is-enabled)
+    [[ "$unit" == mihomo-verge-api.service ]] || exit 1
+    cat "$state/api_enabled"
+    ;;
+  enable)
+    [[ "$unit" == mihomo-verge-api.service ]] || exit 1
+    printf '%s\n' enabled >"$state/api_enabled"
+    ;;
+  disable)
+    [[ "$unit" == mihomo-verge-api.service ]] || exit 1
+    printf '%s\n' disabled >"$state/api_enabled"
+    ;;
+  start)
+    [[ "$unit" == mihomo-verge-api.service ]] || exit 1
+    printf '%s\n' active >"$state/api_state"
+    ;;
+  stop)
+    [[ "$unit" == mihomo-verge-api.service ]] || exit 1
+    printf '%s\n' inactive >"$state/api_state"
     ;;
   daemon-reload)
     printf '%s\n' daemon-reload >>"$state/systemctl.log"
@@ -94,6 +115,18 @@ case "$command_name" in
     ;;
 esac
 FAKE_SYSTEMCTL
+
+# The helper runs on the Linux target where util-linux flock is present, but
+# this fixture is also executed on macOS.  Keep the lock boundary in the
+# helper while providing a no-op command shim for the isolated fake transport;
+# no real deployment filesystem is touched by these tests.
+cat >"$FAKE_BIN/flock" <<'FAKE_FLOCK'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+[[ "${1:-}" == -n ]] || exit 2
+[[ "${2:-}" =~ ^[0-9]+$ ]] || exit 2
+exit 0
+FAKE_FLOCK
 
 cat >"$FAKE_BIN/ss" <<'FAKE_SS'
 #!/usr/bin/env bash
@@ -259,6 +292,7 @@ write_fixture() {
   printf '%s\n' 100 >"$state/mihomo_timestamp"
   printf '%s\n' 'Mihomo v1.19.30-test' >"$state/mihomo_version"
   printf '%s\n' active >"$state/api_state"
+  printf '%s\n' enabled >"$state/api_enabled"
   printf '%s\n' 0 >"$state/api_nrestarts"
   printf '%s\n' 0 >"$state/api_restart_calls"
   printf '%s\n' 0 >"$state/ss_attempts"
@@ -269,6 +303,28 @@ write_fixture() {
   printf '%s\n' 'print("candidate")' >"$case_root/candidate/api.py"
   printf '%s\n' candidate-unit >"$case_root/candidate/unit"
   printf '%s\n' '{"appVersion":"2.5.2-webport.0","apiSchemaVersion":"2026.08-lzc-v2","uiSchemaVersion":"2026.08-lzc-v2","packageFingerprint":"cloud.lazycat.app.clash-verge-for-lc/2.5.2-webport.0","buildId":"test-build","gitCommit":"0123456789012345678901234567890123456789","capabilities":{"systemProxy":{"mode":"disabled"}}}' >"$case_root/candidate/runtime-contract.json"
+}
+
+populate_backup() {
+  local case_root="$1"
+  local backup_id="$2"
+  local backup_dir="$case_root/state/backups/$backup_id"
+  mkdir -p "$backup_dir"
+  cp "$case_root/remote/api.py" "$backup_dir/api.py"
+  cp "$case_root/remote/unit" "$backup_dir/unit"
+  cp "$case_root/remote/runtime-contract.json" "$backup_dir/runtime-contract.json"
+  printf '%s\tapi.py\tregular\t%s\t%s\n' \
+    "$case_root/remote/api.py" "$(stat -c '%s' -- "$backup_dir/api.py" 2>/dev/null || stat -f '%z' -- "$backup_dir/api.py")" \
+    "$(shasum -a 256 "$backup_dir/api.py" | awk '{print $1}')" > "$backup_dir/manifest.tsv"
+  printf '%s\tunit\tregular\t%s\t%s\n' \
+    "$case_root/remote/unit" "$(stat -c '%s' -- "$backup_dir/unit" 2>/dev/null || stat -f '%z' -- "$backup_dir/unit")" \
+    "$(shasum -a 256 "$backup_dir/unit" | awk '{print $1}')" >> "$backup_dir/manifest.tsv"
+  printf '%s\truntime-contract.json\tregular\t%s\t%s\n' \
+    "$case_root/remote/runtime-contract.json" "$(stat -c '%s' -- "$backup_dir/runtime-contract.json" 2>/dev/null || stat -f '%z' -- "$backup_dir/runtime-contract.json")" \
+    "$(shasum -a 256 "$backup_dir/runtime-contract.json" | awk '{print $1}')" >> "$backup_dir/manifest.tsv"
+  sha256sum "$backup_dir/manifest.tsv" > "$backup_dir/manifest.sha256" 2>/dev/null || shasum -a 256 "$backup_dir/manifest.tsv" > "$backup_dir/manifest.sha256"
+  printf 'active\tenabled\n' > "$backup_dir/service-state.tsv"
+  sha256sum "$backup_dir/service-state.tsv" > "$backup_dir/service-state.sha256" 2>/dev/null || shasum -a 256 "$backup_dir/service-state.tsv" > "$backup_dir/service-state.sha256"
 }
 
 run_candidate() {
@@ -353,9 +409,7 @@ assert_output "$case_root/output.out" 'api_pair_health=1 mihomo_unchanged=1'
 case_root="$TEST_ROOT/explicit_rollback"
 write_fixture "$case_root" explicit_delayed
 mkdir -p "$case_root/state/backups/backup.A1b2C3d4"
-cp "$case_root/remote/api.py" "$case_root/state/backups/backup.A1b2C3d4/api.py"
-cp "$case_root/remote/unit" "$case_root/state/backups/backup.A1b2C3d4/unit"
-cp "$case_root/remote/runtime-contract.json" "$case_root/state/backups/backup.A1b2C3d4/runtime-contract.json"
+populate_backup "$case_root" backup.A1b2C3d4
 run_rollback "$case_root" backup.A1b2C3d4
 [[ "$(<"$case_root/rollback-output.status")" == 0 ]]
 assert_output "$case_root/rollback-output.out" 'rollback_ok backup_id=backup.A1b2C3d4 api_pair_health=1 mihomo_unchanged=1'
@@ -370,9 +424,7 @@ assert_output "$case_root/rollback-output.err" 'invalid opaque backup id'
 case_root="$TEST_ROOT/explicit_nrestarts"
 write_fixture "$case_root" explicit_nrestarts
 mkdir -p "$case_root/state/backups/backup.E5f6G7h8"
-cp "$case_root/remote/api.py" "$case_root/state/backups/backup.E5f6G7h8/api.py"
-cp "$case_root/remote/unit" "$case_root/state/backups/backup.E5f6G7h8/unit"
-cp "$case_root/remote/runtime-contract.json" "$case_root/state/backups/backup.E5f6G7h8/runtime-contract.json"
+populate_backup "$case_root" backup.E5f6G7h8
 run_rollback "$case_root" backup.E5f6G7h8
 [[ "$(<"$case_root/rollback-output.status")" != 0 ]]
 assert_output "$case_root/rollback-output.err" 'reason=api_restart_storm'
@@ -397,9 +449,7 @@ assert_not_output "$case_root/output.err" 'api_pair_restored=1'
 case_root="$TEST_ROOT/explicit_rollback_failure"
 write_fixture "$case_root" rollback_failure
 mkdir -p "$case_root/state/backups/backup.I9j0K1l2"
-cp "$case_root/remote/api.py" "$case_root/state/backups/backup.I9j0K1l2/api.py"
-cp "$case_root/remote/unit" "$case_root/state/backups/backup.I9j0K1l2/unit"
-cp "$case_root/remote/runtime-contract.json" "$case_root/state/backups/backup.I9j0K1l2/runtime-contract.json"
+populate_backup "$case_root" backup.I9j0K1l2
 run_rollback "$case_root" backup.I9j0K1l2
 [[ "$(<"$case_root/rollback-output.status")" != 0 ]]
 assert_output "$case_root/rollback-output.err" 'reason=readiness_timeout'

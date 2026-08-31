@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # shellcheck source=/dev/null
 . "$ROOT/scripts/_lib_paths.sh"
+. "$ROOT/scripts/_lib_deploy_settings.sh"
 
 # Optional local env override
 if [[ -f "$ROOT/.env" ]]; then
@@ -17,6 +18,7 @@ fi
 HOST="${MICROSERVER_HOST:-rainierserver.heiyu.space}"
 SSH_USER="${MICROSERVER_SSH_USER:-root}"
 SSH_KEY="${MICROSERVER_SSH_KEY:-$HOME/.ssh/id_ed25519}"
+CONFIRM_APPLY=0
 
 CFG_LOCAL="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_CONFIG_LOCAL:-var/private/mihomo.config.yaml}")"
 
@@ -41,6 +43,20 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
+if [[ "$#" -eq 1 && "${1:-}" == "--confirm" ]]; then
+  CONFIRM_APPLY=1
+elif [[ "$#" -ne 0 ]]; then
+  echo "Usage: scripts/egress_fix.sh [--confirm]" >&2
+  exit 2
+fi
+
+if [[ "$CONFIRM_APPLY" != "1" ]]; then
+  echo "Plan only: egress audit may be inspected, but local config and remote deployment require --confirm."
+  exit 0
+fi
+
+mihomo_require_apply_confirmation "$HOST" "$SSH_USER" "$CONFIRM_APPLY" "egress_fix"
+
 if [[ ! -f "$CFG_LOCAL" ]]; then
   echo "ERROR: missing config file: $CFG_LOCAL" >&2
   exit 1
@@ -48,7 +64,7 @@ fi
 
 TS="$(date +%Y%m%d-%H%M%S)"
 TMPDIR_LOCAL="$(mktemp -d)"
-cleanup() { rm -rf "$TMPDIR_LOCAL"; }
+cleanup() { rm -rf "$TMPDIR_LOCAL"; mihomo_cleanup_known_hosts; }
 trap cleanup EXIT
 
 mkdir -p "$ROOT/tmp"
@@ -108,7 +124,7 @@ TXT
   echo "Applying IPv4-preference workaround and pinning AUTO to V4-only egress proxies."
   echo
 
-  "$ROOT/scripts/prefer_ipv4_gai.sh" >/dev/null
+  "$ROOT/scripts/prefer_ipv4_gai.sh" --confirm >/dev/null
   # Prevent long stalls on IPv6 destinations when egress is V4-only.
   python3 "$ROOT/scripts/ensure_ipv6_reject_rule.py" --in "$CFG_LOCAL" --backup >/dev/null
 
@@ -121,10 +137,12 @@ echo "3) Pinning AUTO group to selected proxies (count=$V6_OK_COUNT) ..."
 python3 "$ROOT/scripts/patch_auto_group.py" --in "$CFG_LOCAL" --backup --proxies "$V6_OK_CSV" >/dev/null
 
 echo "4) Deploying config to microserver ..."
-"$ROOT/scripts/deploy_microserver.sh" >/dev/null
+"$ROOT/scripts/deploy_microserver.sh" --confirm >/dev/null
 
 echo "5) Acceptance checks (30x curls via 127.0.0.1:7890) ..."
-ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$SSH_USER@$HOST" bash -s <<'REMOTE'
+ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+  -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
+  "$SSH_USER@$HOST" bash -s <<'REMOTE'
 set -euo pipefail
 
 proxy=http://127.0.0.1:7890

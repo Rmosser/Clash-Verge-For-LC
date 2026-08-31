@@ -9,7 +9,7 @@ Local Runtime Contract v2 (stub):
   - No /healthz /readyz /diagnostics /metrics endpoints here.
 
 Try:
-  - bash scripts/deploy_all.sh
+  - bash scripts/deploy_all.sh --confirm
   - bash scripts/selfcheck.sh
 EOF
 

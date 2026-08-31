@@ -29,8 +29,9 @@
 `scripts/deploy_microserver.sh` 的 host-native 默认值与该基线一致。为便于审阅和目标机区分，运维命令仍建议显式写出：
 
 ```bash
-MICROSERVER_HOST=<box>.heiyu.space \
-MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 bash scripts/deploy_microserver.sh
+MICROSERVER_HOST=rainierdev.heiyu.space \
+MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 \
+bash scripts/deploy_microserver.sh --confirm
 ```
 
 ## 浏览器访问 contract
@@ -61,8 +62,9 @@ MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 bash scripts/deploy_microserver.sh
 如果改动后出现控制面退化、应用拉不起来、dashboard 卡启动页，优先回到保守基线：
 
 ```bash
-MICROSERVER_HOST=<box>.heiyu.space \
-MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 bash scripts/deploy_microserver.sh
+MICROSERVER_HOST=rainierdev.heiyu.space \
+MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 \
+bash scripts/deploy_microserver.sh --confirm
 ```
 
 如果已经拿到宿主机但需要立刻释放 TUN：

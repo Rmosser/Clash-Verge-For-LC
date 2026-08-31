@@ -3,6 +3,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# shellcheck source=/dev/null
+. "$ROOT/scripts/_lib_deploy_settings.sh"
+
 if [[ -f "$ROOT/.env" ]]; then
   set -a
   # shellcheck disable=SC1091
@@ -13,7 +16,10 @@ fi
 HOST="${MICROSERVER_HOST:-rainierdev.heiyu.space}"
 SSH_USER="${MICROSERVER_SSH_USER:-root}"
 SSH_KEY="${MICROSERVER_SSH_KEY:-$HOME/.ssh/id_ed25519}"
-REMOTE_BOOTSTRAP_ROOT="${MIHOMO_BOOTSTRAP_REMOTE_ROOT:-/root/.config/lzc-mihomo-bootstrap}"
+# This path is part of the bootstrap contract.  It is deliberately not
+# caller-controlled: changing it would make the installer write arbitrary
+# root-owned paths on the remote host.
+readonly REMOTE_BOOTSTRAP_ROOT="/root/.config/lzc-mihomo-bootstrap"
 BRIDGE_WAIT_SECONDS="${MIHOMO_BOOTSTRAP_BRIDGE_WAIT_SECONDS:-180}"
 REMOTE_USER_UNIT_DIR="/root/.config/systemd/user"
 REMOTE_BOOTSTRAP_SERVICE="lzc-mihomo-bootstrap.service"
@@ -36,9 +42,30 @@ Environment overrides:
   MICROSERVER_HOST                 defaults to rainierdev.heiyu.space
   MICROSERVER_SSH_USER             defaults to root
   MICROSERVER_SSH_KEY              defaults to ~/.ssh/id_ed25519
-  MIHOMO_BOOTSTRAP_REMOTE_ROOT     defaults to /root/.config/lzc-mihomo-bootstrap
+  The bootstrap root is fixed at /root/.config/lzc-mihomo-bootstrap.
 USAGE
 }
+
+CONFIRM_APPLY=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --confirm) CONFIRM_APPLY=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "ERROR: unknown option: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+if [[ "$CONFIRM_APPLY" != "1" ]]; then
+  echo "Plan only: would snapshot and install the fixed bootstrap on $SSH_USER@$HOST. Re-run with --confirm."
+  exit 0
+fi
+
+if [[ -n "${MIHOMO_BOOTSTRAP_REMOTE_ROOT:-}" && "${MIHOMO_BOOTSTRAP_REMOTE_ROOT}" != "$REMOTE_BOOTSTRAP_ROOT" ]]; then
+  echo "ERROR: MIHOMO_BOOTSTRAP_REMOTE_ROOT is not configurable; refusing an arbitrary remote path." >&2
+  exit 2
+fi
+
+mihomo_require_apply_confirmation "$HOST" "$SSH_USER" "$CONFIRM_APPLY" "install_host_native_bootstrap"
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   usage
@@ -46,7 +73,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 case "$HOST" in
-  rainierdev.heiyu.space|*.rainierdev.heiyu.space|rainierspace.heiyu.space|*.rainierspace.heiyu.space)
+  rainierdev.heiyu.space|rainierspace.heiyu.space)
     ;;
   *)
     echo "ERROR: this installer only supports rainierdev.* or rainierspace.*" >&2
@@ -56,7 +83,9 @@ case "$HOST" in
 esac
 
 ssh_remote() {
-  ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$SSH_USER@$HOST" "$@"
+  ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+    -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
+    "$SSH_USER@$HOST" "$@"
 }
 
 required_remote_paths=(
@@ -83,7 +112,8 @@ Installing host-native bootstrap on $SSH_USER@$HOST
   user unit dir : $REMOTE_USER_UNIT_DIR
 EOF
 
-ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+  -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
   "$SSH_USER@$HOST" \
   REMOTE_BOOTSTRAP_ROOT="$REMOTE_BOOTSTRAP_ROOT" \
   BRIDGE_WAIT_SECONDS="$BRIDGE_WAIT_SECONDS" \

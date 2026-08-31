@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # shellcheck source=/dev/null
 . "$ROOT/scripts/_lib_paths.sh"
+. "$ROOT/scripts/_lib_deploy_settings.sh"
 
 # Optional local env override (same pattern as other helper scripts).
 if [[ -f "$ROOT/.env" ]]; then
@@ -17,15 +18,28 @@ fi
 HOST="${MICROSERVER_HOST:-rainierserver.heiyu.space}"
 SSH_USER="${MICROSERVER_SSH_USER:-root}"
 SSH_KEY="${MICROSERVER_SSH_KEY:-$HOME/.ssh/id_ed25519}"
-MODE="${1:-enable}"
+MODE="enable"
+CONFIRM_APPLY=0
 
-if [[ "$MODE" != "enable" && "$MODE" != "--disable" ]]; then
-  echo "Usage: $0 [--disable]" >&2
-  exit 1
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    enable) MODE="enable"; shift ;;
+    --disable) MODE="--disable"; shift ;;
+    --confirm) CONFIRM_APPLY=1; shift ;;
+    -h|--help) echo "Usage: $0 [--disable] [--confirm]"; exit 0 ;;
+    *) echo "Usage: $0 [--disable] [--confirm]" >&2; exit 2 ;;
+  esac
+done
+if [[ "$CONFIRM_APPLY" != "1" ]]; then
+  echo "Plan only: would set resolver mode '${MODE}' on ${SSH_USER}@${HOST}."
+  exit 0
 fi
+mihomo_require_apply_confirmation "$HOST" "$SSH_USER" "$CONFIRM_APPLY" "use_mihomo_dns_resolved"
 
 ssh_remote() {
-  ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$SSH_USER@$HOST" "$@"
+  ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+    -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
+    "$SSH_USER@$HOST" "$@"
 }
 
 if [[ "$MODE" == "--disable" ]]; then
