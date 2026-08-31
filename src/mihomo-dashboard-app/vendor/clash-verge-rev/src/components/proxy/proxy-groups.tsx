@@ -24,6 +24,10 @@ import { useVerge } from '@/hooks/use-verge'
 import { useProxiesData } from '@/providers/app-data-context'
 import { calcuProxies } from '@/services/cmds'
 import delayManager from '@/services/delay'
+import {
+  getProxyScrollPosition,
+  saveProxyScrollPosition,
+} from '@/services/proxy-scroll-positions'
 import { useQuery } from '@/services/query-client'
 import { debugLog } from '@/utils/debug'
 
@@ -125,34 +129,15 @@ function useProxyRenderState(
 
   const saveScrollPosition = useCallback(
     (scrollTop: number) => {
-      const scrollPositions = localStorage.getItem('proxy-scroll-positions')
-        ? JSON.parse(localStorage.getItem('proxy-scroll-positions') ?? '{}')
-        : {}
-      scrollPositions[scrollPositionKey] = scrollTop
-      try {
-        localStorage.setItem(
-          'proxy-scroll-positions',
-          JSON.stringify(scrollPositions),
-        )
-      } catch (e) {
-        console.error('Error saving scroll position:', e)
-      }
+      saveProxyScrollPosition(scrollPositionKey, scrollTop)
     },
     [scrollPositionKey],
   )
 
-  const getScrollPosition = useCallback(() => {
-    try {
-      const savedPositions = localStorage.getItem('proxy-scroll-positions')
-      if (savedPositions) {
-        const positions = JSON.parse(savedPositions)
-        const savedPosition = positions[scrollPositionKey]
-        return savedPosition ?? 0
-      }
-    } catch (e) {
-      console.error('Error restoring scroll position:', e)
-    }
-  }, [scrollPositionKey])
+  const getScrollPosition = useCallback(
+    () => getProxyScrollPosition(scrollPositionKey),
+    [scrollPositionKey],
+  )
 
   return {
     verge,
