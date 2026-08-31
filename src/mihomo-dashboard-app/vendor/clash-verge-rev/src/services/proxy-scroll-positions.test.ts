@@ -83,11 +83,26 @@ describe('proxy scroll position storage', () => {
   })
 
   it('treats a throwing localStorage getter as unavailable', () => {
-    vi.spyOn(globalThis, 'localStorage', 'get').mockImplementation(() => {
-      throw new Error('storage is unavailable')
+    const originalDescriptor = Object.getOwnPropertyDescriptor(
+      globalThis,
+      'localStorage',
+    )
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new Error('storage is unavailable')
+      },
     })
 
-    expect(getProxyScrollPosition('rule:normal')).toBeUndefined()
-    expect(() => saveProxyScrollPosition('rule:normal', 300)).not.toThrow()
+    try {
+      expect(getProxyScrollPosition('rule:normal')).toBeUndefined()
+      expect(() => saveProxyScrollPosition('rule:normal', 300)).not.toThrow()
+    } finally {
+      if (originalDescriptor) {
+        Object.defineProperty(globalThis, 'localStorage', originalDescriptor)
+      } else {
+        Reflect.deleteProperty(globalThis, 'localStorage')
+      }
+    }
   })
 })

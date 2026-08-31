@@ -185,12 +185,27 @@ describe('WebDAV status storage', () => {
 
   it('treats a throwing localStorage getter as unavailable', () => {
     const signature = buildWebdavSignature(config)
-    vi.spyOn(globalThis, 'localStorage', 'get').mockImplementation(() => {
-      throw new Error('storage is unavailable')
+    const originalDescriptor = Object.getOwnPropertyDescriptor(
+      globalThis,
+      'localStorage',
+    )
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new Error('storage is unavailable')
+      },
     })
 
-    expect(getWebdavStatus(signature)).toBe('unknown')
-    expect(() => clearWebdavStatus()).not.toThrow()
-    expect(() => setWebdavStatus(signature, 'ready')).not.toThrow()
+    try {
+      expect(getWebdavStatus(signature)).toBe('unknown')
+      expect(() => clearWebdavStatus()).not.toThrow()
+      expect(() => setWebdavStatus(signature, 'ready')).not.toThrow()
+    } finally {
+      if (originalDescriptor) {
+        Object.defineProperty(globalThis, 'localStorage', originalDescriptor)
+      } else {
+        Reflect.deleteProperty(globalThis, 'localStorage')
+      }
+    }
   })
 })
