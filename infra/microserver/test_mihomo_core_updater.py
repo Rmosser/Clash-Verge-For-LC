@@ -50,6 +50,73 @@ class MihomoCoreUpdaterTests(unittest.TestCase):
         with self.assertRaises(MODULE.CoreUpdateError):
             MODULE.resolve_asset("v1.19.30", machine="x86_64", metadata=metadata)
 
+    def test_resolve_asset_uses_release_metadata_for_alpha_build_suffix(self) -> None:
+        metadata = {
+            "assets": [
+                {
+                    "name": "mihomo-linux-amd64-compatible-alpha-65287f0.gz",
+                    "browser_download_url": "https://example.test/alpha.gz",
+                    "digest": "sha256:" + "b" * 64,
+                },
+                {
+                    "name": "mihomo-linux-amd64-compatible-alpha-65287f0.gz.sha256",
+                    "browser_download_url": "https://example.test/alpha.gz.sha256",
+                    "digest": None,
+                },
+            ]
+        }
+
+        result = MODULE.resolve_asset(
+            "Prerelease-Alpha",
+            machine="x86_64",
+            metadata=metadata,
+        )
+
+        self.assertEqual(result, (
+            "mihomo-linux-amd64-compatible-alpha-65287f0.gz",
+            "https://example.test/alpha.gz",
+            "b" * 64,
+        ))
+
+    def test_resolve_asset_rejects_ambiguous_metadata_assets(self) -> None:
+        metadata = {
+            "assets": [
+                {
+                    "name": "mihomo-linux-amd64-compatible-alpha-one.gz",
+                    "browser_download_url": "https://example.test/one.gz",
+                    "digest": "sha256:" + "c" * 64,
+                },
+                {
+                    "name": "mihomo-linux-amd64-compatible-alpha-two.gz",
+                    "browser_download_url": "https://example.test/two.gz",
+                    "digest": "sha256:" + "d" * 64,
+                },
+            ]
+        }
+
+        with self.assertRaises(MODULE.CoreUpdateError):
+            MODULE.resolve_asset("Prerelease-Alpha", machine="x86_64", metadata=metadata)
+
+    def test_asset_version_uses_metadata_suffix_for_prerelease(self) -> None:
+        self.assertEqual(
+            MODULE.asset_version(
+                "mihomo-linux-amd64-compatible-alpha-65287f0.gz",
+                "amd64-compatible",
+                "Prerelease-Alpha",
+            ),
+            "alpha-65287f0",
+        )
+
+    def test_asset_version_keeps_release_tag_for_unrecognised_override_url(self) -> None:
+        self.assertEqual(
+            MODULE.asset_version(
+                "mihomo.gz",
+                "amd64-compatible",
+                "v1.19.30",
+            ),
+            "v1.19.30",
+        )
+
     def test_upgrade_rejects_checksum_mismatch_before_switching_binary(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
