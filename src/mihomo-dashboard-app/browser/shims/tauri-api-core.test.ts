@@ -70,6 +70,15 @@ describe("WebPort command boundary", () => {
 
     vergeInvokeMock.mockResolvedValueOnce({
       target: "https://probe.test",
+      status: "success",
+      latencyMs: 0,
+    });
+    await expect(
+      invoke<number>("test_delay", { url: "https://probe.test" }),
+    ).resolves.toBe(1);
+
+    vergeInvokeMock.mockResolvedValueOnce({
+      target: "https://probe.test",
       status: "timeout",
       errorCode: "TIMEOUT",
       errorMessage: "检测超时",

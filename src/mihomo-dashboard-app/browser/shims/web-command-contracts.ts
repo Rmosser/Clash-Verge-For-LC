@@ -55,6 +55,11 @@ const finiteNonNegativeNumber = (value: unknown): number | null => {
   return number !== null && number >= 0 ? number : null;
 };
 
+const normalizeSuccessfulDelay = (value: unknown): number | null => {
+  const delay = finiteNonNegativeNumber(value);
+  return delay === null ? null : Math.max(1, delay);
+};
+
 const stringValue = (value: unknown) =>
   typeof value === "string" ? value : "";
 
@@ -157,10 +162,12 @@ export const normalizeTestDelay = (value: unknown): number => {
   }
   if (status && status !== "success") return -1;
 
-  const latencyMs = finiteNonNegativeNumber(value.latencyMs);
+  const normalizeDelay =
+    status === "success" ? normalizeSuccessfulDelay : finiteNonNegativeNumber;
+  const latencyMs = normalizeDelay(value.latencyMs);
   if (latencyMs !== null) return latencyMs;
 
-  const legacyDelay = finiteNonNegativeNumber(value.delay);
+  const legacyDelay = normalizeDelay(value.delay);
   if (legacyDelay !== null) return legacyDelay;
 
   return -1;
