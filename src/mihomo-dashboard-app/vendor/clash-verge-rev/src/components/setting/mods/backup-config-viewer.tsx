@@ -18,6 +18,7 @@ import { saveWebdavConfig, createWebdavBackup } from '@/services/cmds'
 import { showNotice } from '@/services/notice-service'
 import {
   buildWebdavSignature,
+  clearWebdavStatus,
   getWebdavStatus,
   setWebdavStatus,
 } from '@/services/webdav-status'
@@ -132,7 +133,7 @@ export const BackupConfigViewer = memo(
               : current,
           false,
         )
-        setWebdavStatus(signature, 'unknown')
+        clearWebdavStatus()
         showNotice.success('settings.modals.backup.messages.webdavConfigSaved')
         await onSaveSuccess(signature)
       } catch (error) {
