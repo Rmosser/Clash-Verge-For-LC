@@ -251,16 +251,16 @@ fi
 
 case "$REMOTE_UNAME" in
   x86_64)
-    MIHOMO_ASSET="mihomo-linux-amd64-compatible-${MIHOMO_TAG}.gz"
+    MIHOMO_ASSET_ARCH="amd64-compatible"
     ;;
   aarch64|arm64)
-    MIHOMO_ASSET="mihomo-linux-arm64-${MIHOMO_TAG}.gz"
+    MIHOMO_ASSET_ARCH="arm64"
     ;;
   armv7l|armv7*)
-    MIHOMO_ASSET="mihomo-linux-armv7-${MIHOMO_TAG}.gz"
+    MIHOMO_ASSET_ARCH="armv7"
     ;;
   i386|i686)
-    MIHOMO_ASSET="mihomo-linux-386-${MIHOMO_TAG}.gz"
+    MIHOMO_ASSET_ARCH="386"
     ;;
   *)
     echo "ERROR: unsupported remote arch from uname -m: $REMOTE_UNAME" >&2
@@ -268,32 +268,54 @@ case "$REMOTE_UNAME" in
     ;;
 esac
 
-MIHOMO_URL="https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_TAG}/${MIHOMO_ASSET}"
 if ! command -v curl >/dev/null 2>&1; then
   echo "ERROR: curl is required to resolve Mihomo release metadata" >&2
   exit 1
 fi
-MIHOMO_SHA256="$(
+MIHOMO_METADATA="$(
   curl --retry 3 --retry-delay 1 --retry-all-errors --connect-timeout 10 --max-time 60 -fsSL \
     "https://api.github.com/repos/MetaCubeX/mihomo/releases/tags/${MIHOMO_TAG}" |
     python3 -c '
 import json
+import re
 import sys
 
-asset_name = sys.argv[1]
+asset_arch = sys.argv[1]
 payload = json.load(sys.stdin)
-for asset in payload.get("assets", []):
-    if asset.get("name") != asset_name:
-        continue
-    digest = str(asset.get("digest") or "")
-    if not digest.startswith("sha256:") or len(digest.split(":", 1)[1]) != 64:
-        raise SystemExit(f"asset {asset_name} has no valid SHA256 digest")
-    print(digest.split(":", 1)[1])
-    break
-else:
-    raise SystemExit(f"release has no verified asset {asset_name}")
-' "$MIHOMO_ASSET"
+assets = payload.get("assets") if isinstance(payload, dict) else None
+prefix = f"mihomo-linux-{asset_arch}-"
+candidates = [
+    asset
+    for asset in assets or []
+    if isinstance(asset, dict)
+    and isinstance(asset.get("name"), str)
+    and asset["name"].startswith(prefix)
+    and asset["name"].endswith(".gz")
+    and isinstance(asset.get("browser_download_url"), str)
+    and asset["browser_download_url"]
+]
+if len(candidates) != 1:
+    raise SystemExit(f"release has {len(candidates)} metadata assets for {asset_arch}")
+asset = candidates[0]
+asset_name = asset["name"]
+asset_url = asset["browser_download_url"]
+digest = str(asset.get("digest") or "")
+if digest.startswith("sha256:"):
+    digest = digest.split(":", 1)[1]
+if not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
+    raise SystemExit(f"asset {asset_name} has no valid SHA256 digest")
+print(f"{asset_name}\t{asset_url}\t{digest.lower()}")
+' "$MIHOMO_ASSET_ARCH"
 )"
+if [[ "$(printf '%s\n' "$MIHOMO_METADATA" | wc -l | tr -d ' ')" != "1" ]]; then
+  echo "ERROR: unexpected Mihomo metadata selection output" >&2
+  exit 1
+fi
+IFS=$'\t' read -r MIHOMO_ASSET MIHOMO_URL MIHOMO_SHA256 <<<"$MIHOMO_METADATA"
+if [[ -z "$MIHOMO_ASSET" || -z "$MIHOMO_URL" || -z "$MIHOMO_SHA256" ]]; then
+  echo "ERROR: incomplete Mihomo release metadata" >&2
+  exit 1
+fi
 MMDB_URL="https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb"
 echo "Selected Mihomo ${MIHOMO_TAG}: ${MIHOMO_ASSET} sha256=${MIHOMO_SHA256}"
 
