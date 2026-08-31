@@ -64,5 +64,19 @@ describe('Mihomo connections websocket payload parser', () => {
         connections: [{ ...validConnection, download: -1 }],
       }),
     ).toBeNull()
+    expect(parseConnectionsPayload({ ...snapshot, uploadTotal: 0.5 })).toBeNull()
+    expect(parseConnectionsPayload({ ...snapshot, downloadTotal: 0.5 })).toBeNull()
+    expect(
+      parseConnectionsPayload({
+        ...snapshot,
+        connections: [{ ...validConnection, upload: 1.25 }],
+      }),
+    ).toBeNull()
+    expect(
+      parseConnectionsPayload({
+        ...snapshot,
+        connections: [{ ...validConnection, download: 1.25 }],
+      }),
+    ).toBeNull()
   })
 })
