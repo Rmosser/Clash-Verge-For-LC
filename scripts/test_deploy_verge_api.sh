@@ -314,13 +314,13 @@ populate_backup() {
   cp "$case_root/remote/unit" "$backup_dir/unit"
   cp "$case_root/remote/runtime-contract.json" "$backup_dir/runtime-contract.json"
   printf '%s\tapi.py\tregular\t%s\t%s\n' \
-    "$case_root/remote/api.py" "$(stat -f '%z' "$backup_dir/api.py" 2>/dev/null || stat -c '%s' "$backup_dir/api.py")" \
+    "$case_root/remote/api.py" "$(stat -c '%s' -- "$backup_dir/api.py" 2>/dev/null || stat -f '%z' -- "$backup_dir/api.py")" \
     "$(shasum -a 256 "$backup_dir/api.py" | awk '{print $1}')" > "$backup_dir/manifest.tsv"
   printf '%s\tunit\tregular\t%s\t%s\n' \
-    "$case_root/remote/unit" "$(stat -f '%z' "$backup_dir/unit" 2>/dev/null || stat -c '%s' "$backup_dir/unit")" \
+    "$case_root/remote/unit" "$(stat -c '%s' -- "$backup_dir/unit" 2>/dev/null || stat -f '%z' -- "$backup_dir/unit")" \
     "$(shasum -a 256 "$backup_dir/unit" | awk '{print $1}')" >> "$backup_dir/manifest.tsv"
   printf '%s\truntime-contract.json\tregular\t%s\t%s\n' \
-    "$case_root/remote/runtime-contract.json" "$(stat -f '%z' "$backup_dir/runtime-contract.json" 2>/dev/null || stat -c '%s' "$backup_dir/runtime-contract.json")" \
+    "$case_root/remote/runtime-contract.json" "$(stat -c '%s' -- "$backup_dir/runtime-contract.json" 2>/dev/null || stat -f '%z' -- "$backup_dir/runtime-contract.json")" \
     "$(shasum -a 256 "$backup_dir/runtime-contract.json" | awk '{print $1}')" >> "$backup_dir/manifest.tsv"
   sha256sum "$backup_dir/manifest.tsv" > "$backup_dir/manifest.sha256" 2>/dev/null || shasum -a 256 "$backup_dir/manifest.tsv" > "$backup_dir/manifest.sha256"
   printf 'active\tenabled\n' > "$backup_dir/service-state.tsv"
