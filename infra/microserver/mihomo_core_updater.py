@@ -17,6 +17,7 @@ import subprocess
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Iterator
@@ -96,8 +97,27 @@ def asset_arch_for_machine(machine: str | None = None) -> str:
         raise CoreUpdateError(f"unsupported architecture: {value}") from exc
 
 
-def asset_name(tag: str, asset_arch: str) -> str:
-    return f"mihomo-linux-{asset_arch}-{normalize_tag(tag)}.gz"
+def asset_name_prefix(asset_arch: str) -> str:
+    """Return the metadata-controlled prefix for a Linux release asset."""
+    return f"mihomo-linux-{asset_arch}-"
+
+
+def asset_version(
+    asset_name: str, asset_arch: str, fallback: str
+) -> str:
+    """Extract the binary version from the metadata-selected asset name.
+
+    Stable releases use a semver tag in the filename, while the prerelease
+    channel currently publishes names such as ``...-alpha-65287f0.gz`` under
+    the label ``Prerelease-Alpha``.  The release tag is therefore not always
+    the version reported by ``mihomo -v``.
+    """
+    prefix = asset_name_prefix(asset_arch)
+    if asset_name.startswith(prefix) and asset_name.endswith(".gz"):
+        candidate = asset_name[len(prefix) : -len(".gz")]
+        if candidate:
+            return normalize_tag(candidate)
+    return normalize_tag(fallback)
 
 
 def normalize_digest(value: str) -> str:
@@ -159,20 +179,31 @@ def resolve_asset(
 ) -> tuple[str, str, str]:
     normalized = normalize_tag(tag)
     asset_arch = asset_arch_for_machine(machine)
-    expected_name = asset_name(normalized, asset_arch)
     payload = metadata if metadata is not None else release_metadata(normalized)
     assets = payload.get("assets")
     if not isinstance(assets, list):
         raise CoreUpdateError("Mihomo release has no asset list")
-    for item in assets:
-        if not isinstance(item, dict) or item.get("name") != expected_name:
-            continue
-        digest = normalize_digest(str(item.get("digest") or ""))
-        url = str(item.get("browser_download_url") or "")
-        if not url:
-            url = f"{DOWNLOAD_BASE}/{normalized}/{expected_name}"
-        return expected_name, url, digest
-    raise CoreUpdateError(f"Mihomo release {normalized} has no verified asset {expected_name}")
+    prefix = asset_name_prefix(asset_arch)
+    candidates = [
+        item
+        for item in assets
+        if isinstance(item, dict)
+        and isinstance(item.get("name"), str)
+        and item["name"].startswith(prefix)
+        and item["name"].endswith(".gz")
+    ]
+    if len(candidates) != 1:
+        raise CoreUpdateError(
+            f"Mihomo release {normalized} has {len(candidates)} metadata assets for {prefix}"
+        )
+    selected = candidates[0]
+
+    name = str(selected.get("name") or "")
+    digest = normalize_digest(str(selected.get("digest") or ""))
+    url = str(selected.get("browser_download_url") or "")
+    if not url:
+        raise CoreUpdateError(f"Mihomo release asset {name} has no download URL")
+    return name, url, digest
 
 
 def extract_version(binary: Path) -> str:
@@ -386,18 +417,26 @@ def upgrade_core(
 ) -> dict[str, str]:
     release_tag = resolve_release_tag(channel, tag)
     asset_arch = asset_arch_for_machine()
-    release_asset = asset_name(release_tag, asset_arch)
     if asset_url and expected_sha256:
+        # Explicit operator overrides are still accepted, but use a fixed
+        # architecture-only temporary filename. Release assets are resolved
+        # from GitHub metadata below, never from a tag-derived filename.
+        release_asset = f"mihomo-linux-{asset_arch}.gz"
         verified_url = asset_url
         verified_sha256 = normalize_digest(expected_sha256)
+        url_name = Path(urllib.parse.urlparse(asset_url).path).name
+        expected_binary_version = asset_version(url_name, asset_arch, release_tag)
     else:
         release_asset, verified_url, verified_sha256 = resolve_asset(release_tag)
+        expected_binary_version = asset_version(
+            release_asset, asset_arch, release_tag
+        )
 
     rollback_dir = state_dir / "rollback"
     meta_file = metadata_path(state_dir)
     with upgrade_lock(lock_path):
         previous_version = extract_version(binary) if binary.exists() else ""
-        if previous_version == release_tag:
+        if previous_version == expected_binary_version:
             config_test(binary, state_dir, config)
             probe_controller(controller_url, config)
             result = {
@@ -439,7 +478,7 @@ def upgrade_core(
                     f"Mihomo asset checksum mismatch: expected {verified_sha256}, got {actual_sha256}"
                 )
             extract_asset(compressed, candidate)
-            verify_binary_version(candidate, release_tag, asset_arch)
+            verify_binary_version(candidate, expected_binary_version, asset_arch)
             config_test(candidate, state_dir, config)
 
             backup = _backup_binary(binary, rollback_dir, previous_version) if binary.exists() else None
