@@ -5,6 +5,7 @@ import base64
 import gzip
 import importlib.util
 import ssl
+import tempfile
 import time
 import unittest
 import urllib.error
@@ -23,6 +24,67 @@ SPEC.loader.exec_module(MODULE)
 
 
 class MihomoVergeApiTests(unittest.TestCase):
+    def test_operation_log_redacts_credentials_from_urls_and_headers(self) -> None:
+        message = (
+            "GET /public-config?token=query-secret HTTP/1.1 "
+            "Authorization: Bearer header-secret "
+            "Cookie: HC-Auth-Token=cookie-secret "
+            "https://user:password@sub.example.test/path?access_token=url-secret"
+        )
+
+        redacted = MODULE.sanitize_log_text(message)
+
+        for secret in ("query-secret", "header-secret", "cookie-secret", "password", "url-secret"):
+            self.assertNotIn(secret, redacted)
+        self.assertIn("/public-config?token=<redacted>", redacted)
+        self.assertIn("https://<redacted>@sub.example.test/path?access_token=<redacted>", redacted)
+
+    def test_corrupt_json_state_is_logged_with_cause_without_content(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            path = root / "profiles.json"
+            path.write_text("{not-json", encoding="utf-8")
+            log_path = root / "operations.log"
+            with (
+                patch.object(MODULE, "OPERATIONS_LOG_PATH", log_path),
+                patch.object(MODULE, "ensure_dirs"),
+            ):
+                self.assertEqual(MODULE.load_json(path, {"current": ""}), {"current": ""})
+
+            log = log_path.read_text(encoding="utf-8")
+
+        self.assertIn("state load failed", log)
+        self.assertIn("JSONDecodeError", log)
+        self.assertNotIn("not-json", log)
+
+    def test_operation_log_includes_request_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "operations.log"
+            token = MODULE.LOG_CONTEXT.set(
+                {
+                    "request_id": "request-123",
+                    "command": "update_profile",
+                    "profile_uid": "profile-secret-uid",
+                    "stage": "fetch",
+                }
+            )
+            try:
+                with (
+                    patch.object(MODULE, "OPERATIONS_LOG_PATH", log_path),
+                    patch.object(MODULE, "ensure_dirs"),
+                ):
+                    MODULE.append_operation_log("profile update failed")
+            finally:
+                MODULE.LOG_CONTEXT.reset(token)
+
+            log = log_path.read_text(encoding="utf-8")
+
+        self.assertIn("request_id=request-123", log)
+        self.assertIn("command=update_profile", log)
+        self.assertIn("profile_uid=uid_hash=", log)
+        self.assertIn("stage=fetch", log)
+        self.assertNotIn("profile-secret-uid", log)
+
     def test_filter_mihomo_journal_lines_keeps_only_core_logs(self) -> None:
         rows = MODULE.filter_mihomo_journal_lines(
             [
@@ -357,7 +419,7 @@ class MihomoVergeApiTests(unittest.TestCase):
 
         apply_runtime_text.assert_called_once_with(
             "runtime-yaml",
-            "applied profile demo-profile",
+            f"applied profile profile_uid={MODULE.profile_uid_for_log('demo-profile')}",
         )
         mark_runtime_profile_ready.assert_called_once_with("demo-profile")
 
@@ -877,7 +939,7 @@ rules:
             MODULE, "normalize_profiles_state", return_value=(after, True)
         ), patch.object(MODULE, "save_profiles_state") as save_profiles_state, patch.object(
             MODULE, "apply_current_profile", side_effect=RuntimeError("synthetic apply failure")
-        ):
+        ), patch.object(MODULE, "append_operation_log"):
             result = MODULE.invoke_command(
                 "patch_profiles_config",
                 {"profiles": {"current": "new"}},
