@@ -1,16 +1,16 @@
 diff --git a/src/hooks/use-connection-data.ts b/src/hooks/use-connection-data.ts
-index 5ad13e2..42eb86c 100644
+index 5ad13e2..a5fe189 100644
 --- a/src/hooks/use-connection-data.ts
 +++ b/src/hooks/use-connection-data.ts
-@@ -17,6 +17,79 @@ const initConnData: ConnectionMonitorData = {
+@@ -17,6 +17,82 @@ const initConnData: ConnectionMonitorData = {
    closedConnections: [],
  }
  
 +const isRecord = (value: unknown): value is Record<string, unknown> =>
 +  typeof value === 'object' && value !== null && !Array.isArray(value)
 +
-+const isFiniteNumber = (value: unknown): value is number =>
-+  typeof value === 'number' && Number.isFinite(value)
++const isNonNegativeFiniteNumber = (value: unknown): value is number =>
++  typeof value === 'number' && Number.isFinite(value) && value >= 0
 +
 +const isString = (value: unknown): value is string => typeof value === 'string'
 +
@@ -50,8 +50,8 @@ index 5ad13e2..42eb86c 100644
 +    isString(value.id) &&
 +    value.id.length > 0 &&
 +    isConnectionMetadata(value.metadata) &&
-+    isFiniteNumber(value.upload) &&
-+    isFiniteNumber(value.download) &&
++    isNonNegativeFiniteNumber(value.upload) &&
++    isNonNegativeFiniteNumber(value.download) &&
 +    isString(value.start) &&
 +    isStringArray(value.chains) &&
 +    isString(value.rule) &&
@@ -63,7 +63,10 @@ index 5ad13e2..42eb86c 100644
 +  value: unknown,
 +): IConnections | null => {
 +  if (!isRecord(value)) return null
-+  if (!isFiniteNumber(value.downloadTotal) || !isFiniteNumber(value.uploadTotal)) {
++  if (
++    !isNonNegativeFiniteNumber(value.downloadTotal) ||
++    !isNonNegativeFiniteNumber(value.uploadTotal)
++  ) {
 +    return null
 +  }
 +
@@ -82,7 +85,7 @@ index 5ad13e2..42eb86c 100644
  interface ConnectionMonitorData {
    uploadTotal: number
    downloadTotal: number
-@@ -219,14 +292,21 @@ const flushPendingMessage = () => {
+@@ -219,14 +295,21 @@ const flushPendingMessage = () => {
    pendingMessageData = null
    if (!messageData || !hasConnectionSubscribers()) return
  
@@ -108,10 +111,10 @@ index 5ad13e2..42eb86c 100644
    notifySummaryListeners()
 diff --git a/src/hooks/use-connection-data.test.ts b/src/hooks/use-connection-data.test.ts
 new file mode 100644
-index 0000000..15cd290
+index 0000000..f94f5e3
 --- /dev/null
 +++ b/src/hooks/use-connection-data.test.ts
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,68 @@
 +import { describe, expect, it } from 'vitest'
 +
 +import { parseConnectionsPayload } from './use-connection-data'
@@ -149,7 +152,7 @@ index 0000000..15cd290
 +    })
 +  })
 +
-+  it('rejects malformed rows and non-finite counters before merging', () => {
++  it('rejects malformed rows and invalid counters before merging', () => {
 +    const snapshot = {
 +      uploadTotal: 12,
 +      downloadTotal: 34,
@@ -164,5 +167,19 @@ index 0000000..15cd290
 +      }),
 +    ).toBeNull()
 +    expect(parseConnectionsPayload({ ...snapshot, uploadTotal: Number.NaN })).toBeNull()
++    expect(parseConnectionsPayload({ ...snapshot, uploadTotal: -1 })).toBeNull()
++    expect(parseConnectionsPayload({ ...snapshot, downloadTotal: -1 })).toBeNull()
++    expect(
++      parseConnectionsPayload({
++        ...snapshot,
++        connections: [{ ...validConnection, upload: -1 }],
++      }),
++    ).toBeNull()
++    expect(
++      parseConnectionsPayload({
++        ...snapshot,
++        connections: [{ ...validConnection, download: -1 }],
++      }),
++    ).toBeNull()
 +  })
 +})

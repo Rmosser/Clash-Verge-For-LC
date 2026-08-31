@@ -20,8 +20,8 @@ const initConnData: ConnectionMonitorData = {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
-const isFiniteNumber = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isFinite(value)
+const isNonNegativeFiniteNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0
 
 const isString = (value: unknown): value is string => typeof value === 'string'
 
@@ -61,8 +61,8 @@ const isConnectionItem = (value: unknown): value is IConnectionsItem => {
     isString(value.id) &&
     value.id.length > 0 &&
     isConnectionMetadata(value.metadata) &&
-    isFiniteNumber(value.upload) &&
-    isFiniteNumber(value.download) &&
+    isNonNegativeFiniteNumber(value.upload) &&
+    isNonNegativeFiniteNumber(value.download) &&
     isString(value.start) &&
     isStringArray(value.chains) &&
     isString(value.rule) &&
@@ -74,7 +74,10 @@ export const parseConnectionsPayload = (
   value: unknown,
 ): IConnections | null => {
   if (!isRecord(value)) return null
-  if (!isFiniteNumber(value.downloadTotal) || !isFiniteNumber(value.uploadTotal)) {
+  if (
+    !isNonNegativeFiniteNumber(value.downloadTotal) ||
+    !isNonNegativeFiniteNumber(value.uploadTotal)
+  ) {
     return null
   }
 

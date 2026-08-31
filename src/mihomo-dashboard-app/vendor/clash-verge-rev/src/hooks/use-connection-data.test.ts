@@ -35,7 +35,7 @@ describe('Mihomo connections websocket payload parser', () => {
     })
   })
 
-  it('rejects malformed rows and non-finite counters before merging', () => {
+  it('rejects malformed rows and invalid counters before merging', () => {
     const snapshot = {
       uploadTotal: 12,
       downloadTotal: 34,
@@ -50,5 +50,19 @@ describe('Mihomo connections websocket payload parser', () => {
       }),
     ).toBeNull()
     expect(parseConnectionsPayload({ ...snapshot, uploadTotal: Number.NaN })).toBeNull()
+    expect(parseConnectionsPayload({ ...snapshot, uploadTotal: -1 })).toBeNull()
+    expect(parseConnectionsPayload({ ...snapshot, downloadTotal: -1 })).toBeNull()
+    expect(
+      parseConnectionsPayload({
+        ...snapshot,
+        connections: [{ ...validConnection, upload: -1 }],
+      }),
+    ).toBeNull()
+    expect(
+      parseConnectionsPayload({
+        ...snapshot,
+        connections: [{ ...validConnection, download: -1 }],
+      }),
+    ).toBeNull()
   })
 })
