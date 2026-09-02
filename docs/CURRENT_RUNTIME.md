@@ -26,6 +26,23 @@
 - `172.18.0.1:9091` 作为 Verge API
 - `172.18.0.1:17890` 作为容器显式代理入口
 
+## 运行时恢复与健康契约
+
+- `install_host_native_bootstrap.sh` 将宿主机文件发布为不可变 generation；
+  `current-generation`、`applied-generation` 和 `state/pending.env` 记录启动
+  reconcile 边界。启动时优先校验并重启现有 live 配置，只有 live 配置缺失或
+  校验失败才回退到完整 generation，避免把 snapshot 之后的配置静默覆盖。
+- generation 应用先写 pending transaction、停止相关服务、完成独立 staging
+  校验，再切换文件并验证 Mihomo controller 与 Verge API；进程在中途被杀时，
+  下一次启动会依据 pending generation 重做完整应用，不把混代文件当作成功。
+- `mihomo-resolved-sync.service` 每次 `apply` 都重新探测当前 IPv4 default-route
+  interface；持久化 interface 只用于没有 default route 时的安全 revert，不能驱动
+  新的 DNS assignment。
+- `/healthz` 同时探测 Mihomo `/version` controller 和 restore transaction；任一
+  未确认时返回 HTTP 503。Verge API 可按 `MIHOMO_ALERT_WEBHOOK_URL` 配置主动告警，
+  所有状态转换先 fsync 到 `/var/lib/mihomo/verge/logs/alerts.jsonl`，后台 watcher
+  由 `MIHOMO_HEALTH_WATCH_INTERVAL_SECONDS` 控制（默认 systemd 配置为 60 秒）。
+
 `scripts/deploy_microserver.sh` 的 host-native 默认值与该基线一致。为便于审阅和目标机区分，运维命令仍建议显式写出：
 
 ```bash

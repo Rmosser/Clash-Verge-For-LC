@@ -117,6 +117,26 @@ bash scripts/install_host_native_bootstrap.sh --confirm
 
 这条路径当前已部署，但还没做真实 reboot 验证。
 
+自举状态保存在 `/root/.config/lzc-mihomo-bootstrap/`：
+
+- `generations/<generation>/` 是完整、校验过的候选；`current-generation` 是原子
+  发布指针；`applied-generation` 是最后一次完整验收的 generation。
+- `state/pending.env` 表示文件切换尚未完成。若 bootstrap 在切换中被杀，下一次
+  启动会保留 pending 状态并从同一 generation 新建 staging，完成全量校验后再
+  启动服务。
+- 启动会先尝试重启并验收当前 live 配置，因此 snapshot 之后的正常配置变更不会
+  仅因重启而被旧 snapshot 覆盖；只有 live 配置缺失或校验失败才使用 generation
+  恢复。
+
+### 健康与告警
+
+`/healthz` 只有在 Verge API、Mihomo controller `/version` 且没有未决 restore
+transaction 时才返回 200；controller 不可达或恢复状态未知时返回 503。API
+会在 `/var/lib/mihomo/verge/logs/alerts.jsonl` 保留可重放的告警 outbox，并按
+状态转换和 cooldown 去重。需要主动投递时，在 root systemd drop-in 中设置
+`MIHOMO_ALERT_WEBHOOK_URL`，并保留 `MIHOMO_HEALTH_WATCH_INTERVAL_SECONDS` 的
+轮询间隔；不要把 webhook secret 写进仓库。
+
 ## 重启后的验收
 
 ### `rainierdev`
