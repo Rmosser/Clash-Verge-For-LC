@@ -3,7 +3,7 @@ set -euo pipefail
 
 PATH="/lzcsys/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
-STATE_DIR="/var/lib/mihomo"
+STATE_DIR="${MIHOMO_RESOLVED_STATE_DIR:-/var/lib/mihomo}"
 STATE_FILE="$STATE_DIR/resolved-link.iface"
 PRIMARY_DNS="${MIHOMO_RESOLVED_DNS_PRIMARY:-127.0.0.1:1053}"
 
@@ -16,27 +16,56 @@ need_bin() {
 }
 
 detect_default_iface() {
-  ip route show default 2>/dev/null | awk '/default/ {print $5; exit}'
+  ip -4 route show default 2>/dev/null | awk '/default/ {print $5; exit}'
 }
 
 detect_default_gateway_v4() {
-  ip route show default 2>/dev/null | awk '/default/ {print $3; exit}'
+  ip -4 route show default 2>/dev/null | awk '/default/ {print $3; exit}'
+}
+
+interface_exists() {
+  local iface="$1"
+  [[ -n "$iface" ]] && ip link show dev "$iface" >/dev/null 2>&1
+}
+
+read_stored_iface() {
+  if [[ -f "$STATE_FILE" ]]; then
+    tr -d '\r\n' <"$STATE_FILE" 2>/dev/null || true
+  fi
+}
+
+resolve_apply_iface() {
+  local detected
+  if [[ -n "${MIHOMO_RESOLVED_IFACE:-}" ]]; then
+    if interface_exists "$MIHOMO_RESOLVED_IFACE"; then
+      printf '%s\n' "$MIHOMO_RESOLVED_IFACE"
+      return
+    fi
+    echo "WARN: configured resolver interface is absent; re-detecting default route" >&2
+  fi
+  detected="$(detect_default_iface)"
+  if interface_exists "$detected"; then
+    printf '%s\n' "$detected"
+    return
+  fi
+  return 1
 }
 
 resolve_iface() {
-  if [[ -n "${MIHOMO_RESOLVED_IFACE:-}" ]]; then
-    printf '%s\n' "$MIHOMO_RESOLVED_IFACE"
+  local detected stored
+  if detected="$(resolve_apply_iface)"; then
+    printf '%s\n' "$detected"
     return 0
   fi
-  if [[ -f "$STATE_FILE" ]]; then
-    local stored
-    stored="$(tr -d '\r\n' <"$STATE_FILE" 2>/dev/null || true)"
-    if [[ -n "$stored" ]]; then
-      printf '%s\n' "$stored"
-      return 0
-    fi
+  # Revert may run while the default route is temporarily absent.  Only use
+  # the persisted interface after checking that the link still exists; stale
+  # state must never drive a new DNS assignment.
+  stored="$(read_stored_iface)"
+  if interface_exists "$stored"; then
+    printf '%s\n' "$stored"
+    return 0
   fi
-  detect_default_iface
+  return 1
 }
 
 resolve_fallback_dns() {
@@ -56,9 +85,12 @@ resolve_fallback_dns() {
 apply_dns() {
   local iface
   local fallback_dns=()
-  iface="$(resolve_iface)"
+  if ! iface="$(resolve_apply_iface)"; then
+    echo "ERROR: unable to determine a live default route interface for resolvectl" >&2
+    exit 1
+  fi
   if [[ -z "$iface" ]]; then
-    echo "ERROR: unable to determine default route interface for resolvectl" >&2
+    echo "ERROR: unable to determine a live default route interface for resolvectl" >&2
     exit 1
   fi
 
@@ -77,13 +109,14 @@ apply_dns() {
 }
 
 revert_dns() {
-  local iface
-  iface="$(resolve_iface)"
-  if [[ -z "$iface" ]]; then
-    exit 0
-  fi
-
-  resolvectl revert "$iface" || true
+  local iface stored
+  stored="$(read_stored_iface)"
+  iface="$(resolve_apply_iface 2>/dev/null || true)"
+  for candidate in "$stored" "$iface"; do
+    [[ -n "$candidate" ]] || continue
+    interface_exists "$candidate" || continue
+    resolvectl revert "$candidate" || true
+  done
   resolvectl flush-caches >/dev/null 2>&1 || true
 }
 

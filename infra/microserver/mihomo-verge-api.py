@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import concurrent.futures
+from contextvars import ContextVar
 import copy
 import datetime as dt
 import hashlib
@@ -18,6 +19,7 @@ import secrets
 import shutil
 import socket
 import ssl
+import stat
 import subprocess
 import sys
 import tempfile
@@ -33,9 +35,8 @@ import zipfile
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
-from contextvars import ContextVar
 
 MODULE_DIR = str(Path(__file__).resolve().parent)
 if MODULE_DIR not in sys.path:
@@ -81,11 +82,46 @@ OPERATIONS_LOG_PATH = LOGS_DIR / "operations.log"
 VERGE_API_SECRET_PATH = Path(
     os.environ.get("VERGE_API_SECRET_FILE", "/etc/mihomo/verge-api.secret")
 )
+RESTORE_TRANSACTION_PATH = DATA_ROOT / "restore-transaction.json"
+ALERT_OUTBOX_PATH = Path(
+    os.environ.get("MIHOMO_ALERT_OUTBOX", str(LOGS_DIR / "alerts.jsonl"))
+)
+ALERT_STATE_PATH = Path(
+    os.environ.get("MIHOMO_ALERT_STATE", str(LOGS_DIR / "alert-state.json"))
+)
+ALERT_WEBHOOK_URL = os.environ.get("MIHOMO_ALERT_WEBHOOK_URL", "").strip()
+ALERT_COOLDOWN_SECONDS = max(
+    0,
+    int(os.environ.get("MIHOMO_ALERT_COOLDOWN_SECONDS", "300")),
+)
+ALERT_WEBHOOK_TIMEOUT_SECONDS = max(
+    1,
+    int(os.environ.get("MIHOMO_ALERT_WEBHOOK_TIMEOUT_SECONDS", "5")),
+)
+ALERT_MAX_ATTEMPTS = max(
+    1,
+    int(os.environ.get("MIHOMO_ALERT_MAX_ATTEMPTS", "5")),
+)
+ALERT_RETRY_BACKOFF_SECONDS = max(
+    0.0,
+    float(os.environ.get("MIHOMO_ALERT_RETRY_BACKOFF_SECONDS", "60")),
+)
+ALERT_RETRY_MAX_DELAY_SECONDS = max(
+    ALERT_RETRY_BACKOFF_SECONDS,
+    float(os.environ.get("MIHOMO_ALERT_RETRY_MAX_DELAY_SECONDS", "3600")),
+)
+HEALTH_WATCH_INTERVAL_SECONDS = max(
+    0,
+    int(os.environ.get("MIHOMO_HEALTH_WATCH_INTERVAL_SECONDS", "0")),
+)
 
 LOG_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar(
     "mihomo_verge_log_context", default=None
 )
 OPERATIONS_LOG_LOCK = threading.Lock()
+RESTORE_LOCK = threading.RLock()
+ALERT_LOCK = threading.RLock()
+HEALTH_WATCH_STOP = threading.Event()
 
 SENSITIVE_QUERY_PARAMETER_RE = re.compile(
     r"([?&](?:token|access_token|api_key|apikey|key|secret|password|passwd|auth|authorization|cookie|webhook)=)[^&#\s]*",
@@ -108,6 +144,35 @@ MIHOMO_BIN = Path("/usr/local/bin/mihomo")
 MMDB_PATH = MIHOMO_STATE_DIR / "Country.mmdb"
 EMPTY_RESET_SENTINEL_PATH = MIHOMO_STATE_DIR / ".verge-clean-reset"
 CONTROLLER_URL = "http://172.18.0.1:9090"
+
+RESTORE_FILE_TARGETS = (
+    ("verge.json", VERGE_CONFIG_PATH),
+    ("profiles.json", PROFILES_CONFIG_PATH),
+    ("system-overlay.json", OVERLAY_JSON_PATH),
+    ("system-overlay.yaml", OVERLAY_YAML_PATH),
+    ("dns-config.json", DNS_CONFIG_PATH),
+    ("config.yaml", MIHOMO_CONFIG_PATH),
+    ("verge-api.secret", VERGE_API_SECRET_PATH),
+)
+RESTORE_DIRECTORY_TARGETS = (
+    ("profiles", PROFILES_DIR),
+    ("icons", ICONS_DIR),
+)
+RESTORE_REQUIRED_MEMBERS = {
+    "verge.json",
+    "profiles.json",
+    "config.yaml",
+    "verge-api.secret",
+    "profiles",
+}
+RESTORE_MAX_MEMBER_BYTES = max(
+    1024,
+    int(os.environ.get("MIHOMO_RESTORE_MAX_MEMBER_BYTES", str(64 * 1024 * 1024))),
+)
+RESTORE_MAX_TOTAL_BYTES = max(
+    RESTORE_MAX_MEMBER_BYTES,
+    int(os.environ.get("MIHOMO_RESTORE_MAX_TOTAL_BYTES", str(256 * 1024 * 1024))),
+)
 
 DEFAULT_CONTROLLER_CORS = {
     "allow-private-network": True,
@@ -476,6 +541,23 @@ def load_runtime_contract() -> dict[str, Any]:
 def ensure_dirs() -> None:
     for path in (DATA_ROOT, PROFILES_DIR, BACKUPS_DIR, ICONS_DIR, LOGS_DIR):
         path.mkdir(parents=True, exist_ok=True)
+    ALERT_OUTBOX_PATH.parent.mkdir(parents=True, exist_ok=True)
+    ALERT_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _alert_corruption_path().parent.mkdir(parents=True, exist_ok=True)
+
+
+def _fsync_directory(path: Path) -> None:
+    """Persist an atomic rename when the underlying filesystem supports it."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
 
 
 def sanitize_log_text(message: object) -> str:
@@ -539,14 +621,497 @@ def atomic_write_bytes(path: Path, payload: bytes, mode: int | None = None) -> N
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(delete=False, dir=str(path.parent)) as handle:
         handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
         tmp_name = handle.name
     if mode is not None:
         os.chmod(tmp_name, mode)
     os.replace(tmp_name, path)
+    _fsync_directory(path.parent)
 
 
 def atomic_write_text(path: Path, text: str, mode: int | None = None) -> None:
     atomic_write_bytes(path, text.encode("utf-8"), mode)
+
+
+def _alert_corruption_path() -> Path:
+    """Return the corruption journal path, resolving the outbox at call time.
+
+    Resolving the default from ``ALERT_OUTBOX_PATH`` at call time keeps the
+    journal colocated when tests or a host-local override replace the outbox
+    path after module import.
+    """
+    configured = os.environ.get("MIHOMO_ALERT_CORRUPTION", "").strip()
+    if configured:
+        return Path(configured)
+    return ALERT_OUTBOX_PATH.with_name(ALERT_OUTBOX_PATH.name + ".corrupt.jsonl")
+
+
+def _append_jsonl_record(path: Path, record: dict[str, Any]) -> None:
+    """Append a JSONL record without ever concatenating it to a torn line."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(record, ensure_ascii=False, sort_keys=True).encode("utf-8") + b"\n"
+    existing = path.read_bytes() if path.exists() else b""
+    separator = b"" if not existing or existing.endswith(b"\n") else b"\n"
+    with path.open("ab") as handle:
+        handle.write(separator + line)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _alert_corruption_receipt(
+    raw_record: bytes,
+    *,
+    line_number: int,
+    offset: int,
+    reason: str,
+) -> None:
+    """Persist an auditable, secret-free receipt for a discarded journal row."""
+    _append_jsonl_record(
+        _alert_corruption_path(),
+        {
+            "type": "corruption",
+            "id": uuid.uuid4().hex,
+            "detectedAt": iso_now(),
+            "source": str(ALERT_OUTBOX_PATH),
+            "line": line_number,
+            "offset": offset,
+            "bytes": len(raw_record),
+            "sha256": hashlib.sha256(raw_record).hexdigest(),
+            "reason": reason,
+        },
+    )
+
+
+def _recover_alert_outbox_locked() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Read and repair the alert journal one row at a time.
+
+    A malformed row is quarantined and removed from the active journal while
+    later valid rows are retained.  The rewrite is atomic, so a process death
+    during repair leaves either the old journal or the complete repaired one.
+    Valid JSON without a final newline is normalized before the next append;
+    this is the key boundary that prevents a later event from being glued to a
+    torn tail.
+    """
+    if not ALERT_OUTBOX_PATH.exists():
+        return [], {"repaired": False, "corruptions": 0}
+
+    raw = ALERT_OUTBOX_PATH.read_bytes()
+    if not raw:
+        return [], {"repaired": False, "corruptions": 0}
+
+    events: list[dict[str, Any]] = []
+    normalized_lines: list[bytes] = []
+    corruption_count = 0
+    changed = False
+    offset = 0
+    for line_number, raw_line in enumerate(raw.splitlines(keepends=True), start=1):
+        has_newline = raw_line.endswith(b"\n")
+        record_bytes = raw_line[:-1] if has_newline else raw_line
+        if record_bytes.endswith(b"\r"):
+            record_bytes = record_bytes[:-1]
+        offset_before = offset
+        offset += len(raw_line)
+        if not record_bytes.strip():
+            changed = True
+            continue
+        try:
+            record = json.loads(record_bytes.decode("utf-8"))
+        except Exception:
+            corruption_count += 1
+            changed = True
+            _alert_corruption_receipt(
+                record_bytes,
+                line_number=line_number,
+                offset=offset_before,
+                reason="unterminated-or-invalid-json" if not has_newline else "invalid-json",
+            )
+            continue
+        if not isinstance(record, dict):
+            corruption_count += 1
+            changed = True
+            _alert_corruption_receipt(
+                record_bytes,
+                line_number=line_number,
+                offset=offset_before,
+                reason="record-is-not-an-object",
+            )
+            continue
+        events.append(record)
+        canonical = json.dumps(record, ensure_ascii=False, sort_keys=True).encode("utf-8") + b"\n"
+        normalized_lines.append(canonical)
+        if raw_line != canonical:
+            changed = True
+
+    normalized = b"".join(normalized_lines)
+    if changed:
+        atomic_write_bytes(ALERT_OUTBOX_PATH, normalized, 0o600)
+    return events, {"repaired": changed, "corruptions": corruption_count}
+
+
+def reconcile_alert_outbox() -> dict[str, Any]:
+    """Repair the alert journal during startup before normal API work."""
+    ensure_dirs()
+    with ALERT_LOCK:
+        _, result = _recover_alert_outbox_locked()
+    return result
+
+
+def _append_alert_event(event: dict[str, Any]) -> None:
+    """Append one durable alert/outbox event and fsync it before returning."""
+    ensure_dirs()
+    with ALERT_LOCK:
+        _recover_alert_outbox_locked()
+        _append_jsonl_record(ALERT_OUTBOX_PATH, event)
+
+
+def _alert_state() -> dict[str, Any]:
+    if not ALERT_STATE_PATH.exists():
+        return {}
+    try:
+        loaded = json.loads(ALERT_STATE_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:
+        append_operation_log("alert state load failed", error=exc)
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _alert_corruption_count_locked() -> tuple[int, str]:
+    """Read corruption receipts without allowing a damaged receipt to hide."""
+    path = _alert_corruption_path()
+    if not path.exists():
+        return 0, ""
+    try:
+        raw = path.read_bytes()
+    except Exception as exc:
+        return 1, f"corruption journal unreadable: {type(exc).__name__}"
+    count = 0
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            receipt = json.loads(line.decode("utf-8"))
+        except Exception:
+            return max(1, count + 1), "corruption journal contains invalid JSON"
+        if not isinstance(receipt, dict) or receipt.get("type") != "corruption":
+            return max(1, count + 1), "corruption journal contains an invalid receipt"
+        count += 1
+    return count, "" if count == 0 else "outbox corruption was quarantined"
+
+
+def _alert_attempt_count(receipt: dict[str, Any] | None) -> int:
+    if not isinstance(receipt, dict):
+        return 0
+    try:
+        return max(0, int(receipt.get("attempt") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _alert_retry_delay(attempt: int) -> float:
+    if ALERT_RETRY_BACKOFF_SECONDS <= 0:
+        return 0.0
+    exponent = max(0, min(attempt - 1, 31))
+    return min(
+        ALERT_RETRY_MAX_DELAY_SECONDS,
+        ALERT_RETRY_BACKOFF_SECONDS * (2**exponent),
+    )
+
+
+def alert_health_payload() -> dict[str, Any]:
+    """Expose alert channel readiness independently from controller health."""
+    with ALERT_LOCK:
+        try:
+            events, _ = _recover_alert_outbox_locked()
+        except Exception as exc:
+            detail = f"alert outbox unavailable: {type(exc).__name__}"
+            append_operation_log("alert health inspection failed", error=exc)
+            return {
+                "status": "degraded",
+                "ready": False,
+                "enabled": bool(ALERT_WEBHOOK_URL),
+                "configured": bool(ALERT_WEBHOOK_URL),
+                "outbox": str(ALERT_OUTBOX_PATH),
+                "corruptionCount": 1,
+                "pending": 0,
+                "failed": 0,
+                "exhausted": 0,
+                "delivered": 0,
+                "maxAttempts": ALERT_MAX_ATTEMPTS,
+                "retryBackoffSeconds": ALERT_RETRY_BACKOFF_SECONDS,
+                "retryMaxDelaySeconds": ALERT_RETRY_MAX_DELAY_SECONDS,
+                "detail": detail,
+            }
+        corruption_count, corruption_detail = _alert_corruption_count_locked()
+
+        alerts: dict[str, dict[str, Any]] = {}
+        deliveries: dict[str, dict[str, Any]] = {}
+        for event in events:
+            if event.get("type") == "delivery":
+                alert_id = str(event.get("alertId") or "")
+                if alert_id:
+                    deliveries[alert_id] = event
+                continue
+            alert_id = str(event.get("id") or "")
+            if alert_id:
+                alerts[alert_id] = event
+
+        pending = failed = exhausted = delivered = orphan_receipts = 0
+        last_error = corruption_detail
+        for alert_id in alerts:
+            receipt = deliveries.get(alert_id) or {}
+            status = str(receipt.get("status") or "")
+            if status == "delivered":
+                delivered += 1
+                continue
+            pending += 1
+            if status == "exhausted":
+                exhausted += 1
+            elif status == "failed":
+                failed += 1
+            if receipt.get("error"):
+                last_error = str(receipt.get("error"))[:500]
+        orphan_receipts = sum(alert_id not in alerts for alert_id in deliveries)
+        if orphan_receipts:
+            corruption_count += orphan_receipts
+            last_error = "delivery receipt has no matching alert event"
+
+        if not ALERT_WEBHOOK_URL:
+            last_error = "alert webhook is not configured"
+        elif pending and not last_error:
+            last_error = "alert delivery is pending"
+        ready = bool(
+            ALERT_WEBHOOK_URL
+            and corruption_count == 0
+            and pending == 0
+        )
+        return {
+            "status": "ok" if ready else "degraded",
+            "ready": ready,
+            "enabled": bool(ALERT_WEBHOOK_URL),
+            "configured": bool(ALERT_WEBHOOK_URL),
+            "outbox": str(ALERT_OUTBOX_PATH),
+            "corruptionCount": corruption_count,
+            "pending": pending,
+            "failed": failed,
+            "exhausted": exhausted,
+            "delivered": delivered,
+            "maxAttempts": ALERT_MAX_ATTEMPTS,
+            "retryBackoffSeconds": ALERT_RETRY_BACKOFF_SECONDS,
+            "retryMaxDelaySeconds": ALERT_RETRY_MAX_DELAY_SECONDS,
+            "detail": last_error,
+        }
+
+
+def record_runtime_alert(
+    component: str,
+    status: str,
+    details: str = "",
+) -> dict[str, Any] | None:
+    """Persist transition alerts; repeated health polls are cooldown limited."""
+    component = re.sub(r"[^a-z0-9_.-]", "_", str(component).lower()) or "runtime"
+    status = str(status).lower()
+    if status not in {"ok", "degraded"}:
+        status = "degraded"
+    now = time.time()
+    with ALERT_LOCK:
+        state = _alert_state()
+        previous = state.get(component) if isinstance(state.get(component), dict) else {}
+        previous_status = str(previous.get("status") or "")
+        try:
+            last_emitted = float(previous.get("lastEmittedAt") or 0)
+        except (TypeError, ValueError):
+            last_emitted = 0.0
+        if not previous_status and status == "ok":
+            state[component] = {
+                "status": status,
+                "lastEmittedAt": 0,
+                "lastEventId": "",
+            }
+            atomic_write_text(
+                ALERT_STATE_PATH,
+                json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                0o600,
+            )
+            return None
+        if previous_status == "ok" and status == "ok":
+            return None
+        changed = previous_status != status
+        if not changed and now - last_emitted < ALERT_COOLDOWN_SECONDS:
+            return None
+        event = {
+            "id": uuid.uuid4().hex,
+            "createdAt": iso_now(),
+            "component": component,
+            "status": status,
+            "details": sanitize_log_text(details)[:1000],
+            "delivery": "pending" if ALERT_WEBHOOK_URL else "disabled",
+        }
+        # Keep the state update and the durable event ordered: a crash can
+        # duplicate an alert, but can never suppress the first durable event.
+        _append_alert_event(event)
+        state[component] = {
+            "status": status,
+            "lastEmittedAt": now,
+            "lastEventId": event["id"],
+        }
+        atomic_write_text(
+            ALERT_STATE_PATH,
+            json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            0o600,
+        )
+    return event
+
+
+def flush_alert_outbox() -> None:
+    """Deliver pending alerts while preserving bounded, durable attempt state."""
+    if not ALERT_OUTBOX_PATH.exists():
+        return
+    # Health requests and the background watcher can flush concurrently.  Keep
+    # one sender in flight so a slow endpoint cannot produce duplicate POSTs
+    # for the same durable alert event.
+    with ALERT_LOCK:
+        try:
+            events, _ = _recover_alert_outbox_locked()
+        except Exception as exc:
+            append_operation_log("alert outbox load failed", error=exc)
+            return
+        if not ALERT_WEBHOOK_URL:
+            return
+        delivery_receipts: dict[str, dict[str, Any]] = {}
+        for event in events:
+            if event.get("type") == "delivery" and event.get("alertId"):
+                delivery_receipts[str(event["alertId"])] = event
+        for event in events:
+            if not isinstance(event, dict) or not event.get("id"):
+                continue
+            if event.get("type") == "delivery":
+                continue
+            event_id = str(event["id"])
+            receipt = delivery_receipts.get(event_id) or {}
+            receipt_status = str(receipt.get("status") or "")
+            if receipt_status in {"delivered", "exhausted"}:
+                continue
+            previous_attempt = _alert_attempt_count(receipt)
+            if (
+                receipt_status in {"attempting", "failed"}
+                and previous_attempt >= ALERT_MAX_ATTEMPTS
+            ):
+                exhausted_receipt = {
+                    "type": "delivery",
+                    "alertId": event_id,
+                    "status": "exhausted",
+                    "attempt": previous_attempt,
+                    "idempotencyKey": event_id,
+                    "createdAt": iso_now(),
+                    "error": "delivery attempt was interrupted at the retry limit",
+                }
+                try:
+                    _append_alert_event(exhausted_receipt)
+                    delivery_receipts[event_id] = exhausted_receipt
+                except Exception as receipt_error:
+                    append_operation_log(
+                        "alert exhausted receipt persist failed",
+                        error=receipt_error,
+                    )
+                continue
+            attempt = previous_attempt + 1
+            if receipt_status == "failed":
+                try:
+                    next_attempt_at = float(receipt.get("nextAttemptAt") or 0)
+                except (TypeError, ValueError):
+                    next_attempt_at = 0.0
+                if next_attempt_at > time.time():
+                    continue
+            attempt_receipt = {
+                "type": "delivery",
+                "alertId": event_id,
+                "status": "attempting",
+                "attempt": attempt,
+                "idempotencyKey": event_id,
+                "createdAt": iso_now(),
+            }
+            try:
+                _append_alert_event(attempt_receipt)
+                delivery_receipts[event_id] = attempt_receipt
+            except Exception as receipt_error:
+                append_operation_log(
+                    "alert delivery attempt receipt persist failed",
+                    error=receipt_error,
+                )
+                continue
+            payload = json.dumps(
+                {
+                    "id": event_id,
+                    "createdAt": event.get("createdAt"),
+                    "component": event.get("component"),
+                    "status": event.get("status"),
+                    "details": event.get("details", ""),
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+            request = urllib.request.Request(
+                ALERT_WEBHOOK_URL,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "mihomo-verge-api-alert/1.0",
+                    "Idempotency-Key": event_id,
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(
+                    request,
+                    timeout=ALERT_WEBHOOK_TIMEOUT_SECONDS,
+                ) as response:
+                    if not (200 <= int(response.status) < 300):
+                        raise RuntimeError(f"alert endpoint returned HTTP {response.status}")
+            except Exception as exc:
+                append_operation_log("alert delivery failed", error=exc)
+                status = "exhausted" if attempt >= ALERT_MAX_ATTEMPTS else "failed"
+                receipt: dict[str, Any] = {
+                    "type": "delivery",
+                    "alertId": event_id,
+                    "status": status,
+                    "attempt": attempt,
+                    "idempotencyKey": event_id,
+                    "createdAt": iso_now(),
+                    "error": sanitize_log_text(str(exc))[:500],
+                }
+                if status == "failed":
+                    receipt["nextAttemptAt"] = time.time() + _alert_retry_delay(attempt)
+                try:
+                    _append_alert_event(receipt)
+                    delivery_receipts[event_id] = receipt
+                except Exception as receipt_error:
+                    # A crash or disk failure in this window intentionally
+                    # leaves no delivered receipt; the next process retries
+                    # with the same Idempotency-Key.
+                    append_operation_log(
+                        "alert delivery failure receipt persist failed",
+                        error=receipt_error,
+                    )
+                continue
+            receipt = {
+                "type": "delivery",
+                "alertId": event_id,
+                "status": "delivered",
+                "attempt": attempt,
+                "idempotencyKey": event_id,
+                "createdAt": iso_now(),
+            }
+            try:
+                _append_alert_event(receipt)
+                delivery_receipts[event_id] = receipt
+            except Exception as receipt_error:
+                # The receiver may already have accepted the POST.  Do not
+                # manufacture a new event id; replay is deliberately keyed by
+                # the original alert id after restart.
+                append_operation_log(
+                    "alert delivery receipt persist failed",
+                    error=receipt_error,
+                )
 
 
 def load_json(path: Path, default: Any) -> Any:
@@ -1652,6 +2217,9 @@ def normalize_verge_config_state(raw: Any) -> tuple[dict[str, Any], bool]:
 def ensure_state() -> None:
     global ENSURING_EMPTY_RUNTIME
     ensure_dirs()
+    reconcile_alert_outbox()
+    cleanup_restore_orphans()
+    restore_reconciled = reconcile_restore_transaction()
     verge_api_secret()
     initialized_empty_state = False
 
@@ -1714,6 +2282,18 @@ def ensure_state() -> None:
                 append_operation_log(
                     "reconciled stale mihomo runtime with empty profile state"
                 )
+        finally:
+            ENSURING_EMPTY_RUNTIME = False
+
+    if restore_reconciled and not ENSURING_EMPTY_RUNTIME:
+        ENSURING_EMPTY_RUNTIME = True
+        try:
+            apply_runtime_for_current_or_empty_state()
+            record_runtime_alert("restore", "ok", "startup restore reconciliation completed")
+        except Exception as exc:
+            record_runtime_alert("restore", "degraded", str(exc))
+            append_operation_log("startup restore runtime reconciliation failed", error=exc)
+            raise
         finally:
             ENSURING_EMPTY_RUNTIME = False
 
@@ -1956,14 +2536,64 @@ def classify_public_probe_error(exc: Exception) -> tuple[str, str]:
 
 def runtime_probe_health() -> dict[str, Any]:
     try:
-        controller_request("GET", "/version", timeout=4)
+        version = controller_request("GET", "/version", timeout=4)
+        if not isinstance(version, dict) or not str(version.get("version") or "").strip():
+            raise RuntimeError("controller returned an invalid /version payload")
     except Exception as exc:
-        return {
+        result = {
             "status": "degraded",
             "checkedAt": iso_now(),
-            "details": str(exc),
+            "details": sanitize_log_text(str(exc))[:500],
         }
-    return {"status": "ok", "checkedAt": iso_now()}
+        record_runtime_alert("controller", "degraded", result["details"])
+        flush_alert_outbox()
+        return result
+    result = {
+        "status": "ok",
+        "checkedAt": iso_now(),
+        "version": str(version.get("version") or "unknown"),
+    }
+    record_runtime_alert("controller", "ok", result["version"])
+    flush_alert_outbox()
+    return result
+
+
+def restore_transaction_status() -> dict[str, Any]:
+    if not RESTORE_TRANSACTION_PATH.exists():
+        return {"status": "ok"}
+    transaction = load_json(RESTORE_TRANSACTION_PATH, {})
+    if not isinstance(transaction, dict):
+        return {"status": "degraded", "phase": "invalid"}
+    return {
+        "status": "degraded",
+        "phase": str(transaction.get("phase") or "pending"),
+        "generation": str(transaction.get("generation") or "unknown"),
+    }
+
+
+def healthz_payload() -> dict[str, Any]:
+    controller = runtime_probe_health()
+    restore = restore_transaction_status()
+    if restore.get("status") != "ok":
+        record_runtime_alert("restore", "degraded", str(restore.get("phase") or "pending"))
+        flush_alert_outbox()
+    else:
+        record_runtime_alert("restore", "ok", "")
+        flush_alert_outbox()
+    alerting = alert_health_payload()
+    ok = (
+        controller.get("status") == "ok"
+        and restore.get("status") == "ok"
+        and alerting.get("status") == "ok"
+    )
+    return {
+        "ok": ok,
+        "status": "ok" if ok else "degraded",
+        "time": iso_now(),
+        "controller": controller,
+        "restore": restore,
+        "alerting": alerting,
+    }
 
 
 def runtime_profile_provider_counts() -> dict[str, int]:
@@ -2012,6 +2642,8 @@ def mark_runtime_profile_degraded(error_message: str) -> dict[str, Any]:
 def runtime_info_payload() -> dict[str, Any]:
     contract = load_runtime_contract()
     profile_health = get_runtime_profile_health_state()
+    probe_health = runtime_probe_health()
+    alerting = alert_health_payload()
     capabilities = copy.deepcopy(
         contract.get("capabilities") or DEFAULT_RUNTIME_CONTRACT["capabilities"]
     )
@@ -2043,8 +2675,10 @@ def runtime_info_payload() -> dict[str, Any]:
             or DEFAULT_RUNTIME_CONTRACT["packageFingerprint"]
         ),
         "capabilities": capabilities,
-        "probeHealth": runtime_probe_health(),
+        "probeHealth": probe_health,
         "profileHealth": profile_health,
+        "restoreHealth": restore_transaction_status(),
+        "alerting": alerting,
     }
 
 
@@ -2775,66 +3409,462 @@ def list_local_backups() -> list[dict[str, Any]]:
 def add_dir_to_zip(handle: zipfile.ZipFile, source: Path, arc_prefix: str) -> None:
     if not source.exists():
         return
+    if source.is_symlink():
+        raise RuntimeError(f"backup source must not be a symlink: {source}")
     for path in sorted(source.rglob("*")):
+        if path.is_symlink():
+            raise RuntimeError(f"backup source contains a symlink: {path}")
         if path.is_dir():
             continue
         handle.write(path, f"{arc_prefix}/{path.relative_to(source)}")
 
 
+def _restore_target_specs() -> tuple[tuple[str, Path], ...]:
+    return RESTORE_FILE_TARGETS + RESTORE_DIRECTORY_TARGETS
+
+
+def _restore_path_is_private(path: Path) -> bool:
+    try:
+        resolved = path.resolve()
+        root = DATA_ROOT.resolve()
+        resolved.relative_to(root)
+    except (OSError, ValueError):
+        return False
+    return path.parent.resolve() == root and path.name.startswith(".restore-")
+
+
+def _assert_no_symlinks(path: Path) -> None:
+    if path.is_symlink():
+        raise RuntimeError(f"restore path must not be a symlink: {path}")
+    if not path.exists():
+        return
+    for root, directories, files in os.walk(path, followlinks=False):
+        for name in (*directories, *files):
+            candidate = Path(root) / name
+            if candidate.is_symlink():
+                raise RuntimeError(f"restore path contains a symlink: {candidate}")
+
+
+def _remove_restore_path(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+def _zip_member_destination(payload_root: Path, name: str) -> Path:
+    if "\\" in name:
+        raise RuntimeError("restore archive contains a non-posix member")
+    relative = PurePosixPath(name)
+    if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+        raise RuntimeError(f"unsafe restore archive member: {name}")
+    root_name = relative.parts[0]
+    allowed_files = {item[0] for item in RESTORE_FILE_TARGETS}
+    allowed_dirs = {item[0] for item in RESTORE_DIRECTORY_TARGETS}
+    if len(relative.parts) == 1 and root_name in allowed_files:
+        return payload_root / root_name
+    if len(relative.parts) == 1 and root_name in allowed_dirs:
+        return payload_root / root_name
+    if len(relative.parts) > 1 and root_name in allowed_dirs:
+        return payload_root.joinpath(*relative.parts)
+    raise RuntimeError(f"unapproved restore archive member: {name}")
+
+
+def _zip_info_is_symlink(info: zipfile.ZipInfo) -> bool:
+    mode = (info.external_attr >> 16) & 0o170000
+    return stat.S_ISLNK(mode)
+
+
+def _validate_restore_stage(stage: Path) -> dict[str, Any]:
+    payload_root = stage / "payload"
+    if not payload_root.is_dir() or payload_root.is_symlink():
+        raise RuntimeError("restore staging payload is missing")
+    _assert_no_symlinks(payload_root)
+    present: dict[str, str] = {}
+    for name, destination in _restore_target_specs():
+        staged = payload_root / name
+        if staged.is_symlink():
+            raise RuntimeError(f"restore staging target is a symlink: {name}")
+        if staged.exists():
+            expected_type = "directory" if destination in dict(RESTORE_DIRECTORY_TARGETS).values() else "file"
+            actual_type = "directory" if staged.is_dir() else "file" if staged.is_file() else "other"
+            if actual_type != expected_type:
+                raise RuntimeError(f"restore staging target type mismatch: {name}")
+            present[name] = actual_type
+    missing_required = RESTORE_REQUIRED_MEMBERS.difference(present)
+    if missing_required:
+        raise RuntimeError(
+            "restore archive is missing required members: "
+            + ", ".join(sorted(missing_required))
+        )
+    for name in ("verge.json", "profiles.json", "system-overlay.json", "dns-config.json"):
+        path = payload_root / name
+        if path.exists():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                raise RuntimeError(f"restore JSON is invalid: {name}") from exc
+            if not isinstance(loaded, dict):
+                raise RuntimeError(f"restore JSON root must be an object: {name}")
+    if not (payload_root / "config.yaml").read_text(encoding="utf-8").strip():
+        raise RuntimeError("restore config.yaml is empty")
+    if MIHOMO_BIN.is_file():
+        result = run_command(
+            [
+                str(MIHOMO_BIN),
+                "-t",
+                "-d",
+                str(payload_root),
+                "-f",
+                str(payload_root / "config.yaml"),
+            ],
+            check=False,
+        )
+        if result.returncode != 0:
+            output = " ".join(
+                part.strip() for part in (result.stdout, result.stderr) if part.strip()
+            )
+            raise RuntimeError(f"restore config validation failed: {output[:500]}")
+    targets = {
+        name: present.get(name, "missing") for name, _ in _restore_target_specs()
+    }
+    manifest = {"version": 1, "targets": targets}
+    save_json(stage / "manifest.json", manifest, 0o600)
+    return manifest
+
+
+def _prepare_restore_stage(source: Path) -> Path:
+    if not source.is_file() or source.is_symlink():
+        raise RuntimeError(f"restore archive is not a regular file: {source}")
+    if source.stat().st_size > RESTORE_MAX_TOTAL_BYTES:
+        raise RuntimeError("restore archive is too large")
+    stage = Path(tempfile.mkdtemp(prefix=".restore-staging-", dir=str(DATA_ROOT)))
+    payload_root = stage / "payload"
+    payload_root.mkdir(mode=0o700)
+    total_size = 0
+    seen: set[str] = set()
+    try:
+        with zipfile.ZipFile(source, "r") as archive:
+            for info in archive.infolist():
+                name = info.filename.rstrip("/")
+                if not name:
+                    continue
+                if name in seen:
+                    raise RuntimeError(f"restore archive contains duplicate member: {name}")
+                seen.add(name)
+                destination = _zip_member_destination(payload_root, name)
+                if _zip_info_is_symlink(info):
+                    raise RuntimeError(f"restore archive contains a symlink: {name}")
+                if info.is_dir():
+                    destination.mkdir(mode=0o700, parents=True, exist_ok=False)
+                    continue
+                member_size = int(info.file_size or 0)
+                if member_size < 0 or member_size > RESTORE_MAX_MEMBER_BYTES:
+                    raise RuntimeError(f"restore archive member is too large: {name}")
+                total_size += member_size
+                if total_size > RESTORE_MAX_TOTAL_BYTES:
+                    raise RuntimeError("restore archive expands beyond the configured limit")
+                destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                with archive.open(info, "r") as source_handle, destination.open("xb") as target:
+                    copied = 0
+                    while True:
+                        chunk = source_handle.read(min(1024 * 1024, RESTORE_MAX_MEMBER_BYTES + 1))
+                        if not chunk:
+                            break
+                        copied += len(chunk)
+                        if copied > RESTORE_MAX_MEMBER_BYTES:
+                            raise RuntimeError(f"restore archive member expands beyond the limit: {name}")
+                        target.write(chunk)
+                    target.flush()
+                    os.fsync(target.fileno())
+                mode = (info.external_attr >> 16) & 0o777
+                if mode:
+                    os.chmod(destination, mode)
+        _validate_restore_stage(stage)
+        return stage
+    except BaseException:
+        shutil.rmtree(stage, ignore_errors=True)
+        raise
+
+
+def _capture_restore_snapshot(prefix: str) -> Path:
+    snapshot = Path(tempfile.mkdtemp(prefix=prefix, dir=str(DATA_ROOT)))
+    payload_root = snapshot / "payload"
+    payload_root.mkdir(mode=0o700)
+    targets: dict[str, str] = {}
+    try:
+        for name, destination in _restore_target_specs():
+            if destination.is_symlink():
+                raise RuntimeError(f"live restore target is a symlink: {destination}")
+            staged = payload_root / name
+            if not destination.exists():
+                targets[name] = "missing"
+                continue
+            _assert_no_symlinks(destination)
+            if destination.is_dir():
+                targets[name] = "directory"
+                shutil.copytree(destination, staged, copy_function=shutil.copy2)
+            elif destination.is_file():
+                targets[name] = "file"
+                staged.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                shutil.copy2(destination, staged)
+            else:
+                raise RuntimeError(f"unsupported live restore target: {destination}")
+        save_json(snapshot / "manifest.json", {"version": 1, "targets": targets}, 0o600)
+        _assert_no_symlinks(snapshot)
+        return snapshot
+    except BaseException:
+        shutil.rmtree(snapshot, ignore_errors=True)
+        raise
+
+
+def _load_restore_snapshot(snapshot: Path) -> dict[str, Any]:
+    if not _restore_path_is_private(snapshot) or not snapshot.is_dir():
+        raise RuntimeError("restore transaction references an unsafe snapshot")
+    manifest = load_json(snapshot / "manifest.json", {})
+    if not isinstance(manifest, dict) or manifest.get("version") != 1:
+        raise RuntimeError("restore transaction snapshot manifest is invalid")
+    targets = manifest.get("targets")
+    expected = {name for name, _ in _restore_target_specs()}
+    if not isinstance(targets, dict) or set(targets) != expected:
+        raise RuntimeError("restore transaction snapshot target set is invalid")
+    for name, destination in _restore_target_specs():
+        state = targets.get(name)
+        staged = snapshot / "payload" / name
+        if state == "missing":
+            if staged.exists() or staged.is_symlink():
+                raise RuntimeError(f"restore transaction missing target has payload: {name}")
+            continue
+        expected_type = "directory" if destination in dict(RESTORE_DIRECTORY_TARGETS).values() else "file"
+        if state != expected_type or staged.is_symlink():
+            raise RuntimeError(f"restore transaction target is invalid: {name}")
+        if expected_type == "directory" and not staged.is_dir():
+            raise RuntimeError(f"restore transaction directory is missing: {name}")
+        if expected_type == "file" and not staged.is_file():
+            raise RuntimeError(f"restore transaction file is missing: {name}")
+    _assert_no_symlinks(snapshot)
+    return manifest
+
+
+def _replace_restore_file(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, dir=str(destination.parent)) as handle:
+            temporary = Path(handle.name)
+            with source.open("rb") as source_handle:
+                shutil.copyfileobj(source_handle, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        mode = stat.S_IMODE(source.stat().st_mode) or 0o600
+        if destination == VERGE_API_SECRET_PATH:
+            mode = 0o600
+        os.chmod(temporary, mode)
+        os.replace(temporary, destination)
+        temporary = None
+        _fsync_directory(destination.parent)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _replace_restore_directory(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(
+        tempfile.mkdtemp(prefix=f".restore-live-{uuid.uuid4().hex[:10]}-", dir=str(destination.parent))
+    )
+    temporary_payload = temporary / "payload"
+    try:
+        shutil.copytree(source, temporary_payload, copy_function=shutil.copy2)
+        _assert_no_symlinks(temporary_payload)
+        old_path = destination.parent / f".restore-old-{uuid.uuid4().hex[:10]}"
+        if destination.exists() or destination.is_symlink():
+            os.replace(destination, old_path)
+        try:
+            os.replace(temporary_payload, destination)
+        except BaseException:
+            if old_path.exists() and not destination.exists():
+                os.replace(old_path, destination)
+            raise
+        finally:
+            if old_path.exists() or old_path.is_symlink():
+                _remove_restore_path(old_path)
+        _fsync_directory(destination.parent)
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+
+
+def _apply_restore_snapshot(snapshot: Path) -> None:
+    manifest = _load_restore_snapshot(snapshot)
+    targets = manifest["targets"]
+    for name, destination in _restore_target_specs():
+        state = targets[name]
+        staged = snapshot / "payload" / name
+        if state == "missing":
+            if destination.exists() or destination.is_symlink():
+                _remove_restore_path(destination)
+            continue
+        if state == "directory":
+            _replace_restore_directory(staged, destination)
+        else:
+            _replace_restore_file(staged, destination)
+
+
+def _write_restore_transaction(transaction: dict[str, Any]) -> None:
+    save_json(RESTORE_TRANSACTION_PATH, transaction, 0o600)
+
+
+def _cleanup_restore_transaction(transaction: dict[str, Any]) -> None:
+    for key in ("stage", "previous"):
+        value = transaction.get(key)
+        if not isinstance(value, str):
+            continue
+        path = Path(value)
+        if _restore_path_is_private(path):
+            _remove_restore_path(path)
+    RESTORE_TRANSACTION_PATH.unlink(missing_ok=True)
+    _fsync_directory(RESTORE_TRANSACTION_PATH.parent)
+
+
+def cleanup_restore_orphans() -> None:
+    active: set[str] = set()
+    if RESTORE_TRANSACTION_PATH.exists():
+        try:
+            transaction = json.loads(RESTORE_TRANSACTION_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            # A malformed transaction is a fail-closed condition; preserve all
+            # private staging data for manual recovery instead of deleting it.
+            return
+        if not isinstance(transaction, dict):
+            return
+        active = {str(transaction.get(key) or "") for key in ("stage", "previous")}
+    for candidate in (DATA_ROOT.iterdir() if DATA_ROOT.exists() else ()):
+        if not candidate.name.startswith((".restore-staging-", ".restore-previous-", ".restore-live-", ".restore-old-")):
+            continue
+        if str(candidate) in active:
+            continue
+        if _restore_path_is_private(candidate):
+            _remove_restore_path(candidate)
+
+
+def reconcile_restore_transaction() -> bool:
+    """Roll back an interrupted restore before normal state initialization."""
+    if not RESTORE_TRANSACTION_PATH.exists():
+        return False
+    with RESTORE_LOCK:
+        transaction = load_json(RESTORE_TRANSACTION_PATH, {})
+        if not isinstance(transaction, dict):
+            raise RuntimeError("restore transaction is not a JSON object")
+        phase = str(transaction.get("phase") or "")
+        if phase in {"committed", "reconciled", "rolled_back"}:
+            _cleanup_restore_transaction(transaction)
+            return False
+        if phase not in {"prepared", "applying", "applied", "rollback_failed"}:
+            raise RuntimeError(f"restore transaction has unknown phase: {phase}")
+        previous = Path(str(transaction.get("previous") or ""))
+        _load_restore_snapshot(previous)
+        _apply_restore_snapshot(previous)
+        transaction["phase"] = "reconciled"
+        transaction["reconciledAt"] = iso_now()
+        _write_restore_transaction(transaction)
+        _cleanup_restore_transaction(transaction)
+        append_operation_log(
+            f"reconciled interrupted restore generation={str(transaction.get('generation') or 'unknown')[:32]}"
+        )
+        record_runtime_alert("restore", "degraded", "interrupted restore rolled back on startup")
+        return True
+
+
 def create_backup_archive(target: Path) -> None:
     ensure_state()
-    with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for path in (
-            VERGE_CONFIG_PATH,
-            PROFILES_CONFIG_PATH,
-            OVERLAY_JSON_PATH,
-            OVERLAY_YAML_PATH,
-            DNS_CONFIG_PATH,
-            MIHOMO_CONFIG_PATH,
-        ):
-            if path.exists():
-                archive.write(path, path.name)
-        if VERGE_API_SECRET_PATH.exists():
-            archive.write(VERGE_API_SECRET_PATH, "verge-api.secret")
-        add_dir_to_zip(archive, PROFILES_DIR, "profiles")
-        add_dir_to_zip(archive, ICONS_DIR, "icons")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary_fd, temporary_name = tempfile.mkstemp(
+        prefix=".backup-",
+        suffix=".zip",
+        dir=str(target.parent),
+    )
+    os.close(temporary_fd)
+    temporary = Path(temporary_name)
+    try:
+        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for path in (
+                VERGE_CONFIG_PATH,
+                PROFILES_CONFIG_PATH,
+                OVERLAY_JSON_PATH,
+                OVERLAY_YAML_PATH,
+                DNS_CONFIG_PATH,
+                MIHOMO_CONFIG_PATH,
+            ):
+                if path.exists():
+                    if path.is_symlink():
+                        raise RuntimeError(f"backup source must not be a symlink: {path}")
+                    archive.write(path, path.name)
+            if VERGE_API_SECRET_PATH.exists():
+                if VERGE_API_SECRET_PATH.is_symlink():
+                    raise RuntimeError("backup secret must not be a symlink")
+                archive.write(VERGE_API_SECRET_PATH, "verge-api.secret")
+            add_dir_to_zip(archive, PROFILES_DIR, "profiles")
+            add_dir_to_zip(archive, ICONS_DIR, "icons")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, target)
+        _fsync_directory(target.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def restore_backup_archive(source: Path) -> None:
     ensure_state()
-    with zipfile.ZipFile(source, "r") as archive:
-        archive.extractall(DATA_ROOT / "_restore_tmp")
-    restore_root = DATA_ROOT / "_restore_tmp"
-    try:
-        for name, destination in (
-            ("verge.json", VERGE_CONFIG_PATH),
-            ("profiles.json", PROFILES_CONFIG_PATH),
-            ("system-overlay.json", OVERLAY_JSON_PATH),
-            ("system-overlay.yaml", OVERLAY_YAML_PATH),
-            ("dns-config.json", DNS_CONFIG_PATH),
-            ("config.yaml", MIHOMO_CONFIG_PATH),
-        ):
-            source_path = restore_root / name
-            if source_path.exists():
-                atomic_write_bytes(destination, source_path.read_bytes())
-        if (restore_root / "verge-api.secret").exists():
-            atomic_write_bytes(
-                VERGE_API_SECRET_PATH,
-                (restore_root / "verge-api.secret").read_bytes(),
-                0o600,
-            )
-
-        shutil.rmtree(PROFILES_DIR, ignore_errors=True)
-        shutil.rmtree(ICONS_DIR, ignore_errors=True)
-        PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-        ICONS_DIR.mkdir(parents=True, exist_ok=True)
-        if (restore_root / "profiles").exists():
-            shutil.copytree(restore_root / "profiles", PROFILES_DIR, dirs_exist_ok=True)
-        if (restore_root / "icons").exists():
-            shutil.copytree(restore_root / "icons", ICONS_DIR, dirs_exist_ok=True)
-    finally:
-        shutil.rmtree(restore_root, ignore_errors=True)
-    apply_runtime_for_current_or_empty_state()
+    with RESTORE_LOCK:
+        generation = uuid.uuid4().hex
+        stage: Path | None = None
+        previous: Path | None = None
+        transaction: dict[str, Any] | None = None
+        try:
+            stage = _prepare_restore_stage(source)
+            previous = _capture_restore_snapshot(".restore-previous-")
+            transaction = {
+                "version": 1,
+                "generation": generation,
+                "phase": "prepared",
+                "createdAt": iso_now(),
+                "source": source.name,
+                "stage": str(stage),
+                "previous": str(previous),
+            }
+            _write_restore_transaction(transaction)
+            transaction["phase"] = "applying"
+            _write_restore_transaction(transaction)
+            _apply_restore_snapshot(stage)
+            transaction["phase"] = "applied"
+            _write_restore_transaction(transaction)
+            apply_runtime_for_current_or_empty_state()
+            transaction["phase"] = "committed"
+            transaction["committedAt"] = iso_now()
+            _write_restore_transaction(transaction)
+            _cleanup_restore_transaction(transaction)
+            record_runtime_alert("restore", "ok", generation)
+            flush_alert_outbox()
+        except BaseException as exc:
+            details = sanitize_log_text(str(exc))[:500]
+            record_runtime_alert("restore", "degraded", details or "restore interrupted")
+            if transaction is not None and previous is not None:
+                try:
+                    transaction["phase"] = "rollback_failed"
+                    _write_restore_transaction(transaction)
+                    _apply_restore_snapshot(previous)
+                    apply_runtime_for_current_or_empty_state()
+                    transaction["phase"] = "rolled_back"
+                    transaction["rolledBackAt"] = iso_now()
+                    _write_restore_transaction(transaction)
+                    _cleanup_restore_transaction(transaction)
+                except BaseException as rollback_error:
+                    append_operation_log("restore rollback failed", error=rollback_error)
+            else:
+                for orphan in (stage, previous):
+                    if orphan is not None and _restore_path_is_private(orphan):
+                        shutil.rmtree(orphan, ignore_errors=True)
+            flush_alert_outbox()
+            raise
 
 
 def webdav_config() -> tuple[str, str, str]:
@@ -3867,10 +4897,36 @@ class VergeApiHandler(BaseHTTPRequestHandler):
         request_id = uuid.uuid4().hex
         self._request_id = request_id
         LOG_CONTEXT.set({"request_id": request_id})
-        ensure_state()
         parsed = urllib.parse.urlparse(self.path)
+        try:
+            ensure_state()
+        except Exception as exc:
+            if parsed.path == "/healthz":
+                self.send_json(
+                    {
+                        "ok": False,
+                        "status": "degraded",
+                        "time": iso_now(),
+                        "controller": {"status": "unknown"},
+                        "restore": {
+                            "status": "degraded",
+                            "phase": "reconcile_failed",
+                        },
+                        "alerting": alert_health_payload(),
+                        "error": sanitize_log_text(str(exc))[:500],
+                    },
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
+            raise
         if parsed.path == "/healthz":
-            self.send_json({"ok": True, "time": iso_now()})
+            payload = healthz_payload()
+            self.send_json(
+                payload,
+                status=HTTPStatus.OK
+                if payload.get("ok")
+                else HTTPStatus.SERVICE_UNAVAILABLE,
+            )
             return
 
         if parsed.path == "/public-config":
@@ -4012,11 +5068,46 @@ class VergeApiHandler(BaseHTTPRequestHandler):
         append_operation_log(format % args)
 
 
+def runtime_health_watch_loop() -> None:
+    while not HEALTH_WATCH_STOP.wait(HEALTH_WATCH_INTERVAL_SECONDS):
+        try:
+            healthz_payload()
+        except Exception as exc:
+            append_operation_log("runtime health watch failed", error=exc)
+
+
 def main() -> int:
-    ensure_state()
+    startup_error: Exception | None = None
+    try:
+        ensure_state()
+    except Exception as exc:
+        # Keep the health endpoint available when startup reconciliation is
+        # blocked by a malformed transaction or an unavailable controller.
+        # Every normal API operation still calls ensure_state and therefore
+        # remains fail-closed until the operator repairs the runtime.
+        startup_error = exc
+        append_operation_log("startup reconciliation failed", error=exc)
+        record_runtime_alert("restore", "degraded", str(exc))
+        flush_alert_outbox()
     append_operation_log(f"starting verge api on {HOST}:{PORT}")
+    if startup_error is not None:
+        append_operation_log("serving degraded health until startup reconciliation succeeds")
+    if HEALTH_WATCH_INTERVAL_SECONDS > 0:
+        try:
+            healthz_payload()
+        except Exception as exc:
+            append_operation_log("initial runtime health watch failed", error=exc)
+        threading.Thread(
+            target=runtime_health_watch_loop,
+            name="mihomo-runtime-health-watch",
+            daemon=True,
+        ).start()
     server = ThreadingHTTPServer((HOST, PORT), VergeApiHandler)
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        HEALTH_WATCH_STOP.set()
+        server.server_close()
     return 0
 
 
