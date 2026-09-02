@@ -38,10 +38,17 @@
 - `mihomo-resolved-sync.service` 每次 `apply` 都重新探测当前 IPv4 default-route
   interface；持久化 interface 只用于没有 default route 时的安全 revert，不能驱动
   新的 DNS assignment。
-- `/healthz` 同时探测 Mihomo `/version` controller 和 restore transaction；任一
-  未确认时返回 HTTP 503。Verge API 可按 `MIHOMO_ALERT_WEBHOOK_URL` 配置主动告警，
-  所有状态转换先 fsync 到 `/var/lib/mihomo/verge/logs/alerts.jsonl`，后台 watcher
-  由 `MIHOMO_HEALTH_WATCH_INTERVAL_SECONDS` 控制（默认 systemd 配置为 60 秒）。
+- `/healthz` 同时探测 Mihomo `/version` controller、restore transaction 和告警
+  delivery channel；任一未确认时返回 HTTP 503。Verge API 可按
+  `MIHOMO_ALERT_WEBHOOK_URL` 配置主动告警，所有状态转换和 delivery receipt 先
+  fsync 到 `/var/lib/mihomo/verge/logs/alerts.jsonl`。启动及每次 append/flush 都会
+  逐行恢复 JSONL；损坏行会被隔离并记录到同目录的
+  `alerts.jsonl.corrupt.jsonl`，不会阻断后续有效告警，也不会与新 append 粘连。
+  HTTP delivery 使用原告警 `id` 作为 `Idempotency-Key`，默认最多尝试 5 次、按
+  60 秒起始退避且最多 3600 秒；未配置、待发送、持续失败、耗尽或 journal 损坏时，
+  `/healthz` 和 `/runtime-info` 的 `alerting` 都是 `degraded`/`ready: false`。
+  后台 watcher 由 `MIHOMO_HEALTH_WATCH_INTERVAL_SECONDS` 控制（默认 systemd 配置为
+  60 秒）。
 
 `scripts/deploy_microserver.sh` 的 host-native 默认值与该基线一致。为便于审阅和目标机区分，运维命令仍建议显式写出：
 

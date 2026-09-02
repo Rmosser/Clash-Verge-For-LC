@@ -14,7 +14,9 @@ Environment=MIHOMO_CORE_VERSION=v1.19.30
 Environment=MIHOMO_VERGE_RUNTIME_CONTRACT_PATH=/usr/local/lib/lzc-mihomo/runtime-contract.json
 Environment=MIHOMO_HEALTH_WATCH_INTERVAL_SECONDS=60
 # Set MIHOMO_ALERT_WEBHOOK_URL in a host-local drop-in to enable outbound
-# alert delivery.  The durable outbox remains enabled without a webhook.
+# alert delivery.  The durable outbox remains enabled without a webhook;
+# MIHOMO_ALERT_MAX_ATTEMPTS and MIHOMO_ALERT_RETRY_BACKOFF_SECONDS can tune
+# the bounded retry window in the same drop-in.
 ExecStart=/usr/bin/env python3 /usr/local/lib/lzc-mihomo/mihomo-verge-api.py
 Restart=always
 RestartSec=2

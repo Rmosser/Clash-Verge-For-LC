@@ -4,8 +4,11 @@ import copy
 import base64
 import gzip
 import importlib.util
+import json
 import ssl
 import tempfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import threading
 import time
 import unittest
 import urllib.error
@@ -329,6 +332,348 @@ class MihomoVergeApiTests(unittest.TestCase):
             payload = MODULE.runtime_info_payload()
 
         self.assertEqual(payload["profileHealth"], profile_health)
+
+    def test_alert_outbox_repairs_torn_tail_and_delivers_valid_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            outbox = root / "alerts.jsonl"
+            state = root / "alert-state.json"
+            outbox.parent.mkdir(parents=True, exist_ok=True)
+            outbox.write_bytes(b'{"id":"torn"')
+            event = {
+                "id": "valid-alert-1",
+                "createdAt": "2026-09-02T00:00:00Z",
+                "component": "controller",
+                "status": "degraded",
+                "details": "controller down",
+                "delivery": "pending",
+            }
+            captures: list[tuple[str | None, bytes]] = []
+
+            class Handler(BaseHTTPRequestHandler):
+                def do_POST(self) -> None:  # noqa: N802
+                    length = int(self.headers.get("Content-Length", "0"))
+                    captures.append(
+                        (self.headers.get("Idempotency-Key"), self.rfile.read(length))
+                    )
+                    self.send_response(204)
+                    self.end_headers()
+
+                def log_message(self, *_args: object) -> None:
+                    return
+
+            server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                with (
+                    patch.object(MODULE, "ALERT_OUTBOX_PATH", outbox),
+                    patch.object(MODULE, "ALERT_STATE_PATH", state),
+                    patch.object(
+                        MODULE,
+                        "ALERT_WEBHOOK_URL",
+                        f"http://127.0.0.1:{server.server_port}/alerts",
+                    ),
+                    patch.object(MODULE, "ensure_dirs"),
+                    patch.object(MODULE, "append_operation_log"),
+                ):
+                    # This append is the old crash window: the repair must
+                    # insert a newline before adding the next generation.
+                    MODULE._append_alert_event(event)
+                    MODULE.reconcile_alert_outbox()
+                    MODULE.flush_alert_outbox()
+                    MODULE.flush_alert_outbox()
+                    alert_health = MODULE.alert_health_payload()
+
+                rows = [
+                    json.loads(line)
+                    for line in outbox.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+                corruption_rows = [
+                    json.loads(line)
+                    for line in outbox.with_name("alerts.jsonl.corrupt.jsonl")
+                    .read_text(encoding="utf-8")
+                    .splitlines()
+                ]
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+        self.assertEqual(len(captures), 1)
+        self.assertEqual(captures[0][0], "valid-alert-1")
+        self.assertEqual(json.loads(captures[0][1])["id"], "valid-alert-1")
+        self.assertEqual(alert_health["status"], "degraded")
+        self.assertEqual(alert_health["corruptionCount"], 1)
+        self.assertEqual(sum(row.get("id") == "valid-alert-1" for row in rows), 1)
+        self.assertEqual(
+            [row.get("status") for row in rows if row.get("type") == "delivery"],
+            ["attempting", "delivered"],
+        )
+        self.assertEqual(len(corruption_rows), 1)
+        self.assertEqual(corruption_rows[0]["reason"], "unterminated-or-invalid-json")
+        self.assertTrue(corruption_rows[0]["sha256"])
+
+    def test_alert_outbox_keeps_valid_rows_after_a_corrupt_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            outbox = root / "alerts.jsonl"
+            state = root / "alert-state.json"
+            outbox.parent.mkdir(parents=True, exist_ok=True)
+            valid = {
+                "id": "valid-after-corrupt-1",
+                "createdAt": "2026-09-02T00:00:00Z",
+                "component": "controller",
+                "status": "degraded",
+                "details": "controller down",
+                "delivery": "pending",
+            }
+            outbox.write_bytes(b"{not-json}\n" + json.dumps(valid).encode() + b"\n")
+            with (
+                patch.object(MODULE, "ALERT_OUTBOX_PATH", outbox),
+                patch.object(MODULE, "ALERT_STATE_PATH", state),
+                patch.object(MODULE, "ensure_dirs"),
+                patch.object(MODULE, "append_operation_log"),
+            ):
+                result = MODULE.reconcile_alert_outbox()
+                rows = [
+                    json.loads(line)
+                    for line in outbox.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+                corruption = [
+                    json.loads(line)
+                    for line in outbox.with_name("alerts.jsonl.corrupt.jsonl")
+                    .read_text(encoding="utf-8")
+                    .splitlines()
+                ]
+
+        self.assertEqual(result["corruptions"], 1)
+        self.assertEqual([row["id"] for row in rows], ["valid-after-corrupt-1"])
+        self.assertEqual(len(corruption), 1)
+        self.assertEqual(corruption[0]["reason"], "invalid-json")
+
+    def test_alert_receipt_interruption_replays_with_same_idempotency_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            outbox = root / "alerts.jsonl"
+            state = root / "alert-state.json"
+            outbox.parent.mkdir(parents=True, exist_ok=True)
+            event = {
+                "id": "replay-alert-1",
+                "createdAt": "2026-09-02T00:00:00Z",
+                "component": "restore",
+                "status": "degraded",
+                "details": "restore interrupted",
+                "delivery": "pending",
+            }
+            outbox.write_text(json.dumps(event) + "\n", encoding="utf-8")
+            keys: list[str | None] = []
+
+            class Handler(BaseHTTPRequestHandler):
+                def do_POST(self) -> None:  # noqa: N802
+                    length = int(self.headers.get("Content-Length", "0"))
+                    self.rfile.read(length)
+                    keys.append(self.headers.get("Idempotency-Key"))
+                    self.send_response(204)
+                    self.end_headers()
+
+                def log_message(self, *_args: object) -> None:
+                    return
+
+            server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            original_append = MODULE._append_alert_event
+            interrupted = True
+
+            def append_with_interruption(record: dict[str, object]) -> None:
+                nonlocal interrupted
+                if record.get("type") == "delivery" and record.get("status") == "delivered" and interrupted:
+                    interrupted = False
+                    raise OSError("simulated death before receipt")
+                original_append(record)
+
+            try:
+                with (
+                    patch.object(MODULE, "ALERT_OUTBOX_PATH", outbox),
+                    patch.object(MODULE, "ALERT_STATE_PATH", state),
+                    patch.object(
+                        MODULE,
+                        "ALERT_WEBHOOK_URL",
+                        f"http://127.0.0.1:{server.server_port}/alerts",
+                    ),
+                    patch.object(MODULE, "ensure_dirs"),
+                    patch.object(MODULE, "append_operation_log"),
+                    patch.object(
+                        MODULE,
+                        "_append_alert_event",
+                        side_effect=append_with_interruption,
+                    ),
+                ):
+                    MODULE.flush_alert_outbox()
+                with (
+                    patch.object(MODULE, "ALERT_OUTBOX_PATH", outbox),
+                    patch.object(MODULE, "ALERT_STATE_PATH", state),
+                    patch.object(
+                        MODULE,
+                        "ALERT_WEBHOOK_URL",
+                        f"http://127.0.0.1:{server.server_port}/alerts",
+                    ),
+                    patch.object(MODULE, "ensure_dirs"),
+                    patch.object(MODULE, "append_operation_log"),
+                ):
+                    MODULE.flush_alert_outbox()
+                rows = [
+                    json.loads(line)
+                    for line in outbox.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+        self.assertEqual(keys, ["replay-alert-1", "replay-alert-1"])
+        delivered = [
+            row for row in rows if row.get("type") == "delivery" and row.get("status") == "delivered"
+        ]
+        self.assertEqual(len(delivered), 1)
+        self.assertEqual(delivered[0]["idempotencyKey"], "replay-alert-1")
+
+    def test_alert_delivery_failures_stop_at_bounded_attempt_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            outbox = root / "alerts.jsonl"
+            state = root / "alert-state.json"
+            outbox.parent.mkdir(parents=True, exist_ok=True)
+            event = {
+                "id": "bounded-alert-1",
+                "createdAt": "2026-09-02T00:00:00Z",
+                "component": "controller",
+                "status": "degraded",
+                "details": "controller unavailable",
+                "delivery": "pending",
+            }
+            outbox.write_text(json.dumps(event) + "\n", encoding="utf-8")
+            keys: list[str | None] = []
+
+            class Handler(BaseHTTPRequestHandler):
+                def do_POST(self) -> None:  # noqa: N802
+                    length = int(self.headers.get("Content-Length", "0"))
+                    self.rfile.read(length)
+                    keys.append(self.headers.get("Idempotency-Key"))
+                    self.send_response(503)
+                    self.end_headers()
+
+                def log_message(self, *_args: object) -> None:
+                    return
+
+            server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                with (
+                    patch.object(MODULE, "ALERT_OUTBOX_PATH", outbox),
+                    patch.object(MODULE, "ALERT_STATE_PATH", state),
+                    patch.object(
+                        MODULE,
+                        "ALERT_WEBHOOK_URL",
+                        f"http://127.0.0.1:{server.server_port}/alerts",
+                    ),
+                    patch.object(MODULE, "ALERT_MAX_ATTEMPTS", 2),
+                    patch.object(MODULE, "ALERT_RETRY_BACKOFF_SECONDS", 0.0),
+                    patch.object(MODULE, "ensure_dirs"),
+                    patch.object(MODULE, "append_operation_log"),
+                ):
+                    for _ in range(4):
+                        MODULE.flush_alert_outbox()
+                    alert_health = MODULE.alert_health_payload()
+                    rows = [
+                        json.loads(line)
+                        for line in outbox.read_text(encoding="utf-8").splitlines()
+                        if line.strip()
+                    ]
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+        self.assertEqual(keys, ["bounded-alert-1", "bounded-alert-1"])
+        self.assertEqual(
+            [row.get("status") for row in rows if row.get("type") == "delivery"],
+            ["attempting", "failed", "attempting", "exhausted"],
+        )
+        self.assertEqual(alert_health["status"], "degraded")
+        self.assertEqual(alert_health["exhausted"], 1)
+        self.assertEqual(alert_health["pending"], 1)
+
+    def test_alerting_health_is_degraded_when_unconfigured_or_attempts_exhausted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            outbox = root / "alerts.jsonl"
+            state = root / "alert-state.json"
+            outbox.parent.mkdir(parents=True, exist_ok=True)
+            event = {
+                "id": "exhausted-alert-1",
+                "createdAt": "2026-09-02T00:00:00Z",
+                "component": "controller",
+                "status": "degraded",
+                "delivery": "pending",
+            }
+            receipt = {
+                "type": "delivery",
+                "alertId": "exhausted-alert-1",
+                "status": "exhausted",
+                "attempt": 5,
+                "idempotencyKey": "exhausted-alert-1",
+                "createdAt": "2026-09-02T00:00:01Z",
+                "error": "connection refused",
+            }
+            outbox.write_text(
+                "\n".join(json.dumps(row) for row in (event, receipt)) + "\n",
+                encoding="utf-8",
+            )
+            with (
+                patch.object(MODULE, "ALERT_OUTBOX_PATH", outbox),
+                patch.object(MODULE, "ALERT_STATE_PATH", state),
+                patch.object(MODULE, "ALERT_WEBHOOK_URL", ""),
+                patch.object(MODULE, "ensure_dirs"),
+                patch.object(MODULE, "append_operation_log"),
+                patch.object(MODULE, "controller_request", return_value={"version": "1.0"}),
+            ):
+                payload = MODULE.healthz_payload()
+                with (
+                    patch.object(
+                        MODULE,
+                        "load_runtime_contract",
+                        return_value=copy.deepcopy(MODULE.DEFAULT_RUNTIME_CONTRACT),
+                    ),
+                    patch.object(
+                        MODULE,
+                        "get_profiles_state",
+                        return_value={"current": "alert-test", "items": [{"uid": "alert-test"}]},
+                    ),
+                    patch.object(
+                        MODULE,
+                        "get_runtime_profile_health_state",
+                        return_value=copy.deepcopy(MODULE.DEFAULT_RUNTIME_PROFILE_HEALTH),
+                    ),
+                    patch.object(
+                        MODULE,
+                        "runtime_probe_health",
+                        return_value={"status": "ok", "checkedAt": "2026-09-02T00:00:00Z"},
+                    ),
+                ):
+                    runtime = MODULE.runtime_info_payload()
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["alerting"]["status"], "degraded")
+        self.assertFalse(payload["alerting"]["ready"])
+        self.assertIn("not configured", payload["alerting"]["detail"])
+        self.assertEqual(runtime["alerting"]["status"], "degraded")
+        self.assertFalse(runtime["alerting"]["ready"])
 
     def test_runtime_contract_probe_payload_contains_only_contract_fields(self) -> None:
         contract = copy.deepcopy(MODULE.DEFAULT_RUNTIME_CONTRACT)

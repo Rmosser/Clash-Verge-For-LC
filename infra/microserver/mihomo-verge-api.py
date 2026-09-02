@@ -98,6 +98,18 @@ ALERT_WEBHOOK_TIMEOUT_SECONDS = max(
     1,
     int(os.environ.get("MIHOMO_ALERT_WEBHOOK_TIMEOUT_SECONDS", "5")),
 )
+ALERT_MAX_ATTEMPTS = max(
+    1,
+    int(os.environ.get("MIHOMO_ALERT_MAX_ATTEMPTS", "5")),
+)
+ALERT_RETRY_BACKOFF_SECONDS = max(
+    0.0,
+    float(os.environ.get("MIHOMO_ALERT_RETRY_BACKOFF_SECONDS", "60")),
+)
+ALERT_RETRY_MAX_DELAY_SECONDS = max(
+    ALERT_RETRY_BACKOFF_SECONDS,
+    float(os.environ.get("MIHOMO_ALERT_RETRY_MAX_DELAY_SECONDS", "3600")),
+)
 HEALTH_WATCH_INTERVAL_SECONDS = max(
     0,
     int(os.environ.get("MIHOMO_HEALTH_WATCH_INTERVAL_SECONDS", "0")),
@@ -531,6 +543,7 @@ def ensure_dirs() -> None:
         path.mkdir(parents=True, exist_ok=True)
     ALERT_OUTBOX_PATH.parent.mkdir(parents=True, exist_ok=True)
     ALERT_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _alert_corruption_path().parent.mkdir(parents=True, exist_ok=True)
 
 
 def _fsync_directory(path: Path) -> None:
@@ -621,15 +634,135 @@ def atomic_write_text(path: Path, text: str, mode: int | None = None) -> None:
     atomic_write_bytes(path, text.encode("utf-8"), mode)
 
 
+def _alert_corruption_path() -> Path:
+    """Return the corruption journal path, resolving the outbox at call time.
+
+    Resolving the default from ``ALERT_OUTBOX_PATH`` at call time keeps the
+    journal colocated when tests or a host-local override replace the outbox
+    path after module import.
+    """
+    configured = os.environ.get("MIHOMO_ALERT_CORRUPTION", "").strip()
+    if configured:
+        return Path(configured)
+    return ALERT_OUTBOX_PATH.with_name(ALERT_OUTBOX_PATH.name + ".corrupt.jsonl")
+
+
+def _append_jsonl_record(path: Path, record: dict[str, Any]) -> None:
+    """Append a JSONL record without ever concatenating it to a torn line."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(record, ensure_ascii=False, sort_keys=True).encode("utf-8") + b"\n"
+    existing = path.read_bytes() if path.exists() else b""
+    separator = b"" if not existing or existing.endswith(b"\n") else b"\n"
+    with path.open("ab") as handle:
+        handle.write(separator + line)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _alert_corruption_receipt(
+    raw_record: bytes,
+    *,
+    line_number: int,
+    offset: int,
+    reason: str,
+) -> None:
+    """Persist an auditable, secret-free receipt for a discarded journal row."""
+    _append_jsonl_record(
+        _alert_corruption_path(),
+        {
+            "type": "corruption",
+            "id": uuid.uuid4().hex,
+            "detectedAt": iso_now(),
+            "source": str(ALERT_OUTBOX_PATH),
+            "line": line_number,
+            "offset": offset,
+            "bytes": len(raw_record),
+            "sha256": hashlib.sha256(raw_record).hexdigest(),
+            "reason": reason,
+        },
+    )
+
+
+def _recover_alert_outbox_locked() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Read and repair the alert journal one row at a time.
+
+    A malformed row is quarantined and removed from the active journal while
+    later valid rows are retained.  The rewrite is atomic, so a process death
+    during repair leaves either the old journal or the complete repaired one.
+    Valid JSON without a final newline is normalized before the next append;
+    this is the key boundary that prevents a later event from being glued to a
+    torn tail.
+    """
+    if not ALERT_OUTBOX_PATH.exists():
+        return [], {"repaired": False, "corruptions": 0}
+
+    raw = ALERT_OUTBOX_PATH.read_bytes()
+    if not raw:
+        return [], {"repaired": False, "corruptions": 0}
+
+    events: list[dict[str, Any]] = []
+    normalized_lines: list[bytes] = []
+    corruption_count = 0
+    changed = False
+    offset = 0
+    for line_number, raw_line in enumerate(raw.splitlines(keepends=True), start=1):
+        has_newline = raw_line.endswith(b"\n")
+        record_bytes = raw_line[:-1] if has_newline else raw_line
+        if record_bytes.endswith(b"\r"):
+            record_bytes = record_bytes[:-1]
+        offset_before = offset
+        offset += len(raw_line)
+        if not record_bytes.strip():
+            changed = True
+            continue
+        try:
+            record = json.loads(record_bytes.decode("utf-8"))
+        except Exception:
+            corruption_count += 1
+            changed = True
+            _alert_corruption_receipt(
+                record_bytes,
+                line_number=line_number,
+                offset=offset_before,
+                reason="unterminated-or-invalid-json" if not has_newline else "invalid-json",
+            )
+            continue
+        if not isinstance(record, dict):
+            corruption_count += 1
+            changed = True
+            _alert_corruption_receipt(
+                record_bytes,
+                line_number=line_number,
+                offset=offset_before,
+                reason="record-is-not-an-object",
+            )
+            continue
+        events.append(record)
+        canonical = json.dumps(record, ensure_ascii=False, sort_keys=True).encode("utf-8") + b"\n"
+        normalized_lines.append(canonical)
+        if raw_line != canonical:
+            changed = True
+
+    normalized = b"".join(normalized_lines)
+    if changed:
+        atomic_write_bytes(ALERT_OUTBOX_PATH, normalized, 0o600)
+    return events, {"repaired": changed, "corruptions": corruption_count}
+
+
+def reconcile_alert_outbox() -> dict[str, Any]:
+    """Repair the alert journal during startup before normal API work."""
+    ensure_dirs()
+    with ALERT_LOCK:
+        _, result = _recover_alert_outbox_locked()
+    return result
+
+
 def _append_alert_event(event: dict[str, Any]) -> None:
     """Append one durable alert/outbox event and fsync it before returning."""
     ensure_dirs()
-    line = json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n"
     with ALERT_LOCK:
-        with ALERT_OUTBOX_PATH.open("a", encoding="utf-8") as handle:
-            handle.write(line)
-            handle.flush()
-            os.fsync(handle.fileno())
+        _recover_alert_outbox_locked()
+        _append_jsonl_record(ALERT_OUTBOX_PATH, event)
 
 
 def _alert_state() -> dict[str, Any]:
@@ -641,6 +774,133 @@ def _alert_state() -> dict[str, Any]:
         append_operation_log("alert state load failed", error=exc)
         return {}
     return loaded if isinstance(loaded, dict) else {}
+
+
+def _alert_corruption_count_locked() -> tuple[int, str]:
+    """Read corruption receipts without allowing a damaged receipt to hide."""
+    path = _alert_corruption_path()
+    if not path.exists():
+        return 0, ""
+    try:
+        raw = path.read_bytes()
+    except Exception as exc:
+        return 1, f"corruption journal unreadable: {type(exc).__name__}"
+    count = 0
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            receipt = json.loads(line.decode("utf-8"))
+        except Exception:
+            return max(1, count + 1), "corruption journal contains invalid JSON"
+        if not isinstance(receipt, dict) or receipt.get("type") != "corruption":
+            return max(1, count + 1), "corruption journal contains an invalid receipt"
+        count += 1
+    return count, "" if count == 0 else "outbox corruption was quarantined"
+
+
+def _alert_attempt_count(receipt: dict[str, Any] | None) -> int:
+    if not isinstance(receipt, dict):
+        return 0
+    try:
+        return max(0, int(receipt.get("attempt") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _alert_retry_delay(attempt: int) -> float:
+    if ALERT_RETRY_BACKOFF_SECONDS <= 0:
+        return 0.0
+    exponent = max(0, min(attempt - 1, 31))
+    return min(
+        ALERT_RETRY_MAX_DELAY_SECONDS,
+        ALERT_RETRY_BACKOFF_SECONDS * (2**exponent),
+    )
+
+
+def alert_health_payload() -> dict[str, Any]:
+    """Expose alert channel readiness independently from controller health."""
+    with ALERT_LOCK:
+        try:
+            events, _ = _recover_alert_outbox_locked()
+        except Exception as exc:
+            detail = f"alert outbox unavailable: {type(exc).__name__}"
+            append_operation_log("alert health inspection failed", error=exc)
+            return {
+                "status": "degraded",
+                "ready": False,
+                "enabled": bool(ALERT_WEBHOOK_URL),
+                "configured": bool(ALERT_WEBHOOK_URL),
+                "outbox": str(ALERT_OUTBOX_PATH),
+                "corruptionCount": 1,
+                "pending": 0,
+                "failed": 0,
+                "exhausted": 0,
+                "delivered": 0,
+                "maxAttempts": ALERT_MAX_ATTEMPTS,
+                "retryBackoffSeconds": ALERT_RETRY_BACKOFF_SECONDS,
+                "retryMaxDelaySeconds": ALERT_RETRY_MAX_DELAY_SECONDS,
+                "detail": detail,
+            }
+        corruption_count, corruption_detail = _alert_corruption_count_locked()
+
+        alerts: dict[str, dict[str, Any]] = {}
+        deliveries: dict[str, dict[str, Any]] = {}
+        for event in events:
+            if event.get("type") == "delivery":
+                alert_id = str(event.get("alertId") or "")
+                if alert_id:
+                    deliveries[alert_id] = event
+                continue
+            alert_id = str(event.get("id") or "")
+            if alert_id:
+                alerts[alert_id] = event
+
+        pending = failed = exhausted = delivered = orphan_receipts = 0
+        last_error = corruption_detail
+        for alert_id in alerts:
+            receipt = deliveries.get(alert_id) or {}
+            status = str(receipt.get("status") or "")
+            if status == "delivered":
+                delivered += 1
+                continue
+            pending += 1
+            if status == "exhausted":
+                exhausted += 1
+            elif status == "failed":
+                failed += 1
+            if receipt.get("error"):
+                last_error = str(receipt.get("error"))[:500]
+        orphan_receipts = sum(alert_id not in alerts for alert_id in deliveries)
+        if orphan_receipts:
+            corruption_count += orphan_receipts
+            last_error = "delivery receipt has no matching alert event"
+
+        if not ALERT_WEBHOOK_URL:
+            last_error = "alert webhook is not configured"
+        elif pending and not last_error:
+            last_error = "alert delivery is pending"
+        ready = bool(
+            ALERT_WEBHOOK_URL
+            and corruption_count == 0
+            and pending == 0
+        )
+        return {
+            "status": "ok" if ready else "degraded",
+            "ready": ready,
+            "enabled": bool(ALERT_WEBHOOK_URL),
+            "configured": bool(ALERT_WEBHOOK_URL),
+            "outbox": str(ALERT_OUTBOX_PATH),
+            "corruptionCount": corruption_count,
+            "pending": pending,
+            "failed": failed,
+            "exhausted": exhausted,
+            "delivered": delivered,
+            "maxAttempts": ALERT_MAX_ATTEMPTS,
+            "retryBackoffSeconds": ALERT_RETRY_BACKOFF_SECONDS,
+            "retryMaxDelaySeconds": ALERT_RETRY_MAX_DELAY_SECONDS,
+            "detail": last_error,
+        }
 
 
 def record_runtime_alert(
@@ -704,37 +964,85 @@ def record_runtime_alert(
 
 
 def flush_alert_outbox() -> None:
-    """Best-effort delivery of pending alerts; the outbox remains the receipt."""
-    if not ALERT_WEBHOOK_URL or not ALERT_OUTBOX_PATH.exists():
+    """Deliver pending alerts while preserving bounded, durable attempt state."""
+    if not ALERT_OUTBOX_PATH.exists():
         return
     # Health requests and the background watcher can flush concurrently.  Keep
     # one sender in flight so a slow endpoint cannot produce duplicate POSTs
     # for the same durable alert event.
     with ALERT_LOCK:
         try:
-            events = [
-                json.loads(line)
-                for line in ALERT_OUTBOX_PATH.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            ]
+            events, _ = _recover_alert_outbox_locked()
         except Exception as exc:
             append_operation_log("alert outbox load failed", error=exc)
             return
-        delivered = {
-            str(event.get("alertId"))
-            for event in events
-            if isinstance(event, dict)
-            and event.get("type") == "delivery"
-            and event.get("status") == "delivered"
-        }
+        if not ALERT_WEBHOOK_URL:
+            return
+        delivery_receipts: dict[str, dict[str, Any]] = {}
+        for event in events:
+            if event.get("type") == "delivery" and event.get("alertId"):
+                delivery_receipts[str(event["alertId"])] = event
         for event in events:
             if not isinstance(event, dict) or not event.get("id"):
                 continue
-            if event.get("delivery") != "pending" or str(event["id"]) in delivered:
+            if event.get("type") == "delivery":
+                continue
+            event_id = str(event["id"])
+            receipt = delivery_receipts.get(event_id) or {}
+            receipt_status = str(receipt.get("status") or "")
+            if receipt_status in {"delivered", "exhausted"}:
+                continue
+            previous_attempt = _alert_attempt_count(receipt)
+            if (
+                receipt_status in {"attempting", "failed"}
+                and previous_attempt >= ALERT_MAX_ATTEMPTS
+            ):
+                exhausted_receipt = {
+                    "type": "delivery",
+                    "alertId": event_id,
+                    "status": "exhausted",
+                    "attempt": previous_attempt,
+                    "idempotencyKey": event_id,
+                    "createdAt": iso_now(),
+                    "error": "delivery attempt was interrupted at the retry limit",
+                }
+                try:
+                    _append_alert_event(exhausted_receipt)
+                    delivery_receipts[event_id] = exhausted_receipt
+                except Exception as receipt_error:
+                    append_operation_log(
+                        "alert exhausted receipt persist failed",
+                        error=receipt_error,
+                    )
+                continue
+            attempt = previous_attempt + 1
+            if receipt_status == "failed":
+                try:
+                    next_attempt_at = float(receipt.get("nextAttemptAt") or 0)
+                except (TypeError, ValueError):
+                    next_attempt_at = 0.0
+                if next_attempt_at > time.time():
+                    continue
+            attempt_receipt = {
+                "type": "delivery",
+                "alertId": event_id,
+                "status": "attempting",
+                "attempt": attempt,
+                "idempotencyKey": event_id,
+                "createdAt": iso_now(),
+            }
+            try:
+                _append_alert_event(attempt_receipt)
+                delivery_receipts[event_id] = attempt_receipt
+            except Exception as receipt_error:
+                append_operation_log(
+                    "alert delivery attempt receipt persist failed",
+                    error=receipt_error,
+                )
                 continue
             payload = json.dumps(
                 {
-                    "id": event["id"],
+                    "id": event_id,
                     "createdAt": event.get("createdAt"),
                     "component": event.get("component"),
                     "status": event.get("status"),
@@ -748,6 +1056,7 @@ def flush_alert_outbox() -> None:
                 headers={
                     "Content-Type": "application/json",
                     "User-Agent": "mihomo-verge-api-alert/1.0",
+                    "Idempotency-Key": event_id,
                 },
                 method="POST",
             )
@@ -760,15 +1069,49 @@ def flush_alert_outbox() -> None:
                         raise RuntimeError(f"alert endpoint returned HTTP {response.status}")
             except Exception as exc:
                 append_operation_log("alert delivery failed", error=exc)
-                continue
-            _append_alert_event(
-                {
+                status = "exhausted" if attempt >= ALERT_MAX_ATTEMPTS else "failed"
+                receipt: dict[str, Any] = {
                     "type": "delivery",
-                    "alertId": event["id"],
-                    "status": "delivered",
+                    "alertId": event_id,
+                    "status": status,
+                    "attempt": attempt,
+                    "idempotencyKey": event_id,
                     "createdAt": iso_now(),
+                    "error": sanitize_log_text(str(exc))[:500],
                 }
-            )
+                if status == "failed":
+                    receipt["nextAttemptAt"] = time.time() + _alert_retry_delay(attempt)
+                try:
+                    _append_alert_event(receipt)
+                    delivery_receipts[event_id] = receipt
+                except Exception as receipt_error:
+                    # A crash or disk failure in this window intentionally
+                    # leaves no delivered receipt; the next process retries
+                    # with the same Idempotency-Key.
+                    append_operation_log(
+                        "alert delivery failure receipt persist failed",
+                        error=receipt_error,
+                    )
+                continue
+            receipt = {
+                "type": "delivery",
+                "alertId": event_id,
+                "status": "delivered",
+                "attempt": attempt,
+                "idempotencyKey": event_id,
+                "createdAt": iso_now(),
+            }
+            try:
+                _append_alert_event(receipt)
+                delivery_receipts[event_id] = receipt
+            except Exception as receipt_error:
+                # The receiver may already have accepted the POST.  Do not
+                # manufacture a new event id; replay is deliberately keyed by
+                # the original alert id after restart.
+                append_operation_log(
+                    "alert delivery receipt persist failed",
+                    error=receipt_error,
+                )
 
 
 def load_json(path: Path, default: Any) -> Any:
@@ -1874,6 +2217,7 @@ def normalize_verge_config_state(raw: Any) -> tuple[dict[str, Any], bool]:
 def ensure_state() -> None:
     global ENSURING_EMPTY_RUNTIME
     ensure_dirs()
+    reconcile_alert_outbox()
     cleanup_restore_orphans()
     restore_reconciled = reconcile_restore_transaction()
     verge_api_secret()
@@ -2230,19 +2574,25 @@ def restore_transaction_status() -> dict[str, Any]:
 def healthz_payload() -> dict[str, Any]:
     controller = runtime_probe_health()
     restore = restore_transaction_status()
-    ok = controller.get("status") == "ok" and restore.get("status") == "ok"
     if restore.get("status") != "ok":
         record_runtime_alert("restore", "degraded", str(restore.get("phase") or "pending"))
         flush_alert_outbox()
     else:
         record_runtime_alert("restore", "ok", "")
         flush_alert_outbox()
+    alerting = alert_health_payload()
+    ok = (
+        controller.get("status") == "ok"
+        and restore.get("status") == "ok"
+        and alerting.get("status") == "ok"
+    )
     return {
         "ok": ok,
         "status": "ok" if ok else "degraded",
         "time": iso_now(),
         "controller": controller,
         "restore": restore,
+        "alerting": alerting,
     }
 
 
@@ -2292,6 +2642,8 @@ def mark_runtime_profile_degraded(error_message: str) -> dict[str, Any]:
 def runtime_info_payload() -> dict[str, Any]:
     contract = load_runtime_contract()
     profile_health = get_runtime_profile_health_state()
+    probe_health = runtime_probe_health()
+    alerting = alert_health_payload()
     capabilities = copy.deepcopy(
         contract.get("capabilities") or DEFAULT_RUNTIME_CONTRACT["capabilities"]
     )
@@ -2323,13 +2675,10 @@ def runtime_info_payload() -> dict[str, Any]:
             or DEFAULT_RUNTIME_CONTRACT["packageFingerprint"]
         ),
         "capabilities": capabilities,
-        "probeHealth": runtime_probe_health(),
+        "probeHealth": probe_health,
         "profileHealth": profile_health,
         "restoreHealth": restore_transaction_status(),
-        "alerting": {
-            "enabled": bool(ALERT_WEBHOOK_URL),
-            "outbox": str(ALERT_OUTBOX_PATH),
-        },
+        "alerting": alerting,
     }
 
 
@@ -4563,6 +4912,7 @@ class VergeApiHandler(BaseHTTPRequestHandler):
                             "status": "degraded",
                             "phase": "reconcile_failed",
                         },
+                        "alerting": alert_health_payload(),
                         "error": sanitize_log_text(str(exc))[:500],
                     },
                     status=HTTPStatus.SERVICE_UNAVAILABLE,
