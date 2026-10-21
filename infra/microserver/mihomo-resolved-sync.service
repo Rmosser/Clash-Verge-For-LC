@@ -6,6 +6,9 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30s
 ExecStart=/usr/local/lib/lzc-mihomo/mihomo-resolved-sync.sh apply
 ExecStop=/usr/local/lib/lzc-mihomo/mihomo-resolved-sync.sh revert
 

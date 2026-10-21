@@ -22,3 +22,9 @@ bash scripts/test_legacy_cleanup_isolation.sh
 
 echo "==> rollback snapshot contract fixture"
 python3 -B scripts/test_rollback_snapshot_contract.py
+
+echo "==> runtime restore and health recovery drill"
+python3 -B scripts/test_restore_recovery.py
+
+echo "==> resolved interface re-probe drill"
+bash scripts/test_resolved_sync_reprobe.sh
