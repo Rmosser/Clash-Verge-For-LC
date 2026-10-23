@@ -37,7 +37,7 @@
 
 ## 运行时恢复与健康契约
 
-- `install_host_native_bootstrap.sh` 将宿主机文件发布为不可变 generation；
+- `install_host_native_bootstrap.sh` 将宿主机文件（含 API 必需的 `mihomo_core_updater.py`）发布为不可变 generation；
   `current-generation`、`applied-generation` 和 `state/pending.env` 记录启动
   reconcile 边界。启动时优先校验并重启现有 live 配置，只有 live 配置缺失或
   校验失败才回退到完整 generation，避免把 snapshot 之后的配置静默覆盖。

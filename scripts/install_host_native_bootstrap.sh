@@ -95,6 +95,7 @@ required_remote_paths=(
   /etc/systemd/system/mihomo.service
   /etc/systemd/system/mihomo-verge-api.service
   /usr/local/lib/lzc-mihomo/mihomo-verge-api.py
+  /usr/local/lib/lzc-mihomo/mihomo_core_updater.py
   /usr/local/lib/lzc-mihomo/runtime-contract.json
 )
 
@@ -175,6 +176,8 @@ copy_snapshot_file /etc/systemd/system/mihomo.service systemd/mihomo.service 644
 copy_snapshot_file /etc/systemd/system/mihomo-verge-api.service systemd/mihomo-verge-api.service 644
 copy_snapshot_file /usr/local/lib/lzc-mihomo/mihomo-verge-api.py \
   usr-local-lib-lzc-mihomo/mihomo-verge-api.py 755
+copy_snapshot_file /usr/local/lib/lzc-mihomo/mihomo_core_updater.py \
+  usr-local-lib-lzc-mihomo/mihomo_core_updater.py 755
 copy_snapshot_file /usr/local/lib/lzc-mihomo/runtime-contract.json \
   usr-local-lib-lzc-mihomo/runtime-contract.json 644
 
@@ -306,6 +309,7 @@ validate_generation() {
     systemd/mihomo.service \
     systemd/mihomo-verge-api.service \
     usr-local-lib-lzc-mihomo/mihomo-verge-api.py \
+    usr-local-lib-lzc-mihomo/mihomo_core_updater.py \
     usr-local-lib-lzc-mihomo/runtime-contract.json; do
     [[ -f "$source/$required" ]] || return 1
   done
@@ -541,6 +545,8 @@ apply_generation() {
   install_optional_file "$apply_stage/systemd/mihomo-verge-api.service" /etc/systemd/system/mihomo-verge-api.service root root 644
   install_optional_file "$apply_stage/usr-local-lib-lzc-mihomo/mihomo-verge-api.py" \
     /usr/local/lib/lzc-mihomo/mihomo-verge-api.py root root 755
+  install_optional_file "$apply_stage/usr-local-lib-lzc-mihomo/mihomo_core_updater.py" \
+    /usr/local/lib/lzc-mihomo/mihomo_core_updater.py root root 755
   install_optional_file "$apply_stage/usr-local-lib-lzc-mihomo/runtime-contract.json" \
     /usr/local/lib/lzc-mihomo/runtime-contract.json root root 644
   install_optional_file "$apply_stage/usr-local-lib-lzc-mihomo/mihomo-resolved-sync.sh" \
