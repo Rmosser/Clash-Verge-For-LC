@@ -39,7 +39,7 @@
 - [development-change-evidence.md](governance/development-change-evidence.md)：候选变更、CI 与平台证据边界。
 - [../.woodpecker/woodpecker-harness.yaml](../.woodpecker/woodpecker-harness.yaml)：无 secret 的 PR/push 开发检查。
 - [plans/template.md](plans/template.md)：复杂或长周期任务可选的轻量计划模板。
-- [plans/clash-verge-rev-v2.5.2-webport.md](plans/clash-verge-rev-v2.5.2-webport.md)：尚未开始的 Clash Verge Rev v2.5.2 WebPort 迁移方案。
+- [plans/clash-verge-rev-v2.5.2-webport.md](plans/clash-verge-rev-v2.5.2-webport.md)：历史 Clash Verge Rev v2.5.2 WebPort 迁移方案。
 
 计划是按需上下文，不是全局机器 schema。仓库文件可以说明检查要求，但 GitHub required checks、branch protection、Review 和运行态部署状态必须从对应平台实时读取。
 

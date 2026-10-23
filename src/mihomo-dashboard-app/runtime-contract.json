@@ -1,11 +1,11 @@
 {
   "platform": "lazycat-web",
-  "appVersion": "2.5.2-webport.0",
-  "buildId": "20260823.cac1a6d.v2.5.2-webport",
-  "gitCommit": "cac1a6d2daae7587413d4cccf56e3c83dbdecb4f",
+  "appVersion": "2.5.8-webport.0",
+  "buildId": "20261024.db62c76.v2.5.8-webport",
+  "gitCommit": "db62c7611f34e945092f0dc7e215980d44c5ef23",
   "apiSchemaVersion": "2026.08-lzc-v2",
   "uiSchemaVersion": "2026.08-lzc-v2",
-  "packageFingerprint": "cloud.lazycat.app.clash-verge-for-lc/2.5.2-webport.0",
+  "packageFingerprint": "cloud.lazycat.app.clash-verge-for-lc/2.5.8-webport.0",
   "capabilities": {
     "externalOpen": {
       "mode": "enabled",

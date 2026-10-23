@@ -146,7 +146,11 @@ write_backup_manifest() {
   : > "$destination/manifest.tsv"
   for path in "$REMOTE_API" "$REMOTE_UNIT" "$REMOTE_CONTRACT"; do
     [[ -f "$path" && ! -L "$path" ]] || return 1
-    name="${path##*/}"
+    case "$path" in
+      "$REMOTE_API") name=api.py ;;
+      "$REMOTE_UNIT") name=unit ;;
+      "$REMOTE_CONTRACT") name=runtime-contract.json ;;
+    esac
     type=regular
     size="$(file_size "$path")"
     digest="$(sha256sum -- "$path" | awk '{print $1}')"
@@ -498,10 +502,10 @@ from pathlib import Path
 
 payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 expected = {
-    "appVersion": "2.5.2-webport.0",
+    "appVersion": "2.5.8-webport.0",
     "apiSchemaVersion": "2026.08-lzc-v2",
     "uiSchemaVersion": "2026.08-lzc-v2",
-    "packageFingerprint": "cloud.lazycat.app.clash-verge-for-lc/2.5.2-webport.0",
+    "packageFingerprint": "cloud.lazycat.app.clash-verge-for-lc/2.5.8-webport.0",
     "buildId": os.environ["EXPECTED_BUILD_ID"],
     "gitCommit": os.environ["EXPECTED_GIT_COMMIT"],
 }
@@ -521,10 +525,10 @@ from pathlib import Path
 
 payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 expected = {
-    "appVersion": "2.5.2-webport.0",
+    "appVersion": "2.5.8-webport.0",
     "apiSchemaVersion": "2026.08-lzc-v2",
     "uiSchemaVersion": "2026.08-lzc-v2",
-    "packageFingerprint": "cloud.lazycat.app.clash-verge-for-lc/2.5.2-webport.0",
+    "packageFingerprint": "cloud.lazycat.app.clash-verge-for-lc/2.5.8-webport.0",
     "buildId": os.environ["EXPECTED_BUILD_ID"],
     "gitCommit": os.environ["EXPECTED_GIT_COMMIT"],
 }
@@ -640,6 +644,17 @@ run_deploy() {
     printf 'ERROR: another Clash-Verge deployment is active\n' >&2
     return 1
   }
+  # Syntax compilation does not resolve Python imports. Check the shared
+  # updater before touching a healthy API on older host installations.
+  if ! python3 - "$(dirname "$REMOTE_API")" <<'PY' >/dev/null 2>&1
+import sys
+sys.path.insert(0, sys.argv[1])
+from mihomo_core_updater import DEFAULT_STABLE_TAG, upgrade_core
+PY
+  then
+    printf 'ERROR: candidate_failed reason=missing_core_updater api_pair_restored=0 stop=1\n' >&2
+    return 1
+  fi
   if ! "$INSTALL_BIN" -d -o root -g root -m 700 "$REMOTE_ROLLBACK_ROOT" >/dev/null 2>&1; then
     printf 'ERROR: candidate_failed reason=rollback_root_unavailable api_pair_restored=0 stop=1\n' >&2
     return 1
@@ -652,7 +667,8 @@ run_deploy() {
   if ! quiet_install -o root -g root -m 755 "$REMOTE_API" "$backup_dir/api.py" ||
      ! quiet_install -o root -g root -m 644 "$REMOTE_UNIT" "$backup_dir/unit" ||
      ! quiet_install -o root -g root -m 644 "$REMOTE_CONTRACT" "$backup_dir/runtime-contract.json" ||
-     ! write_backup_manifest "$backup_dir"; then
+     ! write_backup_manifest "$backup_dir" ||
+     ! verify_backup_manifest "$backup_dir"; then
     printf 'ERROR: candidate_failed reason=backup_capture_failed api_pair_restored=0 stop=1\n' >&2
     return 1
   fi

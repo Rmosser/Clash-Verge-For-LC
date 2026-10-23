@@ -29,7 +29,16 @@
       "errors": {
         "invalidUrl": "Invalid profile URL. Please enter a URL starting with http:// or https://",
         "onlyYaml": "Only YAML Files Supported",
-        "sameBoxDirectYamlRequired": "For same-box imports, use the SubHub direct YAML export URL instead of a login-protected app page"
+        "sameBoxDirectYamlRequired": "For same-box imports, use the SubHub direct YAML export URL instead of a login-protected app page",
+        "createFailed": "Failed to create profile",
+        "deleteFailed": "Failed to delete profile",
+        "enhanceFailed": "Failed to reactivate profiles",
+        "importFailed": "Failed to import profile",
+        "openFailed": "Failed to open profile",
+        "readFailed": "Failed to read profile",
+        "reorderFailed": "Failed to reorder profiles",
+        "switchFailed": "Failed to switch profile",
+        "updateFailed": "Failed to update profile"
       },
       "notifications": {
         "importStageFetching": "Fetching remote subscription...",
@@ -57,7 +66,11 @@
       },
       "notices": {
         "forceRefreshCompleted": "Force refresh completed",
+        "discardedKeys": "Extensions wrote {{keys}}, which Settings manages, so those values were discarded",
         "emergencyRefreshFailed": "Emergency refresh failed: {{message}}"
+      },
+      "tooltips": {
+        "forceRefreshStaleData": "Profile data is unavailable; click to force a refresh"
       }
     },
     "title": "Profiles"
@@ -120,12 +133,26 @@
         "type": "Type",
         "description": "Descriptions",
         "subscriptionUrl": "Subscription URL",
+        "userAgent": "User Agent",
         "httpTimeout": "HTTP Request Timeout",
         "updateInterval": "Update Interval",
         "useSystemProxy": "Use System Proxy",
         "useClashProxy": "Use Clash Proxy",
         "acceptInvalidCerts": "Allows Invalid Certificates (Danger)",
         "allowAutoUpdate": "Allow Auto Update"
+      },
+      "types": {
+        "remote": "Remote",
+        "local": "Local"
+      },
+      "errors": {
+        "typeRequired": "Select a profile type",
+        "urlRequired": "Enter a subscription URL",
+        "uidMissing": "The profile identifier is missing",
+        "saveFailed": "Failed to save profile"
+      },
+      "warnings": {
+        "frequentUpdate": "A short interval reloads the core that often and drops existing connections. {{minutes}} minutes (24 hours) is recommended."
       },
       "feedback": {
         "notifications": {
@@ -185,6 +212,14 @@
       },
       "messages": {
         "readOnly": "Cannot edit in read-only editor"
+      },
+      "enhance": {
+        "globalMerge": "Applies to all profiles, after app settings. The global script, profile config and profile script can still change the result.",
+        "globalScript": "Applies to all profiles, using the result of the global config merge. The profile config and profile script can still change the result.",
+        "profileMerge": "Applies only to this profile, after the global config and global script. The profile script can still change the result.",
+        "profileScript": "Applies only to this profile, using the result of the profile config merge. This is the last extension step before app settings are reapplied.",
+        "order": "Order: Original profile → App settings → <globalMerge>Global extend config</globalMerge> → <globalScript>Global extend script</globalScript> → <profileMerge>Profile extend config</profileMerge> → <profileScript>Profile extend script</profileScript> → App settings reapplied",
+        "settingsPriority": "Note: Fields managed by app settings always use those settings in the final config. Changing these fields in extensions has no effect."
       }
     },
     "confirmDelete": {

@@ -38,14 +38,14 @@ from pathlib import Path
 
 payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 required = {
-    "appVersion": "2.5.2-webport.0",
+    "appVersion": "2.5.8-webport.0",
     "apiSchemaVersion": "2026.08-lzc-v2",
     "uiSchemaVersion": "2026.08-lzc-v2",
-    "packageFingerprint": "cloud.lazycat.app.clash-verge-for-lc/2.5.2-webport.0",
+    "packageFingerprint": "cloud.lazycat.app.clash-verge-for-lc/2.5.8-webport.0",
 }
 for key, expected in required.items():
     if payload.get(key) != expected:
-        raise SystemExit(f"ERROR: runtime contract {key} is not the v2.5.2 WebPort value")
+        raise SystemExit(f"ERROR: runtime contract {key} is not the v2.5.8 WebPort value")
 if payload.get("capabilities", {}).get("systemProxy", {}).get("mode") != "disabled":
     raise SystemExit("ERROR: runtime contract must keep systemProxy disabled")
 git_commit = str(payload.get("gitCommit") or "")

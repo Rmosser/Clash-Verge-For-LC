@@ -2,11 +2,11 @@
 set -Eeuo pipefail
 
 # This script deliberately does not source .env or any private configuration.
-# It owns only the Verge API/runtime-contract pair on the development host.
+# It owns only the Verge API/runtime-contract pair on the reviewed hosts.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-readonly TARGET_HOST="rainierdev.heiyu.space"
-HOST="${MICROSERVER_HOST:-$TARGET_HOST}"
+HOST="${MICROSERVER_HOST:-rainierdev.heiyu.space}"
+readonly TARGET_HOST="$HOST"
 SSH_USER="${MICROSERVER_SSH_USER:-root}"
 SSH_KEY="${MICROSERVER_SSH_KEY:-$HOME/.ssh/id_ed25519}"
 
@@ -29,11 +29,11 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/deploy_verge_api.sh [--rollback <opaque-backup-id>] --confirm
 
-Deploys or restores the Verge API/runtime-contract pair on rainierdev only.
+Deploys or restores the Verge API/runtime-contract pair on rainierdev or rainierspace.
 The script never reads .env, Mihomo config, subscriptions, nodes, or secrets.
 
 Environment overrides:
-  MICROSERVER_HOST       must remain rainierdev.heiyu.space
+  MICROSERVER_HOST       rainierdev.heiyu.space or rainierspace.heiyu.space
   MICROSERVER_SSH_USER   defaults to root
   MICROSERVER_SSH_KEY    defaults to ~/.ssh/id_ed25519
   The repository-reviewed host map supplies the SHA256 fingerprint; it is not
@@ -65,9 +65,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ "$HOST" == "$TARGET_HOST" ]] || {
-  echo "ERROR: refusing non-development target: $HOST" >&2
-  echo "Only $TARGET_HOST is allowed for this migration." >&2
+[[ "$HOST" == "rainierdev.heiyu.space" || "$HOST" == "rainierspace.heiyu.space" ]] || {
+  echo "ERROR: refusing unreviewed target: $HOST" >&2
+  echo "Only the reviewed development and production hosts are allowed." >&2
   exit 1
 }
 [[ "$SSH_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || {

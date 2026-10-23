@@ -1,4 +1,3 @@
-patches/0001-clash-verge-rev-v2.5.2-webport.patch
-patches/0002-dns-contracts.patch
-patches/0003-runtime-connection-payload-validation.patch
-patches/0004-main-vendor-maintenance.patch
+patches/0005-clash-verge-rev-v2.5.8-webport.patch
+patches/0006-refresh-port-settings.patch
+patches/0007-upstream-whitespace.patch

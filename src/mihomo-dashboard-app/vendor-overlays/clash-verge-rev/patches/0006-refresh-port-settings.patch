@@ -1,0 +1,12 @@
+diff --git a/src/components/setting/mods/clash-port-viewer.tsx b/src/components/setting/mods/clash-port-viewer.tsx
+index e0d6ef1..5bc79ae 100644
+--- a/src/components/setting/mods/clash-port-viewer.tsx
++++ b/src/components/setting/mods/clash-port-viewer.tsx
+@@ -170,6 +170,7 @@ export const ClashPortViewer = forwardRef<ClashPortViewerRef>((_, ref) => {
+     async (settings: ProxyPortSettings) =>
+       mutate(() => saveProxyPorts(settings), {
+         id: 'save-proxy-ports',
++        revalidate: [['getVergeConfig'], ['getClashInfo'], ['getRuntimeConfig']],
+         errorNotice: false,
+       }),
+     {

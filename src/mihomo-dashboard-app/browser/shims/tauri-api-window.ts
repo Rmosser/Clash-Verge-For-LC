@@ -1,4 +1,4 @@
-import { addAppEventListener } from "../runtime";
+import { addAppEventListener, ensureDragDropBridge } from "../runtime";
 
 export type Theme = "light" | "dark";
 
@@ -16,6 +16,20 @@ class BrowserWindowHandle {
   }
 
   async minimize() {}
+  async isMinimized() {
+    return document.hidden;
+  }
+  async onCloseRequested(
+    _callback: (event: { preventDefault: () => void }) => void,
+  ) {
+    return () => {};
+  }
+  async onDragDropEvent(
+    callback: (event: { payload: { type: string; paths: string[] } }) => void,
+  ) {
+    ensureDragDropBridge("tauri://drag-drop");
+    return addAppEventListener("tauri://drag-drop", callback);
+  }
 
   async maximize() {}
 
@@ -88,12 +102,13 @@ class BrowserWindowHandle {
     return () => media.removeEventListener("change", handler);
   }
 
-  async onFocusChanged(callback: () => void) {
-    window.addEventListener("focus", callback);
-    window.addEventListener("blur", callback);
+  async onFocusChanged(callback: (event: { payload: boolean }) => void) {
+    const handler = () => callback({ payload: document.hasFocus() });
+    window.addEventListener("focus", handler);
+    window.addEventListener("blur", handler);
     return () => {
-      window.removeEventListener("focus", callback);
-      window.removeEventListener("blur", callback);
+      window.removeEventListener("focus", handler);
+      window.removeEventListener("blur", handler);
     };
   }
 

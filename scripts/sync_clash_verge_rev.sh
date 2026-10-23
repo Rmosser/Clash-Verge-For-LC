@@ -4,8 +4,8 @@ set -Eeuo pipefail
 # This script is intentionally pinned. A floating upstream ref would make the
 # vendored WebPort non-reproducible and could silently import desktop code.
 readonly UPSTREAM_URL="https://github.com/clash-verge-rev/clash-verge-rev.git"
-readonly UPSTREAM_REF="v2.5.2"
-readonly UPSTREAM_COMMIT="28f2efc504059b1dc75c793618b775c8e1b2a5f1"
+readonly UPSTREAM_REF="v2.5.8"
+readonly UPSTREAM_COMMIT="4337bd85758d54d7b9044b2da3c9ac1176eae1f3"
 
 readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly OVERLAY_ROOT="$ROOT_DIR/src/mihomo-dashboard-app/vendor-overlays/clash-verge-rev"
@@ -62,7 +62,7 @@ PY
 [[ "$manifest_ref" == "$UPSTREAM_REF" ]] || die "manifest ref is not pinned to $UPSTREAM_REF"
 [[ "$manifest_commit" == "$UPSTREAM_COMMIT" ]] || die "manifest commit is not pinned to $UPSTREAM_COMMIT"
 
-remote_tag="$(git ls-remote "$UPSTREAM_URL" "refs/tags/$UPSTREAM_REF" | awk 'NR == 1 { print $1 }')"
+remote_tag="$(git ls-remote "$UPSTREAM_URL" "refs/tags/$UPSTREAM_REF" "refs/tags/$UPSTREAM_REF^{}" | awk '{ sha=$1 } END { print sha }')"
 [[ "$remote_tag" == "$UPSTREAM_COMMIT" ]] || die "remote tag $UPSTREAM_REF is $remote_tag, expected $UPSTREAM_COMMIT"
 
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/clash-verge-rev-sync.XXXXXX")"

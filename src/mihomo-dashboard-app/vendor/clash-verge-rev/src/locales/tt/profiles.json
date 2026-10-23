@@ -28,7 +28,16 @@
     "feedback": {
       "errors": {
         "invalidUrl": "Invalid profile URL. Please enter a URL starting with http:// or https://",
-        "onlyYaml": "Фәкать YAML-файллар гына хуплана"
+        "onlyYaml": "Фәкать YAML-файллар гына хуплана",
+        "createFailed": "Профиль төзеп булмады",
+        "deleteFailed": "Профильне бетереп булмады",
+        "enhanceFailed": "Профильләрне яңадан эшкә җибәреп булмады",
+        "importFailed": "Профильне кертеп булмады",
+        "openFailed": "Профильне ачып булмады",
+        "readFailed": "Профильне укып булмады",
+        "reorderFailed": "Профильләр тәртибен үзгәртеп булмады",
+        "switchFailed": "Профильне алыштырып булмады",
+        "updateFailed": "Профильне яңартып булмады"
       },
       "notifications": {
         "importRetry": "Import failed, retrying with Clash proxy...",
@@ -42,7 +51,11 @@
       },
       "notices": {
         "forceRefreshCompleted": "Force refresh completed",
+        "discardedKeys": "Киңәйтмәләр Көйләүләр белән идарә ителә торган {{keys}} кырларын язды, шуңа күрә бу кыйммәтләр кире кагылды",
         "emergencyRefreshFailed": "Emergency refresh failed: {{message}}"
+      },
+      "tooltips": {
+        "forceRefreshStaleData": "Профиль мәгълүматы юк; көчләп яңарту өчен басыгыз"
       }
     },
     "title": "Профильләр"
@@ -105,12 +118,26 @@
         "type": "Төр",
         "description": "Тасвирламалар",
         "subscriptionUrl": "Подписка URL-ы",
+        "userAgent": "Кулланучы агенты",
         "httpTimeout": "HTTP Request Timeout",
         "updateInterval": "Яңарту интервалы",
         "useSystemProxy": "Системалы проксины кулланып яңарту",
         "useClashProxy": "Clash прокси кулланып яңарту",
         "acceptInvalidCerts": "Дөрес булмаган сертификатларны кабул итү (Куркыныч)",
         "allowAutoUpdate": "Allow Auto Update"
+      },
+      "types": {
+        "remote": "Ерактагы",
+        "local": "Җирле"
+      },
+      "errors": {
+        "typeRequired": "Профиль төрен сайлагыз",
+        "urlRequired": "Язылу сылтамасын кертегез",
+        "uidMissing": "Профиль билгесе юк",
+        "saveFailed": "Профильне саклап булмады"
+      },
+      "warnings": {
+        "frequentUpdate": "Кыска аралык ядрәне еш яңадан йөкли һәм актив тоташуларны өзә. {{minutes}} минут (24 сәгать) тәкъдим ителә."
       },
       "feedback": {
         "notifications": {
@@ -170,6 +197,14 @@
       },
       "messages": {
         "readOnly": "Уку режимында үзгәртү мөмкин түгел"
+      },
+      "enhance": {
+        "globalMerge": "Кушымта көйләүләреннән соң барлык профильләргә кулланыла. Глобаль скрипт, профиль конфигурациясе һәм профиль скрипты нәтиҗәне әле үзгәртә ала.",
+        "globalScript": "Глобаль конфигурацияне берләштерү нәтиҗәсен кулланып, барлык профильләргә кулланыла. Профиль конфигурациясе һәм профиль скрипты нәтиҗәне әле үзгәртә ала.",
+        "profileMerge": "Глобаль конфигурация һәм глобаль скрипттан соң шушы профильгә генә кулланыла. Профиль скрипты нәтиҗәне әле үзгәртә ала.",
+        "profileScript": "Профиль конфигурациясен берләштерү нәтиҗәсен кулланып, шушы профильгә генә кулланыла. Бу — кушымта көйләүләрен яңадан куллану алдыннан соңгы киңәйтү адымы.",
+        "order": "Тәртип: Башлангыч профиль → Кушымта көйләүләре → <globalMerge>Глобаль киңәйтү конфигурациясе</globalMerge> → <globalScript>Глобаль киңәйтү скрипты</globalScript> → <profileMerge>Профиль киңәйтү конфигурациясе</profileMerge> → <profileScript>Профиль киңәйтү скрипты</profileScript> → Кушымта көйләүләрен яңадан куллану",
+        "settingsPriority": "Искәрмә: Кушымта көйләүләре идарә иткән кырлар соңгы конфигурациядә һәрвакыт шул көйләүләрнең кыйммәтләрен куллана. Бу кырларны киңәйтүләрдә үзгәртү тәэсир итми."
       }
     },
     "confirmDelete": {

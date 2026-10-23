@@ -15,6 +15,15 @@
 - `Verge API`：懒猫 Web 版运行时后端，监听 `172.18.0.1:9091`
 - `container proxy`：容器显式代理入口，监听 `172.18.0.1:17890`
 
+## 上游版本
+
+- Dashboard 基于 Clash Verge Rev `v2.5.8`，WebPort `2.5.8-webport.0`，LPK `0.4.0`。
+- Web adapter 将 controller 与活动 YAML 转换为上游 ProxyView v1，保留 provider 来源与同名节点顺序；配置 degraded 时保留最后成功快照。
+- 运行状态来自宿主机 controller，系统代理、sidecar 和桌面服务安装保持禁用。
+- Mihomo core 默认固定为稳定版 `v1.19.33`（2026-10-21 发布）。
+- 核心升级仍通过共享 updater 校验 release digest、架构、版本与现有配置，并保留自动回滚。
+- 仓库版本与目标机已安装版本分别核实；LPK 不包含宿主机核心。
+
 ## 当前推荐基线
 
 仓库当前支持的保守基线是：
@@ -26,9 +35,11 @@
 - `172.18.0.1:9091` 作为 Verge API
 - `172.18.0.1:17890` 作为容器显式代理入口
 
+端口设置保存时同步 GUI 配置与运行覆盖层；可选端口的启用状态参与生成 Mihomo 配置，应用失败时恢复两份设置。
+
 ## 运行时恢复与健康契约
 
-- `install_host_native_bootstrap.sh` 将宿主机文件发布为不可变 generation；
+- `install_host_native_bootstrap.sh` 将宿主机文件（含 API 必需的 `mihomo_core_updater.py`）发布为不可变 generation；
   `current-generation`、`applied-generation` 和 `state/pending.env` 记录启动
   reconcile 边界。启动时优先校验并重启现有 live 配置，只有 live 配置缺失或
   校验失败才回退到完整 generation，避免把 snapshot 之后的配置静默覆盖。
@@ -39,7 +50,8 @@
   interface；持久化 interface 只用于没有 default route 时的安全 revert，不能驱动
   新的 DNS assignment。
 - `/healthz` 同时探测 Mihomo `/version` controller、restore transaction 和告警
-  delivery channel；任一未确认时返回 HTTP 503。Verge API 可按
+  delivery channel；controller 或恢复事务异常、告警日志损坏、已配置告警的发送未确认时返回 HTTP 503。
+  外部 webhook 是可选通知能力：未配置时不阻止应用健康检查，Web 控制台明确显示未启用。Verge API 可按
   `MIHOMO_ALERT_WEBHOOK_URL` 配置主动告警，所有状态转换和 delivery receipt 先
   fsync 到 `/var/lib/mihomo/verge/logs/alerts.jsonl`。启动及每次 append/flush 都会
   逐行恢复 JSONL；损坏行会被隔离并记录到同目录的

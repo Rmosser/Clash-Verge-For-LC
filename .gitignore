@@ -56,3 +56,6 @@ var/private/
 deploy/config.yaml
 deploy/config.yaml.bak
 deploy/secret.txt
+
+# LazyCat local image build cache
+.lzc-cli-cache/

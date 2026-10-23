@@ -23,7 +23,8 @@
     "closeAll": "Tutup Semua",
     "clear": "Bersihkan",
     "previous": "Previous",
-    "next": "Next"
+    "next": "Next",
+    "check": "Periksa"
   },
   "labels": {
     "updateAt": "Diperbarui Pada",
@@ -44,7 +45,8 @@
     "enabled": "Diaktifkan",
     "disabled": "Dinonaktifkan",
     "saving": "Saving...",
-    "empty": "Kosong"
+    "empty": "Kosong",
+    "loading": "Memuat..."
   },
   "units": {
     "milliseconds": "milidetik",
@@ -74,6 +76,14 @@
   },
   "feedback": {
     "errors": {
+      "unexpected": "Terjadi kesalahan",
+      "label": "Kesalahan",
+      "unknown": "Kesalahan tidak diketahui",
+      "details": "Detail kesalahan",
+      "stack": "Tumpukan kesalahan",
+      "componentStack": "Tumpukan komponen",
+      "trafficUnavailable": "Data lalu lintas tidak tersedia",
+      "operationFailed": "Operasi gagal",
       "trafficStats": "Traffic Statistics Error",
       "trafficStatsDescription": "The traffic statistics component encountered an error and has been disabled to prevent crashes."
     },
@@ -98,8 +108,7 @@
       "config": {
         "failed": "Validasi konfigurasi langganan gagal, periksa file konfigurasi, perubahan dibatalkan, detail kesalahan:",
         "bootFailed": "Validasi konfigurasi saat boot gagal, menggunakan konfigurasi default, periksa file konfigurasi, detail kesalahan:",
-        "coreChangeFailed": "Validasi konfigurasi saat ganti inti gagal, menggunakan konfigurasi default, periksa file konfigurasi, detail kesalahan:",
-        "processTerminated": "Proses validasi dihentikan"
+        "processTerminated": "Proses validasi dihentikan. Periksa apakah perangkat lunak keamanan mencegah inti berjalan, atau apakah CPU dan lingkungan runtime komputer mendukung program inti."
       },
       "script": {
         "syntaxError": "Kesalahan sintaks skrip, perubahan dibatalkan",
@@ -110,15 +119,11 @@
       "yaml": {
         "syntaxError": "YAML syntax error, changes reverted",
         "readError": "YAML read error, changes reverted",
-        "mappingError": "YAML mapping error, changes reverted",
-        "keyError": "YAML key error, changes reverted",
-        "generalError": "YAML error, changes reverted"
+        "mappingError": "YAML mapping error, changes reverted"
       },
       "merge": {
         "syntaxError": "Merge file syntax error, changes reverted",
-        "mappingError": "Merge file mapping error, changes reverted",
-        "keyError": "Merge file key error, changes reverted",
-        "generalError": "Merge file error, changes reverted"
+        "mappingError": "Merge file mapping error, changes reverted"
       }
     }
   },

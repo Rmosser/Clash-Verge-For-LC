@@ -42,7 +42,7 @@ Commands:
   secret show --confirm-secret
                             Print controller secret (explicit disclosure confirmation required)
   upgrade-core [version] --confirm
-                            One-click core upgrade (default: v1.19.30)
+                            One-click core upgrade (default: v1.19.33)
   rollback-core [target] --confirm
                             Rollback core from backup (default: latest)
                             target=latest or full backup path
@@ -253,7 +253,7 @@ REMOTE
     ;;
 
   upgrade-core)
-    version="${1:-${MIHOMO_VERSION:-v1.19.30}}"
+    version="${1:-${MIHOMO_VERSION:-v1.19.33}}"
     "$ROOT/scripts/deploy_microserver.sh" --upgrade-core --only-core --core-version "$version" --confirm
     ;;
 

@@ -1,4 +1,5 @@
 import { useLockFn } from 'ahooks'
+import i18n from 'i18next'
 import { getVersion } from 'tauri-plugin-mihomo-api'
 
 import {
@@ -7,8 +8,8 @@ import {
   getRuntimeConfig,
   patchClashConfig,
 } from '@/services/cmds'
+import { mutate } from '@/services/mutate'
 import {
-  getCacheData,
   revalidateQuery,
   setCacheData,
   useQuery,
@@ -47,10 +48,14 @@ const hasClashInfoPayload = (patch: ClashInfoPatch) =>
 
 const validatePortRange = (port: number) => {
   if (port < 1000) {
-    throw new Error('The port should not < 1000')
+    throw new Error(
+      i18n.t(($) => $.settings.modals.clashPort.messages.portTooLow),
+    )
   }
   if (port > 65535) {
-    throw new Error('The port should not > 65536')
+    throw new Error(
+      i18n.t(($) => $.settings.modals.clashPort.messages.portTooHigh),
+    )
   }
 }
 
@@ -92,11 +97,7 @@ export const useClash = () => {
     if (updater === undefined) {
       return refetch()
     }
-    const next =
-      typeof updater === 'function'
-        ? updater(getCacheData<IConfigData>(['getRuntimeConfig']))
-        : updater
-    setCacheData(['getRuntimeConfig'], next)
+    void setCacheData<IConfigData>(['getRuntimeConfig'], updater)
     if (revalidate !== false) {
       return refetch()
     }
@@ -104,8 +105,11 @@ export const useClash = () => {
   }
 
   const patchClash = useLockFn(async (patch: Partial<IConfigData>) => {
-    await patchClashConfig(patch)
-    mutateClash()
+    await mutate(() => patchClashConfig(patch), {
+      id: 'patch-clash-config',
+      revalidate: [['getRuntimeConfig']],
+      errorNotice: false,
+    })
   })
 
   const version = versionData?.meta
@@ -132,9 +136,11 @@ export const useClashInfo = () => {
 
     validatePorts(patch)
 
-    await patchClashConfig(patch)
-    mutateInfo()
-    revalidateQuery(['getClashConfig'])
+    await mutate(() => patchClashConfig(patch), {
+      id: 'patch-clash-info',
+      revalidate: [['getClashInfo'], ['getClashConfig']],
+      errorNotice: false,
+    })
   })
 
   const invalidateClashConfig = () => revalidateQuery(['getClashConfig'])

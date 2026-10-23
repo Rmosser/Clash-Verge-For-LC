@@ -182,7 +182,7 @@ if [[ "$url" == *runtime-info* ]]; then
     printf '%s\n' 1 >"$state/api_nrestarts"
     : >"$state/final_nrestarts_set"
   fi
-  printf '{"appVersion":"2.5.2-webport.0","apiSchemaVersion":"2026.08-lzc-v2","uiSchemaVersion":"2026.08-lzc-v2","packageFingerprint":"cloud.lazycat.app.clash-verge-for-lc/2.5.2-webport.0","buildId":"%s","gitCommit":"%s","systemProxy":{"mode":"disabled"}}\n' \
+  printf '{"appVersion":"2.5.8-webport.0","apiSchemaVersion":"2026.08-lzc-v2","uiSchemaVersion":"2026.08-lzc-v2","packageFingerprint":"cloud.lazycat.app.clash-verge-for-lc/2.5.8-webport.0","buildId":"%s","gitCommit":"%s","systemProxy":{"mode":"disabled"}}\n' \
     "$EXPECTED_BUILD_ID" "$EXPECTED_GIT_COMMIT"
   exit 0
 fi
@@ -297,12 +297,13 @@ write_fixture() {
   printf '%s\n' 0 >"$state/api_restart_calls"
   printf '%s\n' 0 >"$state/ss_attempts"
   : >"$state/systemctl.log"
-  printf '%s\n' baseline >"$case_root/remote/api.py"
-  printf '%s\n' baseline-unit >"$case_root/remote/unit"
+  printf '%s\n' 'DEFAULT_STABLE_TAG = "v1.19.33"' 'def upgrade_core(): pass' >"$case_root/remote/mihomo_core_updater.py"
+  printf '%s\n' baseline >"$case_root/remote/mihomo-verge-api.py"
+  printf '%s\n' baseline-unit >"$case_root/remote/mihomo-verge-api.service"
   printf '%s\n' baseline-contract >"$case_root/remote/runtime-contract.json"
   printf '%s\n' 'print("candidate")' >"$case_root/candidate/api.py"
   printf '%s\n' candidate-unit >"$case_root/candidate/unit"
-  printf '%s\n' '{"appVersion":"2.5.2-webport.0","apiSchemaVersion":"2026.08-lzc-v2","uiSchemaVersion":"2026.08-lzc-v2","packageFingerprint":"cloud.lazycat.app.clash-verge-for-lc/2.5.2-webport.0","buildId":"test-build","gitCommit":"0123456789012345678901234567890123456789","capabilities":{"systemProxy":{"mode":"disabled"}}}' >"$case_root/candidate/runtime-contract.json"
+  printf '%s\n' '{"appVersion":"2.5.8-webport.0","apiSchemaVersion":"2026.08-lzc-v2","uiSchemaVersion":"2026.08-lzc-v2","packageFingerprint":"cloud.lazycat.app.clash-verge-for-lc/2.5.8-webport.0","buildId":"test-build","gitCommit":"0123456789012345678901234567890123456789","capabilities":{"systemProxy":{"mode":"disabled"}}}' >"$case_root/candidate/runtime-contract.json"
 }
 
 populate_backup() {
@@ -310,14 +311,14 @@ populate_backup() {
   local backup_id="$2"
   local backup_dir="$case_root/state/backups/$backup_id"
   mkdir -p "$backup_dir"
-  cp "$case_root/remote/api.py" "$backup_dir/api.py"
-  cp "$case_root/remote/unit" "$backup_dir/unit"
+  cp "$case_root/remote/mihomo-verge-api.py" "$backup_dir/api.py"
+  cp "$case_root/remote/mihomo-verge-api.service" "$backup_dir/unit"
   cp "$case_root/remote/runtime-contract.json" "$backup_dir/runtime-contract.json"
   printf '%s\tapi.py\tregular\t%s\t%s\n' \
-    "$case_root/remote/api.py" "$(stat -c '%s' -- "$backup_dir/api.py" 2>/dev/null || stat -f '%z' -- "$backup_dir/api.py")" \
+    "$case_root/remote/mihomo-verge-api.py" "$(stat -c '%s' -- "$backup_dir/api.py" 2>/dev/null || stat -f '%z' -- "$backup_dir/api.py")" \
     "$(shasum -a 256 "$backup_dir/api.py" | awk '{print $1}')" > "$backup_dir/manifest.tsv"
   printf '%s\tunit\tregular\t%s\t%s\n' \
-    "$case_root/remote/unit" "$(stat -c '%s' -- "$backup_dir/unit" 2>/dev/null || stat -f '%z' -- "$backup_dir/unit")" \
+    "$case_root/remote/mihomo-verge-api.service" "$(stat -c '%s' -- "$backup_dir/unit" 2>/dev/null || stat -f '%z' -- "$backup_dir/unit")" \
     "$(shasum -a 256 "$backup_dir/unit" | awk '{print $1}')" >> "$backup_dir/manifest.tsv"
   printf '%s\truntime-contract.json\tregular\t%s\t%s\n' \
     "$case_root/remote/runtime-contract.json" "$(stat -c '%s' -- "$backup_dir/runtime-contract.json" 2>/dev/null || stat -f '%z' -- "$backup_dir/runtime-contract.json")" \
@@ -335,8 +336,8 @@ run_candidate() {
   env PATH="$FAKE_BIN:$PATH" \
     FAKE_STATE="$case_root/state" \
     ACTION=deploy \
-    REMOTE_API="$case_root/remote/api.py" \
-    REMOTE_UNIT="$case_root/remote/unit" \
+    REMOTE_API="$case_root/remote/mihomo-verge-api.py" \
+    REMOTE_UNIT="$case_root/remote/mihomo-verge-api.service" \
     REMOTE_CONTRACT="$case_root/remote/runtime-contract.json" \
     REMOTE_ROLLBACK_ROOT="$case_root/state/backups" \
     REMOTE_TMP_API="$case_root/candidate/api.py" \
@@ -364,8 +365,8 @@ run_rollback() {
     FAKE_STATE="$case_root/state" \
     ACTION=rollback \
     ROLLBACK_ID="$backup_id" \
-    REMOTE_API="$case_root/remote/api.py" \
-    REMOTE_UNIT="$case_root/remote/unit" \
+    REMOTE_API="$case_root/remote/mihomo-verge-api.py" \
+    REMOTE_UNIT="$case_root/remote/mihomo-verge-api.service" \
     REMOTE_CONTRACT="$case_root/remote/runtime-contract.json" \
     REMOTE_ROLLBACK_ROOT="$case_root/state/backups" \
     READINESS_TIMEOUT_SECONDS="${TEST_READINESS_TIMEOUT_SECONDS:-1}" \
@@ -397,6 +398,15 @@ assert_not_output() {
     return 1
   fi
 }
+
+case_root="$TEST_ROOT/missing_updater"
+write_fixture "$case_root" delayed
+rm "$case_root/remote/mihomo_core_updater.py"
+run_candidate "$case_root"
+[[ "$(<"$case_root/output.status")" != 0 ]]
+assert_output "$case_root/output.err" 'reason=missing_core_updater'
+[[ "$(<"$case_root/state/api_restart_calls")" == 0 ]]
+[[ "$(<"$case_root/remote/mihomo-verge-api.py")" == baseline ]]
 
 case_root="$TEST_ROOT/delayed"
 write_fixture "$case_root" delayed
@@ -435,7 +445,7 @@ run_candidate "$case_root"
 [[ "$(<"$case_root/output.status")" != 0 ]]
 assert_output "$case_root/output.err" 'reason=api_readiness_timeout'
 assert_output "$case_root/output.err" 'api_pair_restored=1 api_pair_health=1 mihomo_unchanged=1'
-[[ "$(<"$case_root/remote/api.py")" == baseline ]]
+[[ "$(<"$case_root/remote/mihomo-verge-api.py")" == baseline ]]
 
 case_root="$TEST_ROOT/rollback_failure"
 write_fixture "$case_root" rollback_failure

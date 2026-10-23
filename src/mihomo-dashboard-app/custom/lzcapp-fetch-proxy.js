@@ -44,6 +44,9 @@ function ipv4FirstLookup(hostname, options, callback) {
     }
 
     // Pick the first IPv4 if available, otherwise the first entry.
+    if (options && options.all) {
+      return callback(null, addresses.sort((a, b) => a.family - b.family));
+    }
     let chosen = addresses[0];
     for (const a of addresses) {
       if (a && a.family === 4) {

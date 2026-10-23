@@ -11,13 +11,14 @@ A Clash Meta GUI based on <a href="https://github.com/tauri-apps/tauri">Tauri</a
 
 <p align="center">
   Languages:
-  <a href="./README.md">简体中文</a> ·
   <a href="./docs/README_en.md">English</a> ·
   <a href="./docs/README_es.md">Español</a> ·
-  <a href="./docs/README_ru.md">Русский</a> ·
+  <a href="./docs/README_fa.md">فارسی</a> ·
   <a href="./docs/README_ja.md">日本語</a> ·
   <a href="./docs/README_ko.md">한국어</a> ·
-  <a href="./docs/README_fa.md">فارسی</a>
+  <a href="./docs/README_pt.md">Português</a> ·
+  <a href="./docs/README_ru.md">Русский</a> ·
+  <a href="./README.md">简体中文</a>
 </p>
 
 ## Preview
@@ -31,6 +32,7 @@ A Clash Meta GUI based on <a href="https://github.com/tauri-apps/tauri">Tauri</a
 请到发布页面下载对应的安装包：[Release page](https://github.com/clash-verge-rev/clash-verge-rev/releases)<br>
 Go to the [Release page](https://github.com/clash-verge-rev/clash-verge-rev/releases) to download the corresponding installation package<br>
 Supports Windows (x64/x86), Linux (x64/arm64) and macOS 11+ (intel/apple).
+支持 Windows (x64/x86)、Linux (x64/arm64) 和 macOS 11+ (intel/apple)。
 
 #### 我应当怎样选择发行版
 
@@ -48,23 +50,22 @@ Supports Windows (x64/x86), Linux (x64/arm64) and macOS 11+ (intel/apple).
 
 ## Promotion
 
-### ✈️ [狗狗加速 —— 技术流机场 Doggygo VPN](https://verge.dginv.click/#/register?code=oaxsAGo6)
+### ✈️ [AI云边 -- 全新架构机场 ClaudeBorder](https://cruise.54678999.xyz/#/register?code=58q5UJZc)
 
-🚀 高性能海外技术流机场，支持免费试用与优惠套餐，全面解锁流媒体及 AI 服务，全球首家采用 **QUIC 协议**。
+🔥热销中使用本链接注册即送 **3 天免费试用**，每日 **1GB 流量**：👉 [点此注册](https://cruise.54678999.xyz/#/register?code=58q5UJZc)
 
-🎁 使用 **Clash Verge 专属邀请链接** 注册即送 **3 天免费试用**，每日 **1GB 流量**：👉 [点此注册](https://verge.dginv.click/#/register?code=oaxsAGo6)
+#### AI云边 -- 全新架构机场。
 
-#### **核心优势：**
+- 💻 多次**技术迭代后**全新亮相。
+- 🗺 全**高速稳定**正价节点。
+- 🌏 **海外团队**，不跑路
+- 🚀 线路**冗余**设计，**自动化运维**对抗各类封锁
+- 👨‍🦲 团队架构师为**大厂**网络架构师
+- 💰 极致**稳定**，亲民价**价格**
+- 🌐 全面支持**流媒体及各AI访问**
+- 🙋 7*12小时真人客服。解决您的各类问题。
 
-- 📱 自研 iOS 客户端（业内"唯一"）技术经得起考验，极大**持续研发**投入
-- 🧑‍💻 **12小时真人客服**(顺带解决 Clash Verge 使用问题)
-- 💰 优惠套餐每月**仅需 21 元，160G 流量，年付 8 折**
-- 🌍 海外团队，无跑路风险，高达 50% 返佣
-- ⚙️ **集群负载均衡**设计，**负载监控和随时扩容**，高速专线(兼容老客户端)，极低延迟，无视晚高峰，4K 秒开
-- ⚡ 全球首家**Quic 协议机场**，现已上线更快的 Quic 类协议(Clash Verge 客户端最佳搭配)
-- 🎬 解锁**流媒体及 主流 AI**
-
-🌐 官网：👉 [https://狗狗加速.com](https://verge.dginv.click/#/register?code=oaxsAGo6)
+🌐 官网：👉 [https://www.claudeborder.com](https://cruise.54678999.xyz/#/register?code=58q5UJZc)
 
 ### 🤖 [GPTKefu —— 与 Crisp 深度整合的 AI 智能客服平台](https://gptkefu.com)
 
@@ -107,6 +108,12 @@ pnpm run prebuild
 pnpm dev
 ```
 
+`pnpm dev` preserves the Development Channel's installed service state: an
+existing service is used, while a previously uninstalled service remains
+uninstalled and the app starts in Sidecar mode. Use `pnpm dev:service` to
+explicitly install or update the isolated development service before launch,
+or `pnpm dev:sidecar` to force the unprivileged Sidecar workflow.
+
 ## Contributions
 
 Issue and PR welcome!
@@ -122,10 +129,13 @@ Clash Verge rev was based on or inspired by these projects and so on:
 - [Fndroid/clash_for_windows_pkg](https://github.com/Fndroid/clash_for_windows_pkg): A Windows/macOS GUI based on Clash.
 - [vitejs/vite](https://github.com/vitejs/vite): Next generation frontend tooling. It's fast!
 
+## Privacy
+
+Clash Verge Rev 不收集任何用户数据，配置与日志仅保存在本地。详见[隐私政策](./PRIVACY.md)。
+
+Clash Verge Rev does not collect any user data; configuration and logs stay on
+your own device. See the [Privacy Policy](./PRIVACY.md) for details.
+
 ## License
 
 GPL-3.0 License. See [License here](./LICENSE) for details.
-
-<p align="right">
-  <sub><a href="https://sponsorship.forztn.com/github/clash-verge-rev/clash-verge-rev">Supported By ForZTN</a></sub>
-</p>

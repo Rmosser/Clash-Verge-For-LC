@@ -81,10 +81,23 @@ export class MihomoWebSocket {
   private listeners = new Set<Listener>();
   private static all = new Set<MihomoWebSocket>();
 
-  constructor(private socket: WebSocket) {
+  constructor(
+    private socket: WebSocket,
+    summary = false,
+  ) {
     MihomoWebSocket.all.add(this);
     socket.addEventListener("message", (event) => {
-      const message: Message = { type: "Text", data: String(event.data ?? "") };
+      let data = String(event.data ?? "");
+      if (summary) {
+        try {
+          const payload = JSON.parse(data);
+          if (!Array.isArray(payload.connections)) return;
+          data = JSON.stringify({ count: payload.connections.length });
+        } catch {
+          return;
+        }
+      }
+      const message: Message = { type: "Text", data };
       this.listeners.forEach((listener) => listener(message));
     });
     socket.addEventListener("close", () => {
@@ -110,7 +123,7 @@ export class MihomoWebSocket {
     }
   }
 
-  private static async connect(pathWithQuery: string) {
+  private static async connect(pathWithQuery: string, summary = false) {
     const [pathname, rawQuery = ""] = pathWithQuery.split("?", 2);
     const url = wsBase();
     url.pathname = `${url.pathname.replace(/\/$/, "")}${pathname}`;
@@ -131,7 +144,7 @@ export class MihomoWebSocket {
         },
       );
     });
-    return new MihomoWebSocket(socket);
+    return new MihomoWebSocket(socket, summary);
   }
 
   static connect_traffic() {
@@ -140,6 +153,10 @@ export class MihomoWebSocket {
 
   static connect_memory() {
     return MihomoWebSocket.connect("/memory");
+  }
+
+  static connect_connections_count() {
+    return MihomoWebSocket.connect("/connections", true);
   }
 
   static connect_connections() {
@@ -264,4 +281,8 @@ export const updateGeo = async () => {
 };
 export const upgradeCore = async () => {
   await vergeInvoke("upgrade_core", {});
+};
+
+export const unfixedProxy = async (name: string) => {
+  await deleteReq(`/group/${encodeName(name)}`);
 };
