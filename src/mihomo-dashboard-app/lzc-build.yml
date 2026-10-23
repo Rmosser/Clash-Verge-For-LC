@@ -56,3 +56,9 @@ icon: ./lzc-icon.png
 #   # setupscript: ./setupscript.sh
 #   setupscript: |
 #     export npm_config_registry=https://registry.npmmirror.com
+
+# Bundle all Node runtime layers so installation does not depend on a mirror.
+images:
+  fetchproxy-runtime:
+    dockerfile: ./fetchproxy-image/Dockerfile
+    builder: local
