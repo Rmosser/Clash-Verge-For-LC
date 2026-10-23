@@ -690,12 +690,25 @@ class MihomoVergeApiTests(unittest.TestCase):
                 ):
                     runtime = MODULE.runtime_info_payload()
 
-        self.assertFalse(payload["ok"])
+        self.assertTrue(payload["ok"])
         self.assertEqual(payload["alerting"]["status"], "degraded")
         self.assertFalse(payload["alerting"]["ready"])
         self.assertIn("not configured", payload["alerting"]["detail"])
         self.assertEqual(runtime["alerting"]["status"], "degraded")
         self.assertFalse(runtime["alerting"]["ready"])
+
+    def test_optional_alerting_does_not_mask_runtime_or_delivery_failures(self):
+        cases = [
+            ("ok", "ok", False, 0, "degraded", True),
+            ("degraded", "ok", False, 0, "degraded", False),
+            ("ok", "degraded", False, 0, "degraded", False),
+            ("ok", "ok", False, 1, "degraded", False),
+            ("ok", "ok", True, 0, "degraded", False),
+            ("ok", "ok", True, 0, "ok", True),
+        ]
+        for controller, restore, configured, corruption, delivery, expected in cases:
+            with self.subTest(controller=controller, restore=restore, configured=configured, corruption=corruption, delivery=delivery), patch.object(MODULE, "runtime_probe_health", return_value={"status": controller}), patch.object(MODULE, "restore_transaction_status", return_value={"status": restore}), patch.object(MODULE, "record_runtime_alert"), patch.object(MODULE, "flush_alert_outbox"), patch.object(MODULE, "alert_health_payload", return_value={"status": delivery, "configured": configured, "corruptionCount": corruption}):
+                self.assertEqual(MODULE.healthz_payload()["ok"], expected)
 
     def test_runtime_contract_probe_payload_contains_only_contract_fields(self) -> None:
         contract = copy.deepcopy(MODULE.DEFAULT_RUNTIME_CONTRACT)

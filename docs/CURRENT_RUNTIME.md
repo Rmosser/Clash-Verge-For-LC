@@ -48,7 +48,8 @@
   interface；持久化 interface 只用于没有 default route 时的安全 revert，不能驱动
   新的 DNS assignment。
 - `/healthz` 同时探测 Mihomo `/version` controller、restore transaction 和告警
-  delivery channel；任一未确认时返回 HTTP 503。Verge API 可按
+  delivery channel；controller 或恢复事务异常、告警日志损坏、已配置告警的发送未确认时返回 HTTP 503。
+  外部 webhook 是可选通知能力：未配置时不阻止应用健康检查，Web 控制台明确显示未启用。Verge API 可按
   `MIHOMO_ALERT_WEBHOOK_URL` 配置主动告警，所有状态转换和 delivery receipt 先
   fsync 到 `/var/lib/mihomo/verge/logs/alerts.jsonl`。启动及每次 append/flush 都会
   逐行恢复 JSONL；损坏行会被隔离并记录到同目录的

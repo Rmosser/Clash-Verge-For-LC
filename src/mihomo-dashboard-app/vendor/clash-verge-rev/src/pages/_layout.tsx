@@ -1,3 +1,4 @@
+import { RuntimeAlertBanner } from '@root/browser/runtime-alert-banner'
 import { getRuntimeContractWarning } from '@root/browser/runtime'
 import { Alert, Paper, ThemeProvider } from '@mui/material'
 import dayjs from 'dayjs'
@@ -108,6 +109,7 @@ const Layout = () => {
 
   return (
     <ThemeProvider theme={theme}>
+      <RuntimeAlertBanner />
       {warning && <Alert severity="warning">{warning.message}</Alert>}
       {/* 左侧底部窗口控制按钮 */}
       <NoticeManager position={verge?.notice_position} />

@@ -2584,7 +2584,10 @@ def healthz_payload() -> dict[str, Any]:
     ok = (
         controller.get("status") == "ok"
         and restore.get("status") == "ok"
-        and alerting.get("status") == "ok"
+        and (
+            alerting.get("status") == "ok"
+            or (not alerting.get("configured") and alerting.get("corruptionCount") == 0)
+        )
     )
     return {
         "ok": ok,

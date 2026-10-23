@@ -1742,17 +1742,18 @@ index 5a0f0d76..83b2eb14 100644
  })
  
 diff --git a/src/pages/_layout.tsx b/src/pages/_layout.tsx
-index 59625514..65cc403c 100644
+index 59625514..00d0b874 100644
 --- a/src/pages/_layout.tsx
 +++ b/src/pages/_layout.tsx
-@@ -1,4 +1,5 @@
+@@ -1,4 +1,6 @@
 -import { Paper, ThemeProvider } from '@mui/material'
++import { RuntimeAlertBanner } from '@root/browser/runtime-alert-banner'
 +import { getRuntimeContractWarning } from '@root/browser/runtime'
 +import { Alert, Paper, ThemeProvider } from '@mui/material'
  import dayjs from 'dayjs'
  import relativeTime from 'dayjs/plugin/relativeTime'
  import { useCallback, useEffect, useMemo, useRef } from 'react'
-@@ -36,6 +37,7 @@ dayjs.extend(relativeTime)
+@@ -36,6 +38,7 @@ dayjs.extend(relativeTime)
  const OS = getSystem()
  
  const Layout = () => {
@@ -1760,10 +1761,11 @@ index 59625514..65cc403c 100644
    const mode = useThemeMode()
    const isDark = mode !== 'light'
    const { t } = useTranslation()
-@@ -106,6 +108,7 @@ const Layout = () => {
+@@ -106,6 +109,8 @@ const Layout = () => {
  
    return (
      <ThemeProvider theme={theme}>
++      <RuntimeAlertBanner />
 +      {warning && <Alert severity="warning">{warning.message}</Alert>}
        {/* 左侧底部窗口控制按钮 */}
        <NoticeManager position={verge?.notice_position} />
