@@ -48,6 +48,12 @@
 - generation 应用先写 pending transaction、停止相关服务、完成独立 staging
   校验，再切换文件并验证 Mihomo controller 与 Verge API；进程在中途被杀时，
   下一次启动会依据 pending generation 重做完整应用，不把混代文件当作成功。
+- 懒猫重启会重置 `/etc` 与 `/var/lib`。Verge API 把可变运行状态（`config.yaml`、
+  不含 `logs/` 的 verge 目录、select 组的当前选择）镜像到
+  `/root/.config/lzc-mihomo-bootstrap/live/`，每次成功应用配置后与每轮健康巡检时
+  刷新，并记录基准 generation；bootstrap 应用同一 generation 时把通过校验的镜像
+  覆盖上去，并在 controller 就绪后恢复节点选择。基准不一致或校验失败时只用
+  generation，因此回滚到旧 generation 不会被镜像覆盖。
 - `mihomo-resolved-sync.service` 每次 `apply` 都重新探测当前 IPv4 default-route
   interface；持久化 interface 只用于没有 default route 时的安全 revert，不能驱动
   新的 DNS assignment。

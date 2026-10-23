@@ -269,6 +269,8 @@ current_generation_file="$bootstrap_root/current-generation"
 applied_generation_file="$bootstrap_root/applied-generation"
 pending_transaction="$state_dir/pending.env"
 log_file="$bootstrap_root/bootstrap.log"
+# Verge API keeps the mutable runtime (config.yaml, verge state, node choices) here; see sync_live_mirror.
+live_root="$bootstrap_root/live"
 bridge_wait_seconds="${BRIDGE_WAIT_SECONDS:-180}"
 apply_stage=""
 
@@ -342,6 +344,62 @@ validate_generation() {
   if [[ "$resolved_sync_enabled" == 1 ]]; then
     [[ -f "$source/systemd/mihomo-resolved-sync.service" && -f "$source/usr-local-lib-lzc-mihomo/mihomo-resolved-sync.sh" ]] || return 1
   fi
+}
+
+live_mirror_usable() {
+  # Only a complete, verified copy taken on top of the generation being applied may replace its state.
+  local generation="$1" base
+  [[ -d "$live_root" && ! -L "$live_root" ]] || return 1
+  [[ -f "$live_root/COMPLETE" && -f "$live_root/manifest.sha256" && -f "$live_root/metadata.env" ]] || return 1
+  [[ -f "$live_root/etc-mihomo/config.yaml" && -d "$live_root/var-lib-mihomo/verge" ]] || return 1
+  if [[ -n "$(find "$live_root" -type l -print -quit)" ]]; then
+    return 1
+  fi
+  (
+    cd "$live_root"
+    sha256sum -c manifest.sha256 >/dev/null
+  ) || return 1
+  base="$(read_value "$live_root/metadata.env" BASE_GENERATION || true)"
+  [[ -n "$base" && "$base" == "$generation" ]]
+}
+
+restore_selections() {
+  # Mihomo keeps select-group choices only in cache.db, which a reboot loses; put back the mirrored ones.
+  [[ -f "$live_root/selections.json" ]] || return 0
+  python3 - "$live_root/selections.json" "${CONTROLLER_URL:-http://172.18.0.1:9090}" "${MIHOMO_CONFIG:-/etc/mihomo/config.yaml}" <<'PY'
+import json, re, sys, urllib.parse, urllib.request
+
+selections_path, controller, config_path = sys.argv[1:4]
+secret = ""
+for line in open(config_path, encoding="utf-8"):
+    match = re.match(r"^secret:\s*(.*?)\s*$", line)
+    if match:
+        secret = match.group(1).strip("\"'")
+        break
+headers = {"Content-Type": "application/json"}
+if secret:
+    headers["Authorization"] = "Bearer " + secret
+
+
+def call(method, path, body=None):
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    request = urllib.request.Request(controller + path, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(request, timeout=5) as response:
+        return json.loads(response.read() or b"null")
+
+
+proxies = call("GET", "/proxies").get("proxies") or {}
+restored = skipped = 0
+for group, choice in json.load(open(selections_path, encoding="utf-8")).items():
+    current = proxies.get(group) or {}
+    if current.get("type") != "Selector" or choice not in (current.get("all") or []):
+        skipped += 1
+        continue
+    if current.get("now") != choice:
+        call("PUT", "/proxies/" + urllib.parse.quote(group, safe=""), {"name": choice})
+        restored += 1
+print("restored=%d skipped=%d" % (restored, skipped))
+PY
 }
 
 write_pending() {
@@ -532,7 +590,7 @@ restart_live_runtime() {
 }
 
 apply_generation() {
-  local generation="$1" reason="$2" source metadata previous_stage=""
+  local generation="$1" reason="$2" source metadata previous_stage="" live_used=0
   if [[ -f "$pending_transaction" ]]; then
     previous_stage="$(read_value "$pending_transaction" STAGE || true)"
   fi
@@ -596,6 +654,27 @@ apply_generation() {
   replace_directory "$apply_stage/var-lib-mihomo/verge" /var/lib/mihomo/verge
   chown -R mihomo:mihomo /var/lib/mihomo
 
+  # A reboot reset /etc and /var/lib: lay the newer live mirror over the generation it was taken on,
+  # keeping the generation's logs; fall back to the generation untouched if the mirror does not validate.
+  live_used=0
+  if live_mirror_usable "$generation"; then
+    install -o root -g mihomo -m 640 "$live_root/etc-mihomo/config.yaml" /etc/mihomo/config.yaml
+    replace_directory "$live_root/var-lib-mihomo/verge" /var/lib/mihomo/verge
+    if [[ -d "$apply_stage/var-lib-mihomo/verge/logs" ]]; then
+      cp -a -- "$apply_stage/var-lib-mihomo/verge/logs" /var/lib/mihomo/verge/logs
+    fi
+    chown -R mihomo:mihomo /var/lib/mihomo
+    if /usr/local/bin/mihomo -t -d /var/lib/mihomo -f /etc/mihomo/config.yaml >/dev/null 2>&1; then
+      live_used=1
+      log "live runtime mirror restored over generation $generation"
+    else
+      log "live runtime mirror failed validation; using generation $generation as captured"
+      install_optional_file "$apply_stage/etc-mihomo/config.yaml" /etc/mihomo/config.yaml root mihomo 640
+      replace_directory "$apply_stage/var-lib-mihomo/verge" /var/lib/mihomo/verge
+      chown -R mihomo:mihomo /var/lib/mihomo
+    fi
+  fi
+
   /usr/local/bin/mihomo -t -d /var/lib/mihomo -f /etc/mihomo/config.yaml >/dev/null
   wait_for_bridge || {
     log "container bridge address 172.18.0.1 did not appear within ${bridge_wait_seconds}s"
@@ -632,6 +711,9 @@ apply_generation() {
   fi
   if [[ "$PINNED_PROXY_ENABLED" == 1 ]]; then
     systemctl is-active mihomo-container-proxy-pinned.socket >/dev/null
+  fi
+  if [[ "$live_used" == 1 ]]; then
+    log "node selections: $(restore_selections 2>&1 | tail -1)"
   fi
 
   printf '%s\n' "$generation" >"$applied_generation_file.tmp.$$"

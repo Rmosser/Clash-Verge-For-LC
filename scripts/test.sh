@@ -26,6 +26,9 @@ python3 -B scripts/test_rollback_snapshot_contract.py
 echo "==> pinned container proxy contract"
 python3 -B scripts/test_pinned_proxy_contract.py
 
+echo "==> live runtime mirror and reboot restore"
+python3 -B scripts/test_live_mirror_restore.py
+
 echo "==> runtime restore and health recovery drill"
 python3 -B scripts/test_restore_recovery.py
 

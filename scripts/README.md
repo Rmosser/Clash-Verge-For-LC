@@ -7,6 +7,7 @@
 | 命令 | 覆盖范围 |
 | --- | --- |
 | `bash scripts/test.sh` | shell/Python 语法和微服 API 单元测试 |
+| `python3 -B scripts/test_live_mirror_restore.py` | 重启恢复：Verge API 写出的 live 镜像被 bootstrap 校验接受、generation 不符或篡改时拒绝、节点选择恢复 |
 | `python3 -B scripts/test_pinned_proxy_contract.py` | 固定节点入口：unit 端口与 bridge、API 端口校验、部署回滚清单、旧 generation 兼容 |
 | `bash scripts/test_deploy_settings.sh` | host-native TUN/DNS 默认值、显式 opt-in 与非法值 fail-closed |
 | `bash scripts/lint.sh` | shell 语法和 Python 编译检查 |

@@ -125,9 +125,16 @@ bash scripts/install_host_native_bootstrap.sh --confirm
 - `state/pending.env` 表示文件切换尚未完成。若 bootstrap 在切换中被杀，下一次
   启动会保留 pending 状态并从同一 generation 新建 staging，完成全量校验后再
   启动服务。
-- 启动会先尝试重启并验收当前 live 配置，因此 snapshot 之后的正常配置变更不会
-  仅因重启而被旧 snapshot 覆盖；只有 live 配置缺失或校验失败才使用 generation
-  恢复。
+- 启动会先尝试重启并验收当前 live 配置；只有 live 配置缺失或校验失败才使用
+  generation 恢复。懒猫真实重启会重置 `/etc` 与 `/var/lib`，live 配置必然缺失，
+  所以重启后总是走 generation 路径。
+- 为了不让重启丢掉 snapshot 之后的改动，Verge API 在每次成功应用配置后、以及每轮
+  健康巡检（默认 60 秒）里，把 `config.yaml`、`/var/lib/mihomo/verge`（不含
+  `logs/`）和各 select 组当前选中的节点镜像到持久的 `live/`，并记下镜像所基于的
+  generation。generation 恢复时，只有镜像完整、manifest 校验通过且基准等于当前
+  generation，才会覆盖上去并在 controller 就绪后恢复节点选择；镜像校验失败则按
+  generation 原样启动。改动后约 60 秒内才进入镜像，重新安装 bootstrap 会产生新
+  generation，旧镜像随之失效、直到下一轮巡检重写。
 
 ### 健康与告警
 

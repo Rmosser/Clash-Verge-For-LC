@@ -122,6 +122,11 @@ OPERATIONS_LOG_LOCK = threading.Lock()
 RESTORE_LOCK = threading.RLock()
 ALERT_LOCK = threading.RLock()
 HEALTH_WATCH_STOP = threading.Event()
+# /root survives a LazyCat reboot; the host-native bootstrap restores /etc and /var/lib from here.
+BOOTSTRAP_ROOT = Path(os.environ.get("MIHOMO_BOOTSTRAP_ROOT", "/root/.config/lzc-mihomo-bootstrap"))
+LIVE_MIRROR_DIR = BOOTSTRAP_ROOT / "live"
+LIVE_MIRROR_EXCLUDE = {"logs"}  # append-only and restored from the generation; mirroring it would churn every minute
+LIVE_MIRROR_LOCK = threading.Lock()
 
 SENSITIVE_QUERY_PARAMETER_RE = re.compile(
     r"([?&](?:token|access_token|api_key|apikey|key|secret|password|passwd|auth|authorization|cookie|webhook)=)[^&#\s]*",
@@ -3149,6 +3154,7 @@ def apply_runtime_text(new_text: str, log_message: str) -> None:
         run_command(["systemctl", "restart", "mihomo"])
         wait_for_controller()
         append_operation_log(log_message)
+        sync_live_mirror_quietly("config applied")
     except Exception as exc:
         append_operation_log(
             "runtime apply failed; restoring previous Mihomo configuration",
@@ -5228,12 +5234,101 @@ class VergeApiHandler(BaseHTTPRequestHandler):
         append_operation_log(format % args)
 
 
+def selector_selections() -> dict[str, str] | None:
+    """What every select group currently uses; Mihomo keeps it only in cache.db, which a reboot loses."""
+    try:
+        payload = controller_request("GET", "/proxies", timeout=6)
+    except Exception:
+        return None
+    proxies = payload.get("proxies") if isinstance(payload, dict) else None
+    if not isinstance(proxies, dict):
+        return None
+    return {
+        name: item["now"]
+        for name, item in sorted(proxies.items())
+        if isinstance(item, dict) and item.get("type") == "Selector" and isinstance(item.get("now"), str)
+    }
+
+
+def live_mirror_files() -> dict[str, bytes]:
+    files = {"etc-mihomo/config.yaml": MIHOMO_CONFIG_PATH.read_bytes()}
+    for path in sorted(DATA_ROOT.rglob("*")):
+        rel = path.relative_to(DATA_ROOT)
+        if rel.parts[0] in LIVE_MIRROR_EXCLUDE or path.is_symlink() or not path.is_file():
+            continue
+        files[f"var-lib-mihomo/verge/{rel.as_posix()}"] = path.read_bytes()
+    return files
+
+
+def sync_live_mirror() -> bool:
+    """Keep the bootstrap's persistent copy of the mutable runtime current; return whether it was rewritten.
+
+    A LazyCat reboot resets /etc and /var/lib but keeps /root, so without this copy the bootstrap restores the
+    generation captured at its last install and drops every later profile, setting and node choice. The copy
+    records the generation it was taken on: the bootstrap only lays it over that same generation."""
+    current = BOOTSTRAP_ROOT / "current-generation"
+    if not current.is_file() or not MIHOMO_CONFIG_PATH.is_file():
+        return False
+    if (BOOTSTRAP_ROOT / "state" / "pending.env").exists() or RESTORE_TRANSACTION_PATH.exists():
+        return False  # a restore is mid-flight: its result is not a state to come back to
+    generation = current.read_text(encoding="utf-8").strip()
+    with LIVE_MIRROR_LOCK:
+        files = live_mirror_files()
+        selections = selector_selections()
+        if selections is None:  # controller unavailable: keep the last known choices
+            previous = LIVE_MIRROR_DIR / "selections.json"
+            selections = load_json(previous, {}) if previous.is_file() else {}
+        files["selections.json"] = json.dumps(selections, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        digest = hashlib.sha256()
+        for rel in sorted(files):
+            digest.update(rel.encode("utf-8") + b"\0" + hashlib.sha256(files[rel]).digest())
+        metadata = f"BASE_GENERATION={generation}\nDIGEST={digest.hexdigest()}\n"
+        metadata_path = LIVE_MIRROR_DIR / "metadata.env"
+        if metadata_path.is_file() and metadata_path.read_text(encoding="utf-8") == metadata:
+            return False
+        for leftover in BOOTSTRAP_ROOT.glob(".live-staging.*"):  # from a write killed midway
+            shutil.rmtree(leftover, ignore_errors=True)
+        stage = Path(tempfile.mkdtemp(prefix=".live-staging.", dir=BOOTSTRAP_ROOT))
+        try:
+            for rel, data in files.items():
+                path = stage / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+                path.chmod(0o600)
+            (stage / "metadata.env").write_text(metadata, encoding="utf-8")
+            manifest = "".join(
+                f"{hashlib.sha256((stage / rel).read_bytes()).hexdigest()}  ./{rel}\n"
+                for rel in sorted([*files, "metadata.env"])
+            )
+            (stage / "manifest.sha256").write_text(manifest, encoding="utf-8")
+            (stage / "COMPLETE").write_text("", encoding="utf-8")
+            old = BOOTSTRAP_ROOT / ".live-old"
+            shutil.rmtree(old, ignore_errors=True)
+            if LIVE_MIRROR_DIR.exists():
+                os.rename(LIVE_MIRROR_DIR, old)
+            os.rename(stage, LIVE_MIRROR_DIR)
+            shutil.rmtree(old, ignore_errors=True)
+        except BaseException:
+            shutil.rmtree(stage, ignore_errors=True)
+            raise
+    return True
+
+
+def sync_live_mirror_quietly(context: str) -> None:
+    try:
+        if sync_live_mirror():
+            append_operation_log(f"live runtime mirror updated ({context})")
+    except Exception as exc:
+        append_operation_log(f"live runtime mirror update failed ({context})", error=exc)
+
+
 def runtime_health_watch_loop() -> None:
     while not HEALTH_WATCH_STOP.wait(HEALTH_WATCH_INTERVAL_SECONDS):
         try:
             healthz_payload()
         except Exception as exc:
             append_operation_log("runtime health watch failed", error=exc)
+        sync_live_mirror_quietly("health watch")
 
 
 def main() -> int:
