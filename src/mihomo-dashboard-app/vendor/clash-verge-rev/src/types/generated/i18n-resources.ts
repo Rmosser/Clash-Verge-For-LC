@@ -75,11 +75,25 @@ export interface TranslationResources {
             noActiveNode: string
             proxy: string
           }
+          status: {
+            error: string
+            latencyExcellent: string
+            latencyGood: string
+            latencyHigh: string
+            latencyMedium: string
+            noProxyNode: string
+            testing: string
+            timeout: string
+            uninitialized: string
+            untested: string
+          }
           title: string
         }
         ipInfo: {
           errors: {
             load: string
+            loadWithDetails: string
+            noServices: string
           }
           labels: {
             asn: string
@@ -113,6 +127,7 @@ export interface TranslationResources {
           badges: {
             adminMode: string
             adminServiceMode: string
+            notRunning: string
             serviceMode: string
             sidecarMode: string
           }
@@ -129,6 +144,11 @@ export interface TranslationResources {
           title: string
         }
         traffic: {
+          chartStyles: {
+            linear: string
+            smooth: string
+          }
+          diagnostics: string
           legends: {
             download: string
             upload: string
@@ -142,6 +162,7 @@ export interface TranslationResources {
           patterns: {
             minutes: string
           }
+          unknownTime: string
         }
       }
       page: {
@@ -193,6 +214,43 @@ export interface TranslationResources {
             settings: string
             unlock: string
           }
+        }
+        serviceMigration: {
+          checkingMessage: string
+          continueSidecar: string
+          errors: {
+            actionFailed: string
+            restartFailed: string
+            revalidationFailed: string
+            sidecarFailed: string
+            stateRefreshFailed: string
+          }
+          locationRefusedMessage: string
+          message: string
+          notAutoStartedMessage: string
+          reinstall: string
+          repair: string
+          success: string
+          title: string
+          unavailableMessage: string
+        }
+        sysproxyPrivilege: {
+          alternative: string
+          applying: string
+          installing: string
+          later: string
+          message: string
+          restarting: string
+          serviceReadyMessage: string
+          title: string
+          tunMessage: string
+          tunTitle: string
+        }
+      }
+      feedback: {
+        errors: {
+          quitCoreStopFailed: string
+          restartCoreStopFailed: string
         }
       }
     }
@@ -263,6 +321,14 @@ export interface TranslationResources {
           actions: {
             format: string
           }
+          enhance: {
+            globalMerge: string
+            globalScript: string
+            order: string
+            profileMerge: string
+            profileScript: string
+            settingsPriority: string
+          }
           messages: {
             readOnly: string
           }
@@ -306,6 +372,12 @@ export interface TranslationResources {
           title: string
         }
         profileForm: {
+          errors: {
+            saveFailed: string
+            typeRequired: string
+            uidMissing: string
+            urlRequired: string
+          }
           feedback: {
             notifications: {
               creationRetry: string
@@ -321,11 +393,19 @@ export interface TranslationResources {
             type: string
             updateInterval: string
             useClashProxy: string
+            userAgent: string
             useSystemProxy: string
           }
           title: {
             create: string
             edit: string
+          }
+          types: {
+            local: string
+            remote: string
+          }
+          warnings: {
+            frequentUpdate: string
           }
         }
         proxiesEditor: {
@@ -364,10 +444,20 @@ export interface TranslationResources {
         }
         feedback: {
           errors: {
+            createFailed: string
+            deleteFailed: string
+            enhanceFailed: string
+            importFailed: string
             invalidUrl: string
             onlyYaml: string
+            openFailed: string
+            readFailed: string
+            reorderFailed: string
+            switchFailed: string
+            updateFailed: string
           }
           notices: {
+            discardedKeys: string
             emergencyRefreshFailed: string
             forceRefreshCompleted: string
           }
@@ -380,6 +470,9 @@ export interface TranslationResources {
             profileReactivated: string
             profileSwitched: string
             switchBusy: string
+          }
+          tooltips: {
+            forceRefreshStaleData: string
           }
         }
         importForm: {
@@ -419,6 +512,9 @@ export interface TranslationResources {
             updateSuccess: string
           }
         }
+        warnings: {
+          invalidTestUrl: string
+        }
       }
       page: {
         actions: {
@@ -441,8 +537,34 @@ export interface TranslationResources {
           minimumNodesHint: string
           warning: string
         }
+        empty: {
+          actions: {
+            openLogs: string
+            openProfiles: string
+            restartCore: string
+          }
+          coreUnavailable: {
+            description: string
+            title: string
+          }
+          inactiveSubscription: {
+            description: string
+            title: string
+          }
+          noAvailableGroups: string
+          noProxies: string
+          noProxyInfo: {
+            description: string
+            title: string
+          }
+          noSubscriptions: {
+            description: string
+            title: string
+          }
+        }
         labels: {
           delayCheckReset: string
+          nodeCount: string
           proxyCount: string
         }
         messages: {
@@ -689,6 +811,32 @@ export interface TranslationResources {
         }
       }
       feedback: {
+        errors: {
+          clash: {
+            configUpdateFailed: string
+            modeUpdateFailed: string
+            restartFailed: string
+            serviceCoreStopped: string
+            startFailed: string
+            stopFailed: string
+          }
+          clashService: {
+            coreAlreadyRunning: string
+            installFailed: string
+            reinstallFailed: string
+            repairFailed: string
+            sidecarFailed: string
+            uninstallFailed: string
+          }
+          sysproxy: {
+            coreNotReady: string
+            directFallback: string
+            guardStopped: string
+            privilegeRequired: string
+            sidecarWhileServiceReady: string
+            systemCallFailed: string
+          }
+        }
         notifications: {
           clash: {
             alreadyLatestVersion: string
@@ -699,7 +847,13 @@ export interface TranslationResources {
             versionUpdated: string
           }
           clashService: {
+            appDataNotOwned: string
             installSuccess: string
+            permissionFallback: string
+            permissionRejectedReason: string
+            permissionRepairGuide: string
+            permissionWritableReason: string
+            sidecarFallback: string
             uninstallSuccess: string
           }
           updater: {
@@ -806,7 +960,14 @@ export interface TranslationResources {
             tproxy: string
           }
           messages: {
+            automaticFallback: string
+            automaticFallbackFailed: string
+            duplicatePort: string
+            invalidPort: string
             portInUse: string
+            portTooHigh: string
+            portTooLow: string
+            runningPort: string
             saved: string
             saveFailed: string
           }
@@ -814,6 +975,7 @@ export interface TranslationResources {
         }
         dns: {
           dialog: {
+            profileScope: string
             title: string
             warning: string
           }
@@ -901,6 +1063,13 @@ export interface TranslationResources {
           messages: {
             configError: string
             saved: string
+          }
+          protection: {
+            autoDisabled: string
+            enableAnyway: string
+            keepDisabled: string
+            message: string
+            title: string
           }
           sections: {
             fallbackFilter: string
@@ -1040,7 +1209,15 @@ export interface TranslationResources {
             goToRelease: string
             update: string
           }
+          alerts: {
+            caution: string
+            important: string
+            note: string
+            tip: string
+            warning: string
+          }
           messages: {
+            available: string
             breakChangeError: string
           }
           title: string
@@ -1048,6 +1225,11 @@ export interface TranslationResources {
         webUI: {
           actions: {
             openUrl: string
+          }
+          errors: {
+            clashInfoUnavailable: string
+            invalidServer: string
+            openFailed: string
           }
           messages: {
             placeholderInstruction: string
@@ -1062,6 +1244,7 @@ export interface TranslationResources {
           manual: string
           telegram: string
         }
+        actionsGroupLabel: string
         title: string
       }
       sections: {
@@ -1171,11 +1354,17 @@ export interface TranslationResources {
         proxyControl: {
           actions: {
             installService: string
+            switchToServiceMode: string
             uninstallService: string
           }
           fields: {
             systemProxy: string
             tunMode: string
+          }
+          messages: {
+            installedCheckProxy: string
+            installedCoreNotOnService: string
+            installedProxyRestored: string
           }
           tooltips: {
             systemProxy: string
@@ -1218,6 +1407,7 @@ export interface TranslationResources {
     shared: {
       actions: {
         cancel: string
+        check: string
         clear: string
         close: string
         closeAll: string
@@ -1248,8 +1438,16 @@ export interface TranslationResources {
       }
       feedback: {
         errors: {
+          componentStack: string
+          details: string
+          label: string
+          operationFailed: string
+          stack: string
           trafficStats: string
           trafficStatsDescription: string
+          trafficUnavailable: string
+          unexpected: string
+          unknown: string
         }
         notices: {
           prefixedRaw: string
@@ -1271,13 +1469,10 @@ export interface TranslationResources {
         validation: {
           config: {
             bootFailed: string
-            coreChangeFailed: string
             failed: string
             processTerminated: string
           }
           merge: {
-            generalError: string
-            keyError: string
             mappingError: string
             syntaxError: string
           }
@@ -1288,8 +1483,6 @@ export interface TranslationResources {
             syntaxError: string
           }
           yaml: {
-            generalError: string
-            keyError: string
             mappingError: string
             readError: string
             syntaxError: string
@@ -1331,6 +1524,7 @@ export interface TranslationResources {
         disabled: string
         empty: string
         enabled: string
+        loading: string
         saving: string
       }
       units: {
@@ -1359,6 +1553,13 @@ export interface TranslationResources {
       }
       modals: {
         test: {
+          errors: {
+            invalidSvg: string
+            nameRequired: string
+            saveFailed: string
+            uidMissing: string
+            urlRequired: string
+          }
           fields: {
             url: string
           }

@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/clash-verge-rev/clash-verge-rev.git",
-  "ref": "v2.5.2",
-  "commit": "28f2efc504059b1dc75c793618b775c8e1b2a5f1",
+  "ref": "v2.5.8",
+  "commit": "4337bd85758d54d7b9044b2da3c9ac1176eae1f3",
   "sourcePath": "src",
   "overlay": "webport",
   "overlaySchema": "2026.08-lzc-v2"

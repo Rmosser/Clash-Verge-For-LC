@@ -1,0 +1,3804 @@
+diff --git a/src/components/profile/grouped-virtual-list.tsx b/src/components/profile/grouped-virtual-list.tsx
+index 07b657f3..208f6078 100644
+--- a/src/components/profile/grouped-virtual-list.tsx
++++ b/src/components/profile/grouped-virtual-list.tsx
+@@ -20,7 +20,7 @@ export interface GroupedVirtualItem<T> {
+   item: T
+ }
+ 
+-// eslint-disable-next-line react-refresh/only-export-components
++ 
+ export function buildGroupedItems<T>(
+   prepend: T[],
+   original: T[],
+diff --git a/src/components/profile/profile-more.tsx b/src/components/profile/profile-more.tsx
+index eb493406..db39b2d2 100644
+--- a/src/components/profile/profile-more.tsx
++++ b/src/components/profile/profile-more.tsx
+@@ -31,7 +31,7 @@ interface Props {
+ const EMPTY_LOG_INFO: [string, string][] = []
+ 
+ // Default global extend script content (mirrors `ITEM_SCRIPT` in
+-// src-tauri/src/utils/tmpl.rs).
++// The profile template is normalized by the Verge API.
+ const DEFAULT_SCRIPT = `// Define main function (script entry)
+ 
+ function main(config, profileName) {
+diff --git a/src/components/proxy/proxy-groups.tsx b/src/components/proxy/proxy-groups.tsx
+index 0b4fa96b..4f83dec9 100644
+--- a/src/components/proxy/proxy-groups.tsx
++++ b/src/components/proxy/proxy-groups.tsx
+@@ -25,6 +25,10 @@ import { useVerge } from '@/hooks/use-verge'
+ import { useProxiesData, useSystemData } from '@/providers/app-data-context'
+ import { syncTrayProxySelection } from '@/services/cmds'
+ import delayManager from '@/services/delay'
++import {
++  getProxyScrollPosition,
++  saveProxyScrollPosition,
++} from '@/services/proxy-scroll-positions'
+ import { mutate } from '@/services/mutate'
+ import {
+   isInteractableMember,
+@@ -147,34 +151,15 @@ function useProxyRenderState(
+ 
+   const saveScrollPosition = useCallback(
+     (scrollTop: number) => {
+-      const scrollPositions = localStorage.getItem('proxy-scroll-positions')
+-        ? JSON.parse(localStorage.getItem('proxy-scroll-positions') ?? '{}')
+-        : {}
+-      scrollPositions[scrollPositionKey] = scrollTop
+-      try {
+-        localStorage.setItem(
+-          'proxy-scroll-positions',
+-          JSON.stringify(scrollPositions),
+-        )
+-      } catch (e) {
+-        console.error('Error saving scroll position:', e)
+-      }
++      saveProxyScrollPosition(scrollPositionKey, scrollTop)
+     },
+     [scrollPositionKey],
+   )
+ 
+-  const getScrollPosition = useCallback(() => {
+-    try {
+-      const savedPositions = localStorage.getItem('proxy-scroll-positions')
+-      if (savedPositions) {
+-        const positions = JSON.parse(savedPositions)
+-        const savedPosition = positions[scrollPositionKey]
+-        return savedPosition ?? 0
+-      }
+-    } catch (e) {
+-      console.error('Error restoring scroll position:', e)
+-    }
+-  }, [scrollPositionKey])
++  const getScrollPosition = useCallback(
++    () => getProxyScrollPosition(scrollPositionKey),
++    [scrollPositionKey],
++  )
+ 
+   return {
+     verge,
+diff --git a/src/components/rule/provider-button.tsx b/src/components/rule/provider-button.tsx
+index c394e656..e674f4a2 100644
+--- a/src/components/rule/provider-button.tsx
++++ b/src/components/rule/provider-button.tsx
+@@ -239,12 +239,12 @@ export const ProviderButton = () => {
+                           <TypeBox component="span">
+                             {typeof provider.vehicleType === 'string'
+                               ? provider.vehicleType
+-                              : provider.vehicleType.Unknown}
++                              : 'Unknown'}
+                           </TypeBox>
+                           <TypeBox component="span">
+                             {typeof provider.behavior === 'string'
+                               ? provider.behavior
+-                              : provider.behavior.Unknown}
++                              : 'Unknown'}
+                           </TypeBox>
+                         </Box>
+                       }
+diff --git a/src/components/rule/rule-item.tsx b/src/components/rule/rule-item.tsx
+index 14dbbc8a..8af48eb3 100644
+--- a/src/components/rule/rule-item.tsx
++++ b/src/components/rule/rule-item.tsx
+@@ -54,7 +54,7 @@ const RuleItem = (props: Props) => {
+           color="text.secondary"
+           sx={{ mr: 3, minWidth: 120, display: 'inline-block' }}
+         >
+-          {typeof value.type === 'string' ? value.type : value.type.Unknown}
++          {typeof value.type === 'string' ? value.type : 'Unknown'}
+         </Typography>
+ 
+         <Typography
+diff --git a/src/components/setting/mods/backup-config-viewer.tsx b/src/components/setting/mods/backup-config-viewer.tsx
+index 0dbce695..9476c677 100644
+--- a/src/components/setting/mods/backup-config-viewer.tsx
++++ b/src/components/setting/mods/backup-config-viewer.tsx
+@@ -19,6 +19,7 @@ import { mutate } from '@/services/mutate'
+ import { errorDetail, showNotice } from '@/services/notice-service'
+ import {
+   buildWebdavSignature,
++  clearWebdavStatus,
+   getWebdavStatus,
+   setWebdavStatus,
+ } from '@/services/webdav-status'
+@@ -139,7 +140,7 @@ export const BackupConfigViewer = memo(
+               : current,
+           false,
+         )
+-        setWebdavStatus(signature, 'unknown')
++        clearWebdavStatus()
+         showNotice.success('settings.modals.backup.messages.webdavConfigSaved')
+         await onSaveSuccess(signature)
+       } catch (error) {
+diff --git a/src/components/setting/mods/dns-viewer.tsx b/src/components/setting/mods/dns-viewer.tsx
+index 15493da2..5c97c116 100644
+--- a/src/components/setting/mods/dns-viewer.tsx
++++ b/src/components/setting/mods/dns-viewer.tsx
+@@ -1,6 +1,5 @@
+ import { RestartAltRounded } from '@mui/icons-material'
+ import {
+-  Alert,
+   Box,
+   Button,
+   FormControl,
+@@ -13,8 +12,9 @@ import {
+   TextField,
+   Typography,
+ } from '@mui/material'
++import { invoke } from '@tauri-apps/api/core'
+ import { useLockFn } from 'ahooks'
+-import * as yaml from 'js-yaml'
++import yaml from 'js-yaml'
+ import type { Ref } from 'react'
+ import {
+   useCallback,
+@@ -27,25 +27,15 @@ import {
+ import { useTranslation } from 'react-i18next'
+ 
+ import {
+-  BaseDialog,
+-  type DialogRef,
+-  MonacoEditor,
+-  Switch,
+-} from '@/components/base'
++  assignOptionalDnsString,
++  readOptionalDnsString,
++} from '@root/browser/dns-config'
++import { BaseDialog, DialogRef, MonacoEditor, Switch } from '@/components/base'
+ import { useClash } from '@/hooks/use-clash'
+-import { useProfiles } from '@/hooks/use-profiles'
+-import { useVerge } from '@/hooks/use-verge'
+-import {
+-  applyDnsConfig,
+-  getDnsConfigContent,
+-  saveDnsConfig,
+-  validateDnsConfig,
+-} from '@/services/cmds'
+-import { mutate } from '@/services/mutate'
+ import { showNotice } from '@/services/notice-service'
+ import { useThemeMode } from '@/services/states'
+ import type { MonacoEditorInstance } from '@/types/monaco'
+-import { MONACO_FONT_FAMILY } from '@/utils/font-family'
++import getSystem from '@/utils/get-system'
+ 
+ const Item = styled(ListItem)(() => ({
+   padding: '5px 2px',
+@@ -63,9 +53,9 @@ function parseNameserverPolicy(str: string): NameserverPolicy {
+   if (!str) return result
+ 
+   const ruleRegex = /\s*([^=]+?)\s*=\s*([^,]+)(?:,|$)/g
+-  const matchs = [...str.matchAll(ruleRegex)]
++  let match: RegExpExecArray | null
+ 
+-  matchs.forEach((match) => {
++  while ((match = ruleRegex.exec(str)) !== null) {
+     const [, domainsPart, serversPart] = match
+ 
+     const domains = [domainsPart.trim()]
+@@ -74,7 +64,7 @@ function parseNameserverPolicy(str: string): NameserverPolicy {
+     domains.forEach((domain) => {
+       result[domain] = servers
+     })
+-  })
++  }
+ 
+   return result
+ }
+@@ -141,12 +131,12 @@ function parseList(str: string): string[] {
+     .filter(Boolean)
+ }
+ 
++// 默认DNS配置
+ const DEFAULT_DNS_CONFIG = {
+   enable: true,
+   listen: ':53',
+   'enhanced-mode': 'fake-ip' as 'fake-ip' | 'redir-host',
+   'fake-ip-range': '198.18.0.1/16',
+-  'fake-ip-range6': 'fdfe:dcba:9876::1/64',
+   'fake-ip-filter-mode': 'blacklist' as 'blacklist' | 'whitelist',
+   'prefer-h3': false,
+   'respect-rules': false,
+@@ -179,7 +169,11 @@ const DEFAULT_DNS_CONFIG = {
+   ],
+   fallback: [],
+   'nameserver-policy': {},
+-  'proxy-server-nameserver': [],
++  'proxy-server-nameserver': [
++    'https://doh.pub/dns-query',
++    'https://dns.alidns.com/dns-query',
++    'tls://223.5.5.5',
++  ],
+   'direct-nameserver': [],
+   'direct-nameserver-follow-policy': false,
+   'fallback-filter': {
+@@ -192,14 +186,7 @@ const DEFAULT_DNS_CONFIG = {
+ 
+ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
+   const { t } = useTranslation()
+-  const { mutateClash } = useClash()
+-  const { verge } = useVerge()
+-  const { current: currentProfile } = useProfiles()
+-  const dnsEnabled = currentProfile
+-    ? (verge?.profile_dns_settings?.[currentProfile.uid]?.enabled ??
+-      verge?.enable_dns_settings ??
+-      false)
+-    : false
++  const { clash, mutateClash } = useClash()
+   const themeMode = useThemeMode()
+ 
+   const [open, setOpen] = useState(false)
+@@ -236,7 +223,7 @@ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
+     listen: DEFAULT_DNS_CONFIG.listen,
+     enhancedMode: DEFAULT_DNS_CONFIG['enhanced-mode'],
+     fakeIpRange: DEFAULT_DNS_CONFIG['fake-ip-range'],
+-    fakeIpRange6: DEFAULT_DNS_CONFIG['fake-ip-range6'],
++    fakeIpRange6: '',
+     fakeIpFilterMode: DEFAULT_DNS_CONFIG['fake-ip-filter-mode'],
+     preferH3: DEFAULT_DNS_CONFIG['prefer-h3'],
+     respectRules: DEFAULT_DNS_CONFIG['respect-rules'],
+@@ -262,87 +249,91 @@ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
+     hosts: '',
+   })
+ 
+-  // Prevent YAML-to-form sync before configuration loads.
++  // 用于YAML编辑模式
+   const [yamlContent, setYamlContent] = useReducer(
+     (_: string, next: string) => next,
+-    '{ isInitValue: true }',
++    '',
+   )
+ 
+-  const updateValuesFromConfig = useCallback((config: any) => {
+-    if (!config) return
+-
+-    const dnsConfig = config.dns || {}
+-    const hostsConfig = config.hosts || {}
+-
+-    const enhancedMode =
+-      dnsConfig['enhanced-mode'] || DEFAULT_DNS_CONFIG['enhanced-mode']
+-    const validEnhancedMode =
+-      enhancedMode === 'fake-ip' || enhancedMode === 'redir-host'
+-        ? enhancedMode
+-        : DEFAULT_DNS_CONFIG['enhanced-mode']
+-
+-    const fakeIpFilterMode =
+-      dnsConfig['fake-ip-filter-mode'] ||
+-      DEFAULT_DNS_CONFIG['fake-ip-filter-mode']
+-    const validFakeIpFilterMode =
+-      fakeIpFilterMode === 'blacklist' || fakeIpFilterMode === 'whitelist'
+-        ? fakeIpFilterMode
+-        : DEFAULT_DNS_CONFIG['fake-ip-filter-mode']
+-
+-    setValues({
+-      enable: dnsConfig.enable ?? DEFAULT_DNS_CONFIG.enable,
+-      listen: dnsConfig.listen ?? DEFAULT_DNS_CONFIG.listen,
+-      enhancedMode: validEnhancedMode,
+-      fakeIpRange:
+-        dnsConfig['fake-ip-range'] ?? DEFAULT_DNS_CONFIG['fake-ip-range'],
+-      fakeIpRange6:
+-        dnsConfig['fake-ip-range6'] ?? DEFAULT_DNS_CONFIG['fake-ip-range6'],
+-      fakeIpFilterMode: validFakeIpFilterMode,
+-      preferH3: dnsConfig['prefer-h3'] ?? DEFAULT_DNS_CONFIG['prefer-h3'],
+-      respectRules:
+-        dnsConfig['respect-rules'] ?? DEFAULT_DNS_CONFIG['respect-rules'],
+-      useHosts: dnsConfig['use-hosts'] ?? DEFAULT_DNS_CONFIG['use-hosts'],
+-      useSystemHosts:
+-        dnsConfig['use-system-hosts'] ?? DEFAULT_DNS_CONFIG['use-system-hosts'],
+-      ipv6: dnsConfig.ipv6 ?? DEFAULT_DNS_CONFIG.ipv6,
+-      fakeIpFilter:
+-        dnsConfig['fake-ip-filter']?.join(', ') ??
+-        DEFAULT_DNS_CONFIG['fake-ip-filter'].join(', '),
+-      nameserver:
+-        dnsConfig.nameserver?.join(', ') ??
+-        DEFAULT_DNS_CONFIG.nameserver.join(', '),
+-      fallback:
+-        dnsConfig.fallback?.join(', ') ??
+-        DEFAULT_DNS_CONFIG.fallback.join(', '),
+-      defaultNameserver:
+-        dnsConfig['default-nameserver']?.join(', ') ??
+-        DEFAULT_DNS_CONFIG['default-nameserver'].join(', '),
+-      proxyServerNameserver:
+-        dnsConfig['proxy-server-nameserver']?.join(', ') ??
+-        (DEFAULT_DNS_CONFIG['proxy-server-nameserver']?.join(', ') || ''),
+-      directNameserver:
+-        dnsConfig['direct-nameserver']?.join(', ') ??
+-        (DEFAULT_DNS_CONFIG['direct-nameserver']?.join(', ') || ''),
+-      directNameserverFollowPolicy:
+-        dnsConfig['direct-nameserver-follow-policy'] ??
+-        DEFAULT_DNS_CONFIG['direct-nameserver-follow-policy'],
+-      fallbackGeoip:
+-        dnsConfig['fallback-filter']?.geoip ??
+-        DEFAULT_DNS_CONFIG['fallback-filter'].geoip,
+-      fallbackGeoipCode:
+-        dnsConfig['fallback-filter']?.['geoip-code'] ??
+-        DEFAULT_DNS_CONFIG['fallback-filter']['geoip-code'],
+-      fallbackIpcidr:
+-        dnsConfig['fallback-filter']?.ipcidr?.join(', ') ??
+-        DEFAULT_DNS_CONFIG['fallback-filter'].ipcidr.join(', '),
+-      fallbackDomain:
+-        dnsConfig['fallback-filter']?.domain?.join(', ') ??
+-        DEFAULT_DNS_CONFIG['fallback-filter'].domain.join(', '),
+-      nameserverPolicy:
+-        formatNameserverPolicy(dnsConfig['nameserver-policy']) || '',
+-      hosts: formatHosts(hostsConfig) || '',
+-    })
+-  }, [])
++  // 从配置对象更新表单值
++  const updateValuesFromConfig = useCallback(
++    (config: any) => {
++      if (!config) return
++
++      const dnsConfig = config.dns || {}
++      const hostsConfig = config.hosts || {}
++
++      const enhancedMode =
++        dnsConfig['enhanced-mode'] || DEFAULT_DNS_CONFIG['enhanced-mode']
++      const validEnhancedMode =
++        enhancedMode === 'fake-ip' || enhancedMode === 'redir-host'
++          ? enhancedMode
++          : DEFAULT_DNS_CONFIG['enhanced-mode']
++
++      const fakeIpFilterMode =
++        dnsConfig['fake-ip-filter-mode'] ||
++        DEFAULT_DNS_CONFIG['fake-ip-filter-mode']
++      const validFakeIpFilterMode =
++        fakeIpFilterMode === 'blacklist' || fakeIpFilterMode === 'whitelist'
++          ? fakeIpFilterMode
++          : DEFAULT_DNS_CONFIG['fake-ip-filter-mode']
++
++      setValues({
++        enable: dnsConfig.enable ?? DEFAULT_DNS_CONFIG.enable,
++        listen: dnsConfig.listen ?? DEFAULT_DNS_CONFIG.listen,
++        enhancedMode: validEnhancedMode,
++        fakeIpRange:
++          dnsConfig['fake-ip-range'] ?? DEFAULT_DNS_CONFIG['fake-ip-range'],
++        fakeIpRange6: readOptionalDnsString(dnsConfig['fake-ip-range6']),
++        fakeIpFilterMode: validFakeIpFilterMode,
++        preferH3: dnsConfig['prefer-h3'] ?? DEFAULT_DNS_CONFIG['prefer-h3'],
++        respectRules:
++          dnsConfig['respect-rules'] ?? DEFAULT_DNS_CONFIG['respect-rules'],
++        useHosts: dnsConfig['use-hosts'] ?? DEFAULT_DNS_CONFIG['use-hosts'],
++        useSystemHosts:
++          dnsConfig['use-system-hosts'] ??
++          DEFAULT_DNS_CONFIG['use-system-hosts'],
++        ipv6: dnsConfig.ipv6 ?? DEFAULT_DNS_CONFIG.ipv6,
++        fakeIpFilter:
++          dnsConfig['fake-ip-filter']?.join(', ') ??
++          DEFAULT_DNS_CONFIG['fake-ip-filter'].join(', '),
++        nameserver:
++          dnsConfig.nameserver?.join(', ') ??
++          DEFAULT_DNS_CONFIG.nameserver.join(', '),
++        fallback:
++          dnsConfig.fallback?.join(', ') ??
++          DEFAULT_DNS_CONFIG.fallback.join(', '),
++        defaultNameserver:
++          dnsConfig['default-nameserver']?.join(', ') ??
++          DEFAULT_DNS_CONFIG['default-nameserver'].join(', '),
++        proxyServerNameserver:
++          dnsConfig['proxy-server-nameserver']?.join(', ') ??
++          (DEFAULT_DNS_CONFIG['proxy-server-nameserver']?.join(', ') || ''),
++        directNameserver:
++          dnsConfig['direct-nameserver']?.join(', ') ??
++          (DEFAULT_DNS_CONFIG['direct-nameserver']?.join(', ') || ''),
++        directNameserverFollowPolicy:
++          dnsConfig['direct-nameserver-follow-policy'] ??
++          DEFAULT_DNS_CONFIG['direct-nameserver-follow-policy'],
++        fallbackGeoip:
++          dnsConfig['fallback-filter']?.geoip ??
++          DEFAULT_DNS_CONFIG['fallback-filter'].geoip,
++        fallbackGeoipCode:
++          dnsConfig['fallback-filter']?.['geoip-code'] ??
++          DEFAULT_DNS_CONFIG['fallback-filter']['geoip-code'],
++        fallbackIpcidr:
++          dnsConfig['fallback-filter']?.ipcidr?.join(', ') ??
++          DEFAULT_DNS_CONFIG['fallback-filter'].ipcidr.join(', '),
++        fallbackDomain:
++          dnsConfig['fallback-filter']?.domain?.join(', ') ??
++          DEFAULT_DNS_CONFIG['fallback-filter'].domain.join(', '),
++        nameserverPolicy:
++          formatNameserverPolicy(dnsConfig['nameserver-policy']) || '',
++        hosts: formatHosts(hostsConfig) || '',
++      })
++    },
++    [setValues],
++  )
+ 
+   const generateDnsConfig = useCallback(() => {
+     const dnsConfig: any = {
+@@ -350,7 +341,6 @@ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
+       listen: values.listen,
+       'enhanced-mode': values.enhancedMode,
+       'fake-ip-range': values.fakeIpRange,
+-      'fake-ip-range6': values.fakeIpRange6,
+       'fake-ip-filter-mode': values.fakeIpFilterMode,
+       'prefer-h3': values.preferH3,
+       'respect-rules': values.respectRules,
+@@ -360,7 +350,6 @@ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
+       'fake-ip-filter': parseList(values.fakeIpFilter),
+       'default-nameserver': parseList(values.defaultNameserver),
+       nameserver: parseList(values.nameserver),
+-      'nameserver-policy': parseNameserverPolicy(values.nameserverPolicy),
+       'direct-nameserver-follow-policy': values.directNameserverFollowPolicy,
+       'fallback-filter': {
+         geoip: values.fallbackGeoip,
+@@ -373,6 +362,12 @@ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
+       'proxy-server-nameserver': parseList(values.proxyServerNameserver),
+       'direct-nameserver': parseList(values.directNameserver),
+     }
++    assignOptionalDnsString(dnsConfig, 'fake-ip-range6', values.fakeIpRange6)
++
++    const policy = parseNameserverPolicy(values.nameserverPolicy)
++    if (Object.keys(policy).length > 0) {
++      dnsConfig['nameserver-policy'] = policy
++    }
+ 
+     return dnsConfig
+   }, [values])
+@@ -385,18 +380,22 @@ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
+       config.dns = dnsConfig
+     }
+ 
+-    config.hosts = parseHosts(values.hosts)
++    const hosts = parseHosts(values.hosts)
++    if (Object.keys(hosts).length > 0) {
++      config.hosts = hosts
++    }
+ 
+     setYamlContent(yaml.dump(config, { forceQuotes: true }))
+-  }, [generateDnsConfig, values.hosts])
++  }, [generateDnsConfig, setYamlContent, values.hosts])
+ 
++  // 重置为默认值
+   const resetToDefaults = useCallback(() => {
+     setValues({
+       enable: DEFAULT_DNS_CONFIG.enable,
+       listen: DEFAULT_DNS_CONFIG.listen,
+       enhancedMode: DEFAULT_DNS_CONFIG['enhanced-mode'],
+       fakeIpRange: DEFAULT_DNS_CONFIG['fake-ip-range'],
+-      fakeIpRange6: DEFAULT_DNS_CONFIG['fake-ip-range6'],
++      fakeIpRange6: '',
+       fakeIpFilterMode: DEFAULT_DNS_CONFIG['fake-ip-filter-mode'],
+       preferH3: DEFAULT_DNS_CONFIG['prefer-h3'],
+       respectRules: DEFAULT_DNS_CONFIG['respect-rules'],
+@@ -424,12 +423,13 @@ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
+     })
+ 
+     updateYamlFromValues()
+-  }, [updateYamlFromValues])
++  }, [setValues, updateYamlFromValues])
+ 
++  // 从YAML更新表单值
+   const updateValuesFromYaml = useCallback(() => {
+     try {
+       const parsedYaml = yaml.load(yamlContent) as any
+-      if (!parsedYaml || parsedYaml.isInitValue) return
++      if (!parsedYaml) return
+ 
+       skipYamlSyncRef.current = true
+       updateValuesFromConfig(parsedYaml)
+@@ -471,9 +471,13 @@ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
+ 
+   const initDnsConfig = useCallback(async () => {
+     try {
+-      const dnsConfig = await getDnsConfigContent()
++      const dnsConfigExists = await invoke<boolean>(
++        'check_dns_config_exists',
++        {},
++      )
+ 
+-      if (dnsConfig !== null) {
++      if (dnsConfigExists) {
++        const dnsConfig = await invoke<string>('get_dns_config_content', {})
+         const config = yaml.load(dnsConfig) as any
+ 
+         updateValuesFromConfig(config)
+@@ -485,7 +489,7 @@ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
+       console.error('Failed to initialize DNS config', err)
+       resetToDefaults()
+     }
+-  }, [resetToDefaults, updateValuesFromConfig])
++  }, [resetToDefaults, setYamlContent, updateValuesFromConfig])
+ 
+   useImperativeHandle(
+     ref,
+@@ -499,11 +503,14 @@ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
+     [initDnsConfig],
+   )
+ 
++  // 生成DNS配置对象
++  // 处理保存操作
+   const onSave = useLockFn(async () => {
+     try {
+       let config: Record<string, any>
+ 
+       if (visualization) {
++        // 使用表单值生成配置
+         config = {}
+ 
+         const dnsConfig = generateDnsConfig()
+@@ -511,8 +518,12 @@ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
+           config.dns = dnsConfig
+         }
+ 
+-        config.hosts = parseHosts(values.hosts)
++        const hosts = parseHosts(values.hosts)
++        if (Object.keys(hosts).length > 0) {
++          config.hosts = hosts
++        }
+       } else {
++        // 使用YAML编辑器的值
+         const parsedConfig = yaml.load(yamlContent)
+         if (typeof parsedConfig !== 'object' || parsedConfig === null) {
+           throw new Error(t('settings.modals.dns.errors.invalid'))
+@@ -520,12 +531,14 @@ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
+         config = parsedConfig as Record<string, any>
+       }
+ 
+-      await mutate(() => saveDnsConfig(config), {
+-        id: 'save-dns-config',
+-        errorNotice: false,
+-      })
++      // 保存配置
++      await invoke('save_dns_config', { dnsConfig: config })
+ 
+-      const validation = await validateDnsConfig()
++      // 验证配置
++      const validation = await invoke<ValidationOutcome>(
++        'validate_dns_config',
++        {},
++      )
+ 
+       if (validation.status !== 'valid') {
+         const errorMsg =
+@@ -534,6 +547,7 @@ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
+             : 'Configuration validation skipped'
+         let cleanErrorMsg = errorMsg
+ 
++        // 提取关键错误信息
+         if (errorMsg.includes('level=error')) {
+           const errorLines = errorMsg
+             .split('\n')
+@@ -561,25 +575,25 @@ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
+         return
+       }
+ 
+-      if (dnsEnabled) {
+-        await mutate(() => applyDnsConfig(true), {
+-          id: 'apply-dns-config',
+-          errorNotice: false,
+-        })
++      // 如果DNS开关当前是打开的，则需要应用新的DNS配置
++      if (clash?.dns?.enable) {
++        await invoke('apply_dns_config', { apply: true })
+         mutateClash()
+       }
+ 
+       setOpen(false)
+       showNotice.success('settings.modals.dns.messages.saved')
+     } catch (err) {
+-      showNotice.error('settings.modals.dns.messages.configError', err)
++      showNotice.error(err)
+     }
+   })
+ 
++  // YAML编辑器内容变更处理
+   const handleYamlChange = (value?: string) => {
+     setYamlContent(value || '')
+   }
+ 
++  // 处理表单值变化
+   const handleChange = (field: string) => (event: any) => {
+     const value =
+       event.target.type === 'checkbox'
+@@ -592,6 +606,7 @@ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
+         [field]: value,
+       }
+ 
++      // 当可视化编辑模式下的值变化时，自动更新YAML
+       if (visualization) {
+         setTimeout(() => {
+           updateYamlFromValues()
+@@ -652,9 +667,7 @@ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
+       onCancel={() => setOpen(false)}
+       onOk={onSave}
+     >
+-      <Alert severity="info" sx={{ mb: 2 }}>
+-        {t('settings.modals.dns.dialog.profileScope')}
+-      </Alert>
++      {/* Warning message */}
+       <Typography
+         variant="body2"
+         color="warning.main"
+@@ -1040,6 +1053,7 @@ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
+             />
+           </Item>
+ 
++          {/* Hosts 配置部分 */}
+           <Typography
+             variant="subtitle1"
+             sx={{ mt: 3, mb: 0, fontWeight: 'bold' }}
+@@ -1089,7 +1103,9 @@ export function DnsViewer({ ref }: { ref?: Ref<DialogRef> }) {
+             padding: {
+               top: 33,
+             },
+-            fontFamily: MONACO_FONT_FAMILY,
++            fontFamily: `Fira Code, JetBrains Mono, Roboto Mono, "Source Code Pro", Consolas, Menlo, Monaco, monospace, "Courier New", "Apple Color Emoji"${
++              getSystem() === 'windows' ? ', twemoji mozilla' : ''
++            }`,
+             fontLigatures: false,
+             smoothScrolling: true,
+           }}
+diff --git a/src/components/setting/mods/sysproxy-viewer.tsx b/src/components/setting/mods/sysproxy-viewer.tsx
+index e96a96bc..56aadf60 100644
+--- a/src/components/setting/mods/sysproxy-viewer.tsx
++++ b/src/components/setting/mods/sysproxy-viewer.tsx
+@@ -1,5 +1,6 @@
+ import { EditRounded } from '@mui/icons-material'
+ import {
++  Alert,
+   Autocomplete,
+   Box,
+   Button,
+@@ -18,6 +19,7 @@ import {
+   useEffect,
+   useImperativeHandle,
+   useMemo,
++  useRef,
+   useState,
+ } from 'react'
+ import { useTranslation } from 'react-i18next'
+@@ -26,24 +28,30 @@ import {
+   BaseDialog,
+   BaseFieldset,
+   BaseSplitChipEditor,
+-  type DialogRef,
++  DialogRef,
+   Switch,
+   TooltipIcon,
+ } from '@/components/base'
+ import { EditorViewer } from '@/components/profile/editor-viewer'
+-import { useDisplayedMixedPort } from '@/hooks/use-displayed-mixed-port'
+ import { useSystemProxyState } from '@/hooks/use-system-proxy-state'
+ import { useVerge } from '@/hooks/use-verge'
+-import { useSystemData } from '@/providers/app-data-context'
++import { useClashConfigData, useSystemData } from '@/providers/app-data-context'
+ import {
+-  getEmbeddedServerPort,
++  getAutotemProxy,
+   getNetworkInterfacesInfo,
+   getSystemHostname,
++  getSystemProxy,
++  patchVergeConfig,
+ } from '@/services/cmds'
+ import { showNotice } from '@/services/notice-service'
+ import { debugLog } from '@/utils/debug'
+ import getSystem from '@/utils/get-system'
+ 
++const sleep = (ms: number) =>
++  new Promise<void>((resolve) => {
++    setTimeout(resolve, ms)
++  })
++
+ const DEFAULT_PAC = `function FindProxyForURL(url, host) {
+   return "PROXY %proxy_host%:%mixed-port%; SOCKS5 %proxy_host%:%mixed-port%; DIRECT;";
+ }`
+@@ -101,8 +109,13 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+   const { verge, patchVerge, mutateVerge } = useVerge()
+   const [hostOptions, setHostOptions] = useState<string[]>([])
+ 
+-  const { indicator: isProxyReallyEnabled, invalidateProxyState } =
+-    useSystemProxyState()
++  const { clashConfig } = useClashConfigData()
++  const {
++    indicator: isProxyReallyEnabled,
++    invalidateProxyState,
++    systemProxyDisabled,
++    systemProxyDisabledReason,
++  } = useSystemProxyState()
+ 
+   const {
+     enable_system_proxy: enabled,
+@@ -126,13 +139,6 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+     pac_content: pac_file_content ?? DEFAULT_PAC,
+     proxy_host: proxy_host ?? '127.0.0.1',
+   })
+-  const [embeddedServerPort, setEmbeddedServerPort] = useState<number | null>(
+-    null,
+-  )
+-
+-  useEffect(() => {
+-    getEmbeddedServerPort().then(setEmbeddedServerPort).catch(console.error)
+-  }, [])
+ 
+   const separator = useMemo(() => (isWindows ? ';' : ','), [isWindows])
+ 
+@@ -146,25 +152,72 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+     return '127.0.0.1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,localhost,*.local,*.crashlytics.com,<local>'
+   }
+ 
++  const prevMixedPortRef = useRef(clashConfig?.mixedPort)
++
++  useEffect(() => {
++    const mixedPort = clashConfig?.mixedPort
++    if (!mixedPort || mixedPort === prevMixedPortRef.current) {
++      return
++    }
++
++    prevMixedPortRef.current = mixedPort
++    if (!enabled || systemProxyDisabled) {
++      return
++    }
++
++    const updateProxy = async () => {
++      try {
++        const currentSysProxy = await getSystemProxy()
++        const currentAutoProxy = await getAutotemProxy()
++
++        if (value.pac ? currentAutoProxy?.enable : currentSysProxy?.enable) {
++          await patchVergeConfig({ enable_system_proxy: false })
++          await sleep(200)
++          await patchVergeConfig({ enable_system_proxy: true })
++          await invalidateProxyState()
++        }
++      } catch (err) {
++        showNotice.error(err)
++      }
++    }
++
++    updateProxy()
++  }, [
++    clashConfig?.mixedPort,
++    enabled,
++    systemProxyDisabled,
++    value.pac,
++    invalidateProxyState,
++  ])
++
+   const { systemProxyAddress } = useSystemData()
+-  const displayedMixedPort = useDisplayedMixedPort()
+ 
++  // 为当前状态计算系统代理地址
+   const getSystemProxyAddress = useMemo(() => {
++    if (!clashConfig) return '-'
++
+     const isPacMode = value.pac ?? false
+ 
+     if (isPacMode) {
+       const host = value.proxy_host || '127.0.0.1'
+-      return `${host}:${displayedMixedPort}`
++      const port = verge?.verge_mixed_port || clashConfig.mixedPort || 7897
++      return `${host}:${port}`
+     } else {
+       return systemProxyAddress
+     }
+-  }, [value.pac, value.proxy_host, displayedMixedPort, systemProxyAddress])
++  }, [
++    value.pac,
++    value.proxy_host,
++    verge?.verge_mixed_port,
++    clashConfig,
++    systemProxyAddress,
++  ])
+   const getCurrentPacUrl = useMemo(() => {
+     const host = value.proxy_host || '127.0.0.1'
+-    return embeddedServerPort
+-      ? `http://${host}:${embeddedServerPort}/commands/pac`
+-      : '-'
+-  }, [embeddedServerPort, value.proxy_host])
++    // 根据环境判断PAC端口
++    const port = import.meta.env.DEV ? 11233 : 33331
++    return `http://${host}:${port}/commands/pac`
++  }, [value.proxy_host])
+ 
+   const bypassError =
+     value.enable_bypass_check &&
+@@ -207,22 +260,26 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+     close: () => setOpen(false),
+   }))
+ 
++  // 获取网络接口和主机名
+   const fetchNetworkInterfaces = async () => {
+     try {
++      // 获取系统网络接口信息
+       const interfaces = await getNetworkInterfacesInfo()
+       const ipAddresses: string[] = []
+ 
++      // 从interfaces中提取IPv4和IPv6地址
+       interfaces.forEach((iface) => {
+         iface.addr.forEach((address) => {
+-          if (address.V4?.ip) {
++          if (address.V4 && address.V4.ip) {
+             ipAddresses.push(address.V4.ip)
+           }
+-          if (address.V6?.ip) {
++          if (address.V6 && address.V6.ip) {
+             ipAddresses.push(address.V6.ip)
+           }
+         })
+       })
+ 
++      // 获取当前系统的主机名
+       let hostname = ''
+       try {
+         hostname = await getSystemHostname()
+@@ -231,11 +288,14 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+         console.error('获取主机名失败:', err)
+       }
+ 
++      // 构建选项列表
+       const options = ['127.0.0.1', 'localhost']
+ 
++      // 确保主机名添加到列表，即使它是空字符串也记录下来
+       if (hostname) {
++        // 如果主机名不是localhost或127.0.0.1，则添加它
+         if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
+-          hostname = `${hostname}.local`
++          hostname = hostname + '.local'
+           options.push(hostname)
+           debugLog('主机名已添加到选项中:', hostname)
+         } else {
+@@ -245,18 +305,25 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+         debugLog('主机名为空')
+       }
+ 
++      // 添加IP地址
+       options.push(...ipAddresses)
+ 
++      // 去重
+       const uniqueOptions = Array.from(new Set(options))
+       debugLog('最终选项列表:', uniqueOptions)
+       setHostOptions(uniqueOptions)
+     } catch (error) {
+       console.error('获取网络接口失败:', error)
++      // 失败时至少提供基本选项
+       setHostOptions(['127.0.0.1', 'localhost'])
+     }
+   }
+ 
+   const onSave = useLockFn(async () => {
++    if (systemProxyDisabled) {
++      showNotice.error(systemProxyDisabledReason)
++      return
++    }
+     if (value.duration < 1) {
+       showNotice.error('settings.modals.sysproxy.messages.durationTooShort')
+       return
+@@ -272,6 +339,7 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+       return
+     }
+ 
++    // 修改验证规则，允许IP和主机名
+     const ipv4Regex =
+       /^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/
+     const ipv6Regex =
+@@ -315,7 +383,8 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+     let pacContent = value.pac_content
+     if (pacContent) {
+       pacContent = pacContent.replace(/%proxy_host%/g, value.proxy_host)
+-      const mixedPortStr = displayedMixedPort.toString()
++      // 将 mixed-port 转换为字符串
++      const mixedPortStr = (clashConfig?.mixedPort || '').toString()
+       pacContent = pacContent.replace(/%mixed-port%/g, mixedPortStr)
+     }
+ 
+@@ -323,6 +392,7 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+       patch.pac_file_content = pacContent
+     }
+ 
++    // 处理IPv6地址，如果是IPv6地址但没有被方括号包围，则添加方括号
+     let proxyHost = value.proxy_host
+     if (
+       ipv6Regex.test(proxyHost) &&
+@@ -336,23 +406,54 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+       patch.proxy_host = proxyHost
+     }
+ 
++    // 判断是否需要重置系统代理
++    const needResetProxy =
++      value.pac !== proxy_auto_config ||
++      proxyHost !== proxy_host ||
++      pacContent !== pac_file_content ||
++      value.bypass !== system_proxy_bypass ||
++      value.use_default !== use_default_bypass
++
+     Promise.resolve().then(async () => {
+       try {
++        // 乐观更新本地状态
+         if (Object.keys(patch).length > 0) {
+           mutateVerge({ ...verge, ...patch }, false)
+         }
+         if (Object.keys(patch).length > 0) {
+           await patchVerge(patch)
+         }
+-        try {
+-          await invalidateProxyState()
+-        } catch (err) {
+-          console.warn('代理状态更新失败:', err)
+-        }
++        setTimeout(async () => {
++          try {
++            await invalidateProxyState()
++
++            // 如果需要重置代理且代理当前启用
++            if (needResetProxy && enabled && !systemProxyDisabled) {
++              const [currentSysProxy, currentAutoProxy] = await Promise.all([
++                getSystemProxy(),
++                getAutotemProxy(),
++              ])
++
++              const isProxyActive = value.pac
++                ? currentAutoProxy?.enable
++                : currentSysProxy?.enable
++
++              if (isProxyActive) {
++                await patchVergeConfig({ enable_system_proxy: false })
++                await new Promise((resolve) => setTimeout(resolve, 50))
++                await patchVergeConfig({ enable_system_proxy: true })
++                await invalidateProxyState()
++              }
++            }
++          } catch (err) {
++            console.warn('代理状态更新失败:', err)
++          }
++        }, 50)
+       } catch (err) {
+         console.error('配置保存失败:', err)
+         mutateVerge()
+         showNotice.error(err)
++        // setOpen(true);
+       }
+     })
+   })
+@@ -368,9 +469,14 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+       onCancel={() => setOpen(false)}
+       onOk={onSave}
+       loading={saving}
+-      disableOk={saving}
++      disableOk={saving || systemProxyDisabled}
+     >
+       <List>
++        {systemProxyDisabled && (
++          <Alert severity="info" sx={{ mb: 1 }}>
++            {systemProxyDisabledReason}
++          </Alert>
++        )}
+         <BaseFieldset
+           label={t('settings.modals.sysproxy.fieldsets.currentStatus')}
+           padding="15px 10px"
+@@ -437,7 +543,7 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+           />
+           <Switch
+             edge="end"
+-            disabled={!enabled}
++            disabled={!enabled || systemProxyDisabled}
+             checked={value.pac}
+             onChange={(_, e) => setValue((v) => ({ ...v, pac: e }))}
+           />
+@@ -454,7 +560,7 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+           />
+           <Switch
+             edge="end"
+-            disabled={!enabled}
++            disabled={!enabled || systemProxyDisabled}
+             checked={value.guard}
+             onChange={(_, e) => setValue((v) => ({ ...v, guard: e }))}
+             sx={{ marginLeft: 'auto' }}
+@@ -466,7 +572,7 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+             primary={t('settings.modals.sysproxy.fields.guardDuration')}
+           />
+           <TextField
+-            disabled={!enabled}
++            disabled={!enabled || systemProxyDisabled}
+             size="small"
+             value={value.duration}
+             sx={{ width: 100 }}
+@@ -492,7 +598,7 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+             />
+             <Switch
+               edge="end"
+-              disabled={!enabled}
++              disabled={!enabled || systemProxyDisabled}
+               checked={value.use_default}
+               onChange={(_, e) => {
+                 if (!e && !value.bypass) {
+@@ -500,6 +606,7 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+                   setValue((v) => ({
+                     ...v,
+                     use_default: e,
++                    // 当取消选择use_default且当前bypass为空时，填充默认值
+                     bypass: nextBypass,
+                   }))
+                   return
+@@ -517,7 +624,7 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+             />
+             <Switch
+               edge="end"
+-              disabled={!enabled}
++              disabled={!enabled || systemProxyDisabled}
+               checked={value.enable_bypass_check}
+               onChange={(_, e) =>
+                 setValue((v) => ({ ...v, enable_bypass_check: e }))
+@@ -530,7 +637,7 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
+           <BaseSplitChipEditor
+             value={value.bypass ?? ''}
+             separator={separator}
+-            disabled={!enabled}
++            disabled={!enabled || systemProxyDisabled}
+             error={bypassError}
+             helperText={
+               bypassError
+@@ -609,5 +716,6 @@ const FlexBox = styled('div')`
+ 
+   .label {
+     flex: none;
++    //width: 85px;
+   }
+ `
+diff --git a/src/hooks/system-proxy-lock.test.ts b/src/hooks/system-proxy-lock.test.ts
+new file mode 100644
+index 00000000..177436c3
+--- /dev/null
++++ b/src/hooks/system-proxy-lock.test.ts
+@@ -0,0 +1,44 @@
++import { describe, expect, it } from "vitest";
++
++import { resolveSystemProxyLockState } from "./system-proxy-lock";
++
++describe("resolveSystemProxyLockState", () => {
++  it("disables system proxy with policy reason when policy is disabled and tun is off", () => {
++    const result = resolveSystemProxyLockState({
++      policy: { mode: "disabled", reason: "policy disabled" },
++      tunEnabled: false,
++      tunReason: "tun reason",
++    });
++
++    expect(result).toEqual({
++      systemProxyDisabled: true,
++      systemProxyDisabledReason: "policy disabled",
++    });
++  });
++
++  it("disables system proxy with tun reason when policy is enabled and tun is on", () => {
++    const result = resolveSystemProxyLockState({
++      policy: { mode: "enabled", reason: "policy enabled" },
++      tunEnabled: true,
++      tunReason: "tun reason",
++    });
++
++    expect(result).toEqual({
++      systemProxyDisabled: true,
++      systemProxyDisabledReason: "tun reason",
++    });
++  });
++
++  it("prioritizes tun reason over policy reason when both policy-disabled and tun-enabled", () => {
++    const result = resolveSystemProxyLockState({
++      policy: { mode: "disabled", reason: "policy disabled" },
++      tunEnabled: true,
++      tunReason: "tun reason",
++    });
++
++    expect(result).toEqual({
++      systemProxyDisabled: true,
++      systemProxyDisabledReason: "tun reason",
++    });
++  });
++});
+diff --git a/src/hooks/system-proxy-lock.ts b/src/hooks/system-proxy-lock.ts
+new file mode 100644
+index 00000000..7ca40174
+--- /dev/null
++++ b/src/hooks/system-proxy-lock.ts
+@@ -0,0 +1,37 @@
++import type { WebActionPolicy } from "@root/browser/runtime";
++
++interface ResolveSystemProxyLockStateParams {
++  policy: WebActionPolicy;
++  tunEnabled: boolean;
++  tunReason: string;
++}
++
++interface SystemProxyLockState {
++  systemProxyDisabled: boolean;
++  systemProxyDisabledReason: string;
++}
++
++export const resolveSystemProxyLockState = ({
++  policy,
++  tunEnabled,
++  tunReason,
++}: ResolveSystemProxyLockStateParams): SystemProxyLockState => {
++  if (tunEnabled) {
++    return {
++      systemProxyDisabled: true,
++      systemProxyDisabledReason: tunReason || policy.reason,
++    };
++  }
++
++  if (policy.mode !== "enabled") {
++    return {
++      systemProxyDisabled: true,
++      systemProxyDisabledReason: policy.reason,
++    };
++  }
++
++  return {
++    systemProxyDisabled: false,
++    systemProxyDisabledReason: "",
++  };
++};
+diff --git a/src/hooks/use-connection-data.test.ts b/src/hooks/use-connection-data.test.ts
+new file mode 100644
+index 00000000..7af82b1d
+--- /dev/null
++++ b/src/hooks/use-connection-data.test.ts
+@@ -0,0 +1,82 @@
++import { describe, expect, it } from 'vitest'
++
++import { parseConnectionsPayload } from './use-connection-data'
++
++const validConnection = {
++  id: 'connection-1',
++  metadata: {
++    network: 'tcp',
++    type: 'HTTP',
++    host: 'example.test',
++    sourceIP: '127.0.0.1',
++    sourcePort: '12345',
++    destinationPort: '443',
++  },
++  upload: 12,
++  download: 34,
++  start: '2026-08-31T00:00:00Z',
++  chains: ['Proxy'],
++  rule: 'MATCH',
++  rulePayload: 'Proxy',
++}
++
++describe('Mihomo connections websocket payload parser', () => {
++  it('accepts a complete snapshot', () => {
++    expect(
++      parseConnectionsPayload({
++        uploadTotal: 12,
++        downloadTotal: 34,
++        connections: [validConnection],
++      }),
++    ).toEqual({
++      uploadTotal: 12,
++      downloadTotal: 34,
++      connections: [validConnection],
++    })
++  })
++
++  it('rejects malformed rows and invalid counters before merging', () => {
++    const snapshot = {
++      uploadTotal: 12,
++      downloadTotal: 34,
++      connections: [validConnection],
++    }
++
++    expect(parseConnectionsPayload({ ...snapshot, connections: [null] })).toBeNull()
++    expect(
++      parseConnectionsPayload({
++        ...snapshot,
++        connections: [{ ...validConnection, metadata: null }],
++      }),
++    ).toBeNull()
++    expect(parseConnectionsPayload({ ...snapshot, uploadTotal: Number.NaN })).toBeNull()
++    expect(parseConnectionsPayload({ ...snapshot, uploadTotal: -1 })).toBeNull()
++    expect(parseConnectionsPayload({ ...snapshot, downloadTotal: -1 })).toBeNull()
++    expect(
++      parseConnectionsPayload({
++        ...snapshot,
++        connections: [{ ...validConnection, upload: -1 }],
++      }),
++    ).toBeNull()
++    expect(
++      parseConnectionsPayload({
++        ...snapshot,
++        connections: [{ ...validConnection, download: -1 }],
++      }),
++    ).toBeNull()
++    expect(parseConnectionsPayload({ ...snapshot, uploadTotal: 0.5 })).toBeNull()
++    expect(parseConnectionsPayload({ ...snapshot, downloadTotal: 0.5 })).toBeNull()
++    expect(
++      parseConnectionsPayload({
++        ...snapshot,
++        connections: [{ ...validConnection, upload: 1.25 }],
++      }),
++    ).toBeNull()
++    expect(
++      parseConnectionsPayload({
++        ...snapshot,
++        connections: [{ ...validConnection, download: 1.25 }],
++      }),
++    ).toBeNull()
++  })
++})
+diff --git a/src/hooks/use-connection-data.ts b/src/hooks/use-connection-data.ts
+index d74cde2f..a8a3c801 100644
+--- a/src/hooks/use-connection-data.ts
++++ b/src/hooks/use-connection-data.ts
+@@ -17,6 +17,85 @@ const initConnData: ConnectionMonitorData = {
+   closedConnections: [],
+ }
+ 
++const isRecord = (value: unknown): value is Record<string, unknown> =>
++  typeof value === 'object' && value !== null && !Array.isArray(value)
++
++const isNonNegativeFiniteNumber = (value: unknown): value is number =>
++  typeof value === 'number' &&
++  Number.isFinite(value) &&
++  Number.isInteger(value) &&
++  value >= 0
++
++const isString = (value: unknown): value is string => typeof value === 'string'
++
++const isStringArray = (value: unknown): value is string[] =>
++  Array.isArray(value) && value.every(isString)
++
++const isConnectionMetadata = (
++  value: unknown,
++): value is IConnectionsItem['metadata'] => {
++  if (!isRecord(value)) return false
++
++  const requiredKeys = [
++    'network',
++    'type',
++    'host',
++    'sourceIP',
++    'sourcePort',
++    'destinationPort',
++  ]
++  if (!requiredKeys.every((key) => isString(value[key]))) return false
++
++  const optionalKeys = [
++    'destinationIP',
++    'remoteDestination',
++    'process',
++    'processPath',
++  ]
++  return optionalKeys.every(
++    (key) => value[key] === undefined || isString(value[key]),
++  )
++}
++
++const isConnectionItem = (value: unknown): value is IConnectionsItem => {
++  if (!isRecord(value)) return false
++
++  return (
++    isString(value.id) &&
++    value.id.length > 0 &&
++    isConnectionMetadata(value.metadata) &&
++    isNonNegativeFiniteNumber(value.upload) &&
++    isNonNegativeFiniteNumber(value.download) &&
++    isString(value.start) &&
++    isStringArray(value.chains) &&
++    isString(value.rule) &&
++    isString(value.rulePayload)
++  )
++}
++
++export const parseConnectionsPayload = (
++  value: unknown,
++): IConnections | null => {
++  if (!isRecord(value)) return null
++  if (
++    !isNonNegativeFiniteNumber(value.downloadTotal) ||
++    !isNonNegativeFiniteNumber(value.uploadTotal)
++  ) {
++    return null
++  }
++
++  const connections = value.connections
++  if (!Array.isArray(connections) || !connections.every(isConnectionItem)) {
++    return null
++  }
++
++  return {
++    downloadTotal: value.downloadTotal,
++    uploadTotal: value.uploadTotal,
++    connections,
++  }
++}
++
+ interface ConnectionMonitorData {
+   uploadTotal: number
+   downloadTotal: number
+@@ -217,14 +296,20 @@ const flushPendingMessage = () => {
+   pendingMessageData = null
+   if (!messageData || connectionListeners.size === 0) return
+ 
+-  let payload: IConnections
++  let parsed: unknown
+   try {
+-    payload = JSON.parse(messageData) as IConnections
++    parsed = JSON.parse(messageData)
+   } catch (err) {
+     console.error('[Connections] Failed to parse websocket payload', err)
+     return
+   }
+ 
++  const payload = parseConnectionsPayload(parsed)
++  if (!payload) {
++    console.error('[Connections] Ignoring invalid websocket payload')
++    return
++  }
++
+   lastFlushAt = Date.now()
+ 
+   connectionData = mergeConnectionSnapshot(payload, connectionData)
+diff --git a/src/hooks/use-system-proxy-state.ts b/src/hooks/use-system-proxy-state.ts
+index f16d1c10..2c0316a0 100644
+--- a/src/hooks/use-system-proxy-state.ts
++++ b/src/hooks/use-system-proxy-state.ts
+@@ -1,57 +1,63 @@
+ import { useRef } from 'react'
+ import { closeAllConnections } from 'tauri-plugin-mihomo-api'
+ 
+-import { useDisplayedMixedPort } from '@/hooks/use-displayed-mixed-port'
++import { getWebActionPolicy } from '@root/browser/runtime'
+ import { useVerge } from '@/hooks/use-verge'
+-import { useSystemData } from '@/providers/app-data-context'
+-import {
+-  getAutotemProxy,
+-  getEmbeddedServerPort,
+-  patchVergeConfig,
+-} from '@/services/cmds'
+-import { mutate } from '@/services/mutate'
+-import {
+-  removeCacheData,
+-  revalidateQueries,
+-  useQuery,
+-} from '@/services/query-client'
++import { useClashConfigData, useSystemData } from '@/providers/app-data-context'
++import { getAutotemProxy } from '@/services/cmds'
++import { revalidateQueries, useQuery } from '@/services/query-client'
++import { resolveSystemProxyLockState } from './system-proxy-lock'
+ 
++// 系统代理状态检测统一逻辑
+ export const useSystemProxyState = () => {
+-  const { verge, mutateVerge } = useVerge()
++  const { verge, mutateVerge, patchVerge } = useVerge()
+   const { sysproxy } = useSystemData()
+-  const displayedMixedPort = useDisplayedMixedPort()
++  const { clashConfig } = useClashConfigData()
+   const { data: autoproxy } = useQuery({
+     queryKey: ['getAutotemProxy'],
+     queryFn: getAutotemProxy,
+     refetchOnWindowFocus: true,
+     refetchOnReconnect: true,
+   })
+-  const { data: pacPort } = useQuery({
+-    queryKey: ['getEmbeddedServerPort'],
+-    queryFn: getEmbeddedServerPort,
+-  })
+ 
+-  const { proxy_auto_config, proxy_host } = verge ?? {}
++  const {
++    enable_system_proxy,
++    proxy_auto_config,
++    proxy_host,
++    verge_mixed_port,
++  } = verge ?? {}
++
++  const { systemProxyDisabled, systemProxyDisabledReason } =
++    resolveSystemProxyLockState({
++      policy: getWebActionPolicy('systemProxy'),
++      tunEnabled: false,
++      tunReason: '',
++    })
+ 
+-  const indicator = (() => {
++  // OS 实际状态：enable + 地址匹配本应用
++  const indicator = systemProxyDisabled
++    ? false
++    : (() => {
+     const host = proxy_host || '127.0.0.1'
+     if (proxy_auto_config) {
+       if (!autoproxy?.enable) return false
+-      if (!pacPort) return false
++      const pacPort = import.meta.env.DEV ? 11233 : 33331
+       return autoproxy.url === `http://${host}:${pacPort}/commands/pac`
+     } else {
+       if (!sysproxy?.enable) return false
+-      return sysproxy.server === `${host}:${displayedMixedPort}`
++      const port = verge_mixed_port || clashConfig?.mixedPort || 7897
++      return sysproxy.server === `${host}:${port}`
+     }
+-  })()
++      })()
+ 
+-  // Coalesce rapid clicks so only the latest requested state is applied.
++  // "最后一次生效"模式：快速连续点击时，只执行最终状态
+   const pendingRef = useRef<boolean | null>(null)
+   const busyRef = useRef(false)
+ 
+   const toggleSystemProxy = async (enabled: boolean) => {
+-    // Roll failed optimistic writes back to the latest confirmed state.
+-    let confirmed = verge?.enable_system_proxy ?? false
++    if (systemProxyDisabled) {
++      throw new Error(systemProxyDisabledReason)
++    }
+     mutateVerge(
+       (prev) => (prev ? { ...prev, enable_system_proxy: enabled } : prev),
+       false,
+@@ -65,53 +71,14 @@ export const useSystemProxyState = () => {
+       while (pendingRef.current !== null) {
+         const target = pendingRef.current
+         pendingRef.current = null
+-        await mutate(() => patchVergeConfig({ enable_system_proxy: target }), {
+-          id: 'toggle-system-proxy',
+-          errorNotice: false,
+-        })
+-        confirmed = target
++        await patchVerge({ enable_system_proxy: target })
+         if (!target && verge?.auto_close_connection) {
+-          await mutate(() => closeAllConnections(), {
+-            id: 'close-all-connections',
+-            errorNotice: false,
+-          }).catch(() => {})
++          await closeAllConnections().catch(() => {})
+         }
+       }
+-    } catch (error) {
+-      mutateVerge(
+-        (prev) => (prev ? { ...prev, enable_system_proxy: confirmed } : prev),
+-        false,
+-      )
+-      // Queued requests were based on a state that never landed.
+-      pendingRef.current = null
+-      throw error
+     } finally {
+       busyRef.current = false
+-      // Refreshing cached state is not part of the toggle's result: a failed read must not
+-      // turn a write that landed into a reported failure.
+-      try {
+-        await revalidateQueries([['getVergeConfig']])
+-      } catch (error) {
+-        console.warn(
+-          '[system-proxy] rereading the config after a toggle failed:',
+-          error,
+-        )
+-      }
+-      // Kept separate so an unreadable config cannot discard OS state that did read.
+-      try {
+-        await revalidateQueries([['getSystemProxy'], ['getAutotemProxy']])
+-      } catch (error) {
+-        console.warn(
+-          '[system-proxy] rereading the OS proxy after a toggle failed:',
+-          error,
+-        )
+-        // The indicator reports observed OS state, so an unreadable one must read as inactive
+-        // rather than stay live from a stale cache.
+-        await Promise.all([
+-          removeCacheData(['getSystemProxy']),
+-          removeCacheData(['getAutotemProxy']),
+-        ])
+-      }
++      await revalidateQueries([['getSystemProxy'], ['getAutotemProxy']])
+     }
+   }
+ 
+@@ -120,7 +87,10 @@ export const useSystemProxyState = () => {
+ 
+   return {
+     indicator,
++    configState: systemProxyDisabled ? false : (enable_system_proxy ?? false),
+     toggleSystemProxy,
+     invalidateProxyState,
++    systemProxyDisabled,
++    systemProxyDisabledReason,
+   }
+ }
+diff --git a/src/hooks/use-traffic-data.ts b/src/hooks/use-traffic-data.ts
+index bd48d09a..bdc0cfe9 100644
+--- a/src/hooks/use-traffic-data.ts
++++ b/src/hooks/use-traffic-data.ts
+@@ -1,4 +1,8 @@
+-import { MihomoWebSocket, Traffic } from 'tauri-plugin-mihomo-api'
++import {
++  MihomoWebSocket,
++  normalizeTraffic,
++  Traffic,
++} from 'tauri-plugin-mihomo-api'
+ 
+ import { useMihomoWsSubscription } from './use-mihomo-ws-subscription'
+ import { useTrafficMonitorEnhanced } from './use-traffic-monitor'
+@@ -46,7 +50,7 @@ export const useTrafficData = (options?: { enabled?: boolean }) => {
+         }
+ 
+         try {
+-          const parsed = JSON.parse(data) as Traffic
++          const parsed = normalizeTraffic(JSON.parse(data))
+           if (shouldSkipDuplicateTraffic(parsed)) {
+             return
+           }
+diff --git a/src/locales/en/profiles.json b/src/locales/en/profiles.json
+index cfccf1ea..5ac1043a 100644
+--- a/src/locales/en/profiles.json
++++ b/src/locales/en/profiles.json
+@@ -29,6 +29,7 @@
+       "errors": {
+         "invalidUrl": "Invalid profile URL. Please enter a URL starting with http:// or https://",
+         "onlyYaml": "Only YAML Files Supported",
++        "sameBoxDirectYamlRequired": "For same-box imports, use the SubHub direct YAML export URL instead of a login-protected app page",
+         "createFailed": "Failed to create profile",
+         "deleteFailed": "Failed to delete profile",
+         "enhanceFailed": "Failed to reactivate profiles",
+@@ -40,8 +41,22 @@
+         "updateFailed": "Failed to update profile"
+       },
+       "notifications": {
++        "importStageFetching": "Fetching remote subscription...",
++        "importStageValidating": "Validating subscription payload...",
++        "importStageApplying": "Applying runtime configuration...",
++        "importStageWaitingNodes": "Configuration applied, waiting for proxy nodes...",
+         "importRetry": "Import failed, retrying with Clash proxy...",
+         "importFail": "Import failed even with Clash proxy",
++        "importSameBoxSubHubHint": "Detected a same-box SubHub lazycat subscription URL. This flow does not reuse your current browser login state. If the box times out while re-fetching large YAML via *.heiyu.space, switch to a direct no-login export URL or download the YAML first.",
++        "importSameBoxSubHubFail": "Same-box SubHub lazycat import failed. Re-fetching large YAML through *.heiyu.space can time out on the microserver. Use a direct no-login export URL or download the YAML locally and import the file.",
++        "importFailedTimeout": "Subscription fetch timed out. Retry later or import a local YAML file.",
++        "importFailedNetwork": "Subscription fetch failed due to network issues. Check connectivity or import a local YAML file.",
++        "importFailedHttp": "Subscription URL returned an unexpected HTTP status. Verify URL and permissions.",
++        "importFailedHtmlLogin": "Subscription URL returned an HTML/login page. Use a direct YAML download URL.",
++        "importFailedInvalidContent": "Subscription content is invalid or missing required sections (proxy-groups/rules/proxies).",
++        "importFailedApply": "Subscription was saved, but applying runtime config failed. Check logs and retry.",
++        "importNodesTimeout": "Subscription applied, but proxy nodes were not ready in time. Check provider URLs or refresh later.",
++        "importSavedNotActive": "Profile {{name}} imported (not active yet; switch profile to apply)",
+         "importNeedsRefresh": "Profile imported but may need manual refresh",
+         "importSuccess": "Profile imported successfully, please restart if not visible",
+         "profileSwitched": "Profile Switched",
+diff --git a/src/locales/zh/profiles.json b/src/locales/zh/profiles.json
+index 65c5887e..5375b5d7 100644
+--- a/src/locales/zh/profiles.json
++++ b/src/locales/zh/profiles.json
+@@ -29,6 +29,7 @@
+       "errors": {
+         "invalidUrl": "无效的订阅链接，请输入以 http:// 或 https:// 开头的地址",
+         "onlyYaml": "仅支持 YAML 文件",
++        "sameBoxDirectYamlRequired": "同机场景请使用 SubHub 直出 YAML 订阅链接，不要使用需要登录的页面地址",
+         "createFailed": "创建订阅失败",
+         "deleteFailed": "删除订阅失败",
+         "enhanceFailed": "重新激活订阅失败",
+@@ -40,8 +41,22 @@
+         "updateFailed": "更新订阅失败"
+       },
+       "notifications": {
++        "importStageFetching": "正在拉取订阅内容...",
++        "importStageValidating": "正在校验订阅内容...",
++        "importStageApplying": "正在应用运行时配置...",
++        "importStageWaitingNodes": "配置已应用，正在等待节点就绪...",
+         "importRetry": "订阅导入失败，尝试使用 Clash 代理导入",
+         "importFail": "使用 Clash 代理导入订阅失败",
++        "importSameBoxSubHubHint": "检测到同机 SubHub lazycat 订阅链接。该链路不依赖当前浏览器登录态，若微服经 *.heiyu.space 回拉大订阅超时，请改用免登录直链或先下载 YAML 再导入。",
++        "importSameBoxSubHubFail": "同机 SubHub lazycat 订阅导入失败。当前微服经 *.heiyu.space 回拉大订阅容易超时；请改用免登录直链，或先在浏览器下载 YAML 后使用本地文件导入。",
++        "importFailedTimeout": "订阅拉取超时，请稍后重试或先下载 YAML 再本地导入。",
++        "importFailedNetwork": "订阅拉取网络失败，请检查网络或改用本地 YAML 导入。",
++        "importFailedHttp": "订阅链接返回异常 HTTP 状态，请检查链接与权限。",
++        "importFailedHtmlLogin": "订阅链接返回了登录页/HTML，请改用可直接下载 YAML 的订阅链接。",
++        "importFailedInvalidContent": "订阅内容格式无效或缺少关键段（proxy-groups/rules/proxies）。",
++        "importFailedApply": "订阅已写入，但应用到运行时失败，请查看日志后重试。",
++        "importNodesTimeout": "订阅已应用，但节点未在预期时间内就绪，请检查 provider 链接或稍后刷新。",
++        "importSavedNotActive": "订阅 {{name}} 已导入（当前未激活，切换后生效）",
+         "importNeedsRefresh": "订阅已导入，但可能需要手动刷新",
+         "importSuccess": "订阅已成功导入，如未显示请重启应用",
+         "profileSwitched": "订阅已切换",
+diff --git a/src/main.tsx b/src/main.tsx
+index 5a0f0d76..83b2eb14 100644
+--- a/src/main.tsx
++++ b/src/main.tsx
+@@ -8,9 +8,17 @@ import { RouterProvider } from 'react-router'
+ import { SWRConfig } from 'swr'
+ import { MihomoWebSocket } from 'tauri-plugin-mihomo-api'
+ 
++import {
++  assessRuntimeContract,
++  getRuntimeInfo,
++  isRuntimeInfo,
++  persistRuntimeAssessment,
++  vergeJson,
++  type RuntimeContractAssessment,
++  type RuntimeInfo,
++} from '@root/browser/runtime'
+ import { BaseErrorBoundary } from './components/base'
+ import { router } from './pages/_routers'
+-import { preloadHomePageCards } from './pages/home'
+ import { AppDataProvider } from './providers/app-data-provider'
+ import { WindowProvider } from './providers/window'
+ import { FALLBACK_LANGUAGE, initializeLanguage } from './services/i18n'
+@@ -37,7 +45,61 @@ if (!container) {
+ 
+ disableWebViewShortcuts()
+ 
+-const initializeApp = (initialThemeMode: 'light' | 'dark') => {
++const RuntimeContractGate = ({
++  assessment,
++  children,
++}: {
++  assessment: RuntimeContractAssessment | null
++  children: React.ReactNode
++}) => {
++  if (assessment?.status === 'blocked') {
++    return (
++      <div
++        role="alert"
++        style={{
++          alignItems: 'center',
++          background: '#181a1b',
++          color: '#fff',
++          display: 'flex',
++          flexDirection: 'column',
++          gap: '12px',
++          justifyContent: 'center',
++          minHeight: '100vh',
++          padding: '24px',
++          textAlign: 'center',
++        }}
++      >
++        <strong>Clash Verge WebPort 无法安全启动</strong>
++        <span>{assessment.reason ?? '运行时契约校验失败。'}</span>
++      </div>
++    )
++  }
++  return children
++}
++
++const loadRuntimeAssessment = async (): Promise<RuntimeContractAssessment | null> => {
++  if (!window.__LZCAPP_MIHOMO__) return null
++
++  try {
++    const configured = getRuntimeInfo()
++    const actual = isRuntimeInfo(configured)
++      ? configured
++      : await vergeJson<RuntimeInfo>('/runtime-info')
++    const assessment = assessRuntimeContract(actual)
++    persistRuntimeAssessment(assessment)
++    return assessment
++  } catch (error) {
++    console.error('[main.tsx] Runtime contract probe failed:', error)
++    const assessment = assessRuntimeContract(null)
++    persistRuntimeAssessment(assessment)
++    return assessment
++  }
++}
++
++const initializeApp = (
++  initialThemeMode: 'light' | 'dark',
++  runtimeAssessment: RuntimeContractAssessment | null,
++) => {
+   const contexts = [
+     <ThemeModeProvider key="theme" initialState={initialThemeMode} />,
+     <AppStoreProvider key="app-store" />,
+@@ -49,13 +111,15 @@ const initializeApp = (initialThemeMode: 'light' | 'dark') => {
+     <React.StrictMode>
+       <ComposeContextProvider contexts={contexts}>
+         <BaseErrorBoundary>
+-          <SWRConfig value={swrConfig}>
+-            <WindowProvider>
+-              <AppDataProvider>
+-                <RouterProvider router={router} />
+-              </AppDataProvider>
+-            </WindowProvider>
+-          </SWRConfig>
++          <RuntimeContractGate assessment={runtimeAssessment}>
++            <SWRConfig value={swrConfig}>
++              <WindowProvider>
++                <AppDataProvider>
++                  <RouterProvider router={router} />
++                </AppDataProvider>
++              </WindowProvider>
++            </SWRConfig>
++          </RuntimeContractGate>
+         </BaseErrorBoundary>
+       </ComposeContextProvider>
+     </React.StrictMode>,
+@@ -63,11 +127,9 @@ const initializeApp = (initialThemeMode: 'light' | 'dark') => {
+ }
+ 
+ const bootstrap = async () => {
+-  const appDataPromise = preloadAppData()
+-  void preloadHomePageCards()
+-
+-  const { initialThemeMode } = await appDataPromise
+-  initializeApp(initialThemeMode)
++  const { initialThemeMode } = await preloadAppData()
++  const runtimeAssessment = await loadRuntimeAssessment()
++  initializeApp(initialThemeMode, runtimeAssessment)
+ }
+ 
+ bootstrap().catch((error) => {
+@@ -83,7 +145,9 @@ bootstrap().catch((error) => {
+       )
+     })
+     .finally(() => {
+-      initializeApp(resolveThemeMode(getPreloadConfig()))
++      void loadRuntimeAssessment().then((runtimeAssessment) => {
++        initializeApp(resolveThemeMode(getPreloadConfig()), runtimeAssessment)
++      })
+     })
+ })
+ 
+diff --git a/src/pages/_layout.tsx b/src/pages/_layout.tsx
+index 59625514..65cc403c 100644
+--- a/src/pages/_layout.tsx
++++ b/src/pages/_layout.tsx
+@@ -1,4 +1,5 @@
+-import { Paper, ThemeProvider } from '@mui/material'
++import { getRuntimeContractWarning } from '@root/browser/runtime'
++import { Alert, Paper, ThemeProvider } from '@mui/material'
+ import dayjs from 'dayjs'
+ import relativeTime from 'dayjs/plugin/relativeTime'
+ import { useCallback, useEffect, useMemo, useRef } from 'react'
+@@ -36,6 +37,7 @@ dayjs.extend(relativeTime)
+ const OS = getSystem()
+ 
+ const Layout = () => {
++  const warning = getRuntimeContractWarning()
+   const mode = useThemeMode()
+   const isDark = mode !== 'light'
+   const { t } = useTranslation()
+@@ -106,6 +108,7 @@ const Layout = () => {
+ 
+   return (
+     <ThemeProvider theme={theme}>
++      {warning && <Alert severity="warning">{warning.message}</Alert>}
+       {/* 左侧底部窗口控制按钮 */}
+       <NoticeManager position={verge?.notice_position} />
+       <ServiceMigrationDialog />
+diff --git a/src/pages/home.tsx b/src/pages/home.tsx
+index 3937d4e5..06f9b43a 100644
+--- a/src/pages/home.tsx
++++ b/src/pages/home.tsx
+@@ -34,6 +34,8 @@ import { HomeProfileCard } from '@/components/home/home-profile-card'
+ import { ProxyTunCard } from '@/components/home/proxy-tun-card'
+ import { useProfiles } from '@/hooks/use-profiles'
+ import { useVerge } from '@/hooks/use-verge'
++
++import { getWebActionPolicy } from '@root/browser/runtime'
+ import { entry_lightweight_mode } from '@/services/cmds'
+ import { mutate } from '@/services/mutate'
+ import { showNotice } from '@/services/notice-service'
+@@ -62,7 +64,7 @@ const LazyClashInfoCard = lazy(preloadClashInfoCard)
+ const LazySystemInfoCard = lazy(preloadSystemInfoCard)
+ 
+ // Used by bootstrap to initiate optional card imports without blocking render.
+-// eslint-disable-next-line react-refresh/only-export-components
++
+ export const preloadHomePageCards = () =>
+   Promise.all([
+     preloadTestCard().catch(() => {}),
+@@ -234,6 +236,7 @@ const HomePage = () => {
+   const { t } = useTranslation()
+   const { verge } = useVerge()
+   const { current, mutateProfiles } = useProfiles()
++  const lightweightPolicy = getWebActionPolicy('lightweightMode')
+ 
+   // 设置弹窗的状态
+   const [settingsOpen, setSettingsOpen] = useState(false)
+@@ -336,6 +339,8 @@ const HomePage = () => {
+               }
+               size="small"
+               color="inherit"
++              disabled={lightweightPolicy.mode === 'disabled'}
++              aria-label={lightweightPolicy.reason}
+             >
+               <HistoryEduOutlined />
+             </IconButton>
+diff --git a/src/pages/profiles-import.ts b/src/pages/profiles-import.ts
+new file mode 100644
+index 00000000..861eea4f
+--- /dev/null
++++ b/src/pages/profiles-import.ts
+@@ -0,0 +1,65 @@
++const RETRYABLE_IMPORT_ERROR_CODES = new Set([
++  "PROFILE_FETCH_TIMEOUT",
++  "PROFILE_FETCH_NETWORK_ERROR",
++  "PROFILE_FETCH_HTTP_ERROR",
++]);
++
++const READY_IGNORE_PROXY_NAMES = new Set(["DIRECT", "REJECT"]);
++
++export const shouldRetryImportWithSelfProxy = (code: string) =>
++  RETRYABLE_IMPORT_ERROR_CODES.has(code);
++
++export const resolveImportErrorNoticeKey = (
++  code: string,
++  isSameBoxSubHubLazycat: boolean,
++) => {
++  if (code === "PROFILE_HTML_LOGIN_PAGE") {
++    return "profiles.page.feedback.notifications.importFailedHtmlLogin";
++  }
++  if (code === "PROFILE_CONTENT_INVALID") {
++    return "profiles.page.feedback.notifications.importFailedInvalidContent";
++  }
++  if (code === "PROFILE_APPLY_FAILED") {
++    return "profiles.page.feedback.notifications.importFailedApply";
++  }
++  if (code === "IMPORT_NODES_TIMEOUT") {
++    return "profiles.page.feedback.notifications.importNodesTimeout";
++  }
++  if (code === "PROFILE_FETCH_TIMEOUT") {
++    return isSameBoxSubHubLazycat
++      ? "profiles.page.feedback.notifications.importSameBoxSubHubFail"
++      : "profiles.page.feedback.notifications.importFailedTimeout";
++  }
++  if (code === "PROFILE_FETCH_NETWORK_ERROR") {
++    return isSameBoxSubHubLazycat
++      ? "profiles.page.feedback.notifications.importSameBoxSubHubFail"
++      : "profiles.page.feedback.notifications.importFailedNetwork";
++  }
++  if (code === "PROFILE_FETCH_HTTP_ERROR") {
++    return isSameBoxSubHubLazycat
++      ? "profiles.page.feedback.notifications.importSameBoxSubHubFail"
++      : "profiles.page.feedback.notifications.importFailedHttp";
++  }
++  return isSameBoxSubHubLazycat
++    ? "profiles.page.feedback.notifications.importSameBoxSubHubFail"
++    : "profiles.page.feedback.notifications.importFail";
++};
++
++export const hasReadyNodes = (
++  proxyData: {
++    proxies?: IProxyItem[];
++  },
++  providerRecord: Record<string, IProxyProviderItem>,
++) => {
++  const leafProxyCount = (proxyData?.proxies || []).filter((proxy) => {
++    const name = String(proxy?.name || "").toUpperCase();
++    return name && !READY_IGNORE_PROXY_NAMES.has(name);
++  }).length;
++
++  const providerProxyCount = Object.values(providerRecord || {}).reduce(
++    (sum, provider) => sum + (provider?.proxies?.length || 0),
++    0,
++  );
++
++  return leafProxyCount > 0 || providerProxyCount > 0;
++};
+diff --git a/src/pages/profiles.tsx b/src/pages/profiles.tsx
+index 78c38f97..bc64f00f 100644
+--- a/src/pages/profiles.tsx
++++ b/src/pages/profiles.tsx
+@@ -59,9 +59,13 @@ import {
+   useSetProfileLoading,
+ } from '@/store/app-store-context'
+ import { debugLog } from '@/utils/debug'
++import {
++  resolveImportErrorNoticeKey,
++  shouldRetryImportWithSelfProxy,
++} from '@/pages/profiles-import'
+ import { isValidUrl } from '@/utils/network'
+ 
+-// 与 src-tauri/src/main.rs 的 worker_limit 上限(8)保持一致，避免前后端更新风暴不对齐
++// Keep the profile update worker limit aligned with the WebPort API contract.
+ const PROFILE_UPDATE_WORKER_LIMIT = 8
+ const PROFILE_SWITCH_LOADING_DELAY = 400
+ const profilePointerSensor = PointerSensor.configure({
+@@ -212,46 +216,73 @@ const ProfilePage = () => {
+     }
+     setLoading(true)
+ 
++    const getImportErrorCode = (error: unknown) => {
++      if (error && typeof error === 'object') {
++        const code = (error as { code?: unknown }).code
++        if (typeof code === 'string' && code) return code
++      }
++      return ''
++    }
++
+     const handleImportSuccess = async (noticeKey: string) => {
+       showNotice.success(noticeKey)
+       setUrl('')
+       await performRobustRefresh()
+     }
+     try {
+-      await mutate(() => importProfile(url), {
+-        id: 'import-profile',
+-        errorNotice: false,
+-      })
++      // 尝试正常导入
++      const result = await importProfile(url)
++      if (result && typeof result === 'object' && result.status === 'invalid') {
++        throw Object.assign(new Error(result.message), {
++          code: result.kind || 'PROFILE_APPLY_FAILED',
++        })
++      }
+       await handleImportSuccess('shared.feedback.notifications.importSuccess')
+     } catch (initialErr) {
+       console.warn('[订阅导入] 首次导入失败:', initialErr)
+ 
+-      const initialDetail = errorDetail(initialErr)
+-      if (initialDetail.toLowerCase().includes('legacy tls')) {
+-        showNotice.error(initialErr)
++      const initialCode = getImportErrorCode(initialErr)
++      if (
++        initialCode === 'PROFILE_FETCH_TLS_ERROR' ||
++        String(initialErr).toLowerCase().includes('legacy tls')
++      ) {
++        showNotice.error('profiles.page.feedback.notifications.importFail')
++        return
++      }
++
++      if (!shouldRetryImportWithSelfProxy(initialCode)) {
++        showNotice.error(
++          resolveImportErrorNoticeKey(
++            initialCode,
++            /lazycat|heiyu/i.test(url),
++          ),
++          String(initialErr),
++        )
+         return
+       }
+ 
+       showNotice.info('profiles.page.feedback.notifications.importRetry')
+       try {
+-        await mutate(
+-          () =>
+-            importProfile(url, {
+-              with_proxy: false,
+-              self_proxy: true,
+-            }),
+-          {
+-            id: 'import-profile',
+-            errorNotice: false,
+-          },
+-        )
++        // 使用自身代理尝试导入
++        const result = await importProfile(url, {
++          with_proxy: false,
++          self_proxy: true,
++        })
++        if (result && typeof result === 'object' && result.status === 'invalid') {
++          throw Object.assign(new Error(result.message), {
++            code: result.kind || 'PROFILE_APPLY_FAILED',
++          })
++        }
+         await handleImportSuccess(
+           'shared.feedback.notifications.importWithClashProxy',
+         )
+       } catch (retryErr) {
+         showNotice.error(
+-          'profiles.page.feedback.notifications.importFail',
+-          retryErr,
++          resolveImportErrorNoticeKey(
++            getImportErrorCode(retryErr),
++            /lazycat|heiyu/i.test(url),
++          ),
++          String(retryErr),
+         )
+       }
+     } finally {
+diff --git a/src/pages/unlock.tsx b/src/pages/unlock.tsx
+index 254994bc..71f209d4 100644
+--- a/src/pages/unlock.tsx
++++ b/src/pages/unlock.tsx
+@@ -19,21 +19,24 @@ import {
+   alpha,
+   useTheme,
+ } from '@mui/material'
+-import { Channel } from '@tauri-apps/api/core'
++import { invoke } from '@tauri-apps/api/core'
+ import { useLockFn } from 'ahooks'
+-import { useEffect, useRef, useState } from 'react'
++import { useCallback, useEffect, useState } from 'react'
+ import { useTranslation } from 'react-i18next'
+ 
+ import { BaseEmpty, BasePage } from '@/components/base'
+-import {
+-  checkMediaUnlock,
+-  checkMediaUnlockItem,
+-  getUnlockItems,
+-  type UnlockItem,
+-} from '@/services/cmds'
+ import { showNotice } from '@/services/notice-service'
++import { probeRuntime } from '@/services/runtime-probe'
++
++interface UnlockItem {
++  name: string
++  status: string
++  region?: string | null
++  check_time?: string | null
++}
+ 
+ const UNLOCK_RESULTS_STORAGE_KEY = 'clash_verge_unlock_results'
++const UNLOCK_RESULTS_TIME_KEY = 'clash_verge_unlock_time'
+ 
+ const STATUS_LABEL_KEYS: Record<string, string> = {
+   Pending: 'tests.statuses.test.pending',
+@@ -93,103 +96,192 @@ const UnlockPage = () => {
+   const theme = useTheme()
+ 
+   const [unlockItems, setUnlockItems] = useState<UnlockItem[]>([])
+-  const unlockItemsRef = useRef<UnlockItem[]>([])
+   const [isCheckingAll, setIsCheckingAll] = useState(false)
+   const [loadingItems, setLoadingItems] = useState<string[]>([])
+ 
+-  const saveResultsToStorage = (items: UnlockItem[]) => {
+-    try {
+-      localStorage.setItem(UNLOCK_RESULTS_STORAGE_KEY, JSON.stringify(items))
+-    } catch (err) {
+-      console.error('Failed to save results to storage:', err)
+-    }
+-  }
++  const sortItemsByName = useCallback((items: UnlockItem[]) => {
++    return [...items].sort((a, b) => a.name.localeCompare(b.name))
++  }, [])
+ 
+-  useEffect(() => {
+-    let storedItems: UnlockItem[] = []
++  const mergeUnlockItems = useCallback(
++    (defaults: UnlockItem[], existing?: UnlockItem[] | null) => {
++      if (!existing || existing.length === 0) {
++        return defaults
++      }
++
++      const normalizedExisting = dedupeUnlockItems(existing)
++      const existingMap = new Map(
++        normalizedExisting.map((item) => [
++          normalizeUnlockName(item.name),
++          item,
++        ]),
++      )
++      const merged = defaults.map((item) => {
++        const normalizedName = normalizeUnlockName(item.name)
++        const matchedItem = existingMap.get(normalizedName)
++        if (matchedItem) {
++          return { ...matchedItem, name: item.name }
++        }
++        return item
++      })
++
++      const mergedNameSet = new Set(
++        merged.map((item) => normalizeUnlockName(item.name)),
++      )
++      normalizedExisting.forEach((item) => {
++        const normalizedName = normalizeUnlockName(item.name)
++        if (!mergedNameSet.has(normalizedName)) {
++          merged.push(item)
++          mergedNameSet.add(normalizedName)
++        }
++      })
++
++      return merged
++    },
++    [],
++  )
++
++  // 保存测试结果到本地存储
++  const saveResultsToStorage = useCallback(
++    (items: UnlockItem[], time: string | null) => {
++      try {
++        localStorage.setItem(UNLOCK_RESULTS_STORAGE_KEY, JSON.stringify(items))
++        if (time) {
++          localStorage.setItem(UNLOCK_RESULTS_TIME_KEY, time)
++        }
++      } catch (err) {
++        console.error('Failed to save results to storage:', err)
++      }
++    },
++    [],
++  )
++
++  const loadResultsFromStorage = useCallback((): {
++    items: UnlockItem[] | null
++    time: string | null
++  } => {
+     try {
+       const itemsJson = localStorage.getItem(UNLOCK_RESULTS_STORAGE_KEY)
++      const time = localStorage.getItem(UNLOCK_RESULTS_TIME_KEY)
++
+       if (itemsJson) {
+-        storedItems = dedupeUnlockItems(JSON.parse(itemsJson) as UnlockItem[])
++        const parsedItems = JSON.parse(itemsJson) as UnlockItem[]
++        return {
++          items: dedupeUnlockItems(parsedItems),
++          time,
++        }
+       }
+     } catch (err) {
+       console.error('Failed to load results from storage:', err)
+     }
+ 
+-    void (async () => {
++    return { items: null, time: null }
++  }, [])
++
++  const getUnlockItems = useCallback(
++    async (
++      existingItems: UnlockItem[] | null = null,
++      existingTime: string | null = null,
++    ) => {
+       try {
+-        const defaultItems = await getUnlockItems()
+-        const existingMap = new Map(
+-          storedItems.map((item) => [normalizeUnlockName(item.name), item]),
+-        )
+-        const mergedItems = defaultItems.map((item) => {
+-          const matchedItem = existingMap.get(normalizeUnlockName(item.name))
+-          return matchedItem ? { ...matchedItem, name: item.name } : item
+-        })
++        const defaultItems = await invoke<UnlockItem[]>('get_unlock_items')
++        const mergedItems = mergeUnlockItems(defaultItems, existingItems)
++        const sortedItems = sortItemsByName(mergedItems)
+ 
+-        const sortedItems = mergedItems.sort((a, b) =>
+-          a.name.localeCompare(b.name),
+-        )
+-        unlockItemsRef.current = sortedItems
+         setUnlockItems(sortedItems)
++        saveResultsToStorage(
++          sortedItems,
++          existingItems && existingItems.length > 0 ? existingTime : null,
++        )
+       } catch (err: any) {
+         console.error('Failed to get unlock items:', err)
+       }
++    },
++    [mergeUnlockItems, saveResultsToStorage, sortItemsByName],
++  )
++
++  useEffect(() => {
++    void (async () => {
++      const { items: storedItems, time: storedTime } = loadResultsFromStorage()
++
++      if (storedItems && storedItems.length > 0) {
++        setUnlockItems(sortItemsByName(storedItems))
++        await getUnlockItems(storedItems, storedTime)
++      } else {
++        await getUnlockItems()
++      }
+     })()
+-  }, [])
++  }, [getUnlockItems, loadResultsFromStorage, sortItemsByName])
+ 
+-  // 执行全部项目检测
+-  const checkAllMedia = useLockFn(async () => {
+-    const onComplete = new Channel<UnlockItem>((result) => {
+-      const updatedItems = unlockItemsRef.current.map((item) =>
+-        item.name === result.name ? result : item,
+-      )
+-      unlockItemsRef.current = updatedItems
+-      setUnlockItems(updatedItems)
+-      setLoadingItems((items) => items.filter((name) => name !== result.name))
++  const checkMediaUnlock = async () => {
++    const result = await probeRuntime<UnlockItem[]>({
++      kind: 'unlock',
++      timeoutMs: 15000,
+     })
++    return result.data ?? []
++  }
+ 
++  // 执行全部项目检测
++  const checkAllMedia = useLockFn(async () => {
+     try {
+       setIsCheckingAll(true)
+-      setLoadingItems(unlockItems.map((item) => item.name))
+-      const result = await checkMediaUnlock(onComplete)
+-      const sortedItems = result.sort((a, b) => a.name.localeCompare(b.name))
++      const result = await checkMediaUnlock()
++      const sortedItems = sortItemsByName(dedupeUnlockItems(result))
+ 
+-      unlockItemsRef.current = sortedItems
+       setUnlockItems(sortedItems)
+-      saveResultsToStorage(sortedItems)
++      const currentTime = new Date().toLocaleString()
++
++      saveResultsToStorage(sortedItems, currentTime)
++
++      setIsCheckingAll(false)
+     } catch (err: any) {
++      setIsCheckingAll(false)
+       showNotice.error('tests.unlock.page.messages.detectionTimeout', err)
+       console.error('Failed to check media unlock:', err)
+-    } finally {
+-      setLoadingItems([])
+-      setIsCheckingAll(false)
+     }
+   })
+ 
+   // 检测单个流媒体服务
+-  const checkSingleMedia = async (name: string) => {
+-    setLoadingItems((items) => [...items, name])
++  const checkSingleMedia = useLockFn(async (name: string) => {
+     try {
+-      const result = await checkMediaUnlockItem(name)
+-      const updatedItems = unlockItemsRef.current.map((item) =>
+-        item.name === name ? result : item,
++      setLoadingItems((prev) => [...prev, name])
++      const result = await checkMediaUnlock()
++      const dedupedResult = dedupeUnlockItems(result)
++
++      const normalizedTargetName = normalizeUnlockName(name)
++      const targetItem = dedupedResult.find(
++        (item: UnlockItem) =>
++          normalizeUnlockName(item.name) === normalizedTargetName,
+       )
+ 
+-      unlockItemsRef.current = updatedItems
+-      setUnlockItems(updatedItems)
+-      saveResultsToStorage(updatedItems)
++      if (targetItem) {
++        const updatedItems = sortItemsByName(
++          dedupeUnlockItems(
++            unlockItems.map((item: UnlockItem) =>
++              normalizeUnlockName(item.name) === normalizedTargetName
++                ? targetItem
++                : item,
++            ),
++          ),
++        )
++
++        setUnlockItems(updatedItems)
++        const currentTime = new Date().toLocaleString()
++
++        saveResultsToStorage(updatedItems, currentTime)
++      }
++
++      setLoadingItems((prev) => prev.filter((item) => item !== name))
+     } catch (err: any) {
++      setLoadingItems((prev) => prev.filter((item) => item !== name))
+       showNotice.error(
+         'tests.unlock.page.messages.detectionFailedWithName',
+         { name },
+         err,
+       )
+       console.error(`Failed to check ${name}:`, err)
+-    } finally {
+-      setLoadingItems((items) => items.filter((item) => item !== name))
+     }
+-  }
++  })
+ 
+   // 状态颜色
+   const getStatusColor = (status: string) => {
+@@ -215,6 +307,7 @@ const UnlockPage = () => {
+     if (status === 'Yes') return <CheckCircleOutlined />
+     if (status === 'No') return <CancelOutlined />
+     if (status === 'Soon') return <AccessTimeOutlined />
++    if (status.includes('Failed')) return <HelpOutlined />
+     return <HelpOutlined />
+   }
+ 
+@@ -238,11 +331,7 @@ const UnlockPage = () => {
+           <Button
+             variant="contained"
+             size="small"
+-            disabled={
+-              unlockItems.length === 0 ||
+-              isCheckingAll ||
+-              loadingItems.length > 0
+-            }
++            disabled={isCheckingAll}
+             onClick={checkAllMedia}
+             startIcon={
+               isCheckingAll ? (
+diff --git a/src/services/cmds.ts b/src/services/cmds.ts
+index c5d7c119..bc222523 100644
+--- a/src/services/cmds.ts
++++ b/src/services/cmds.ts
+@@ -1,3 +1,4 @@
++import { getWebProxyView } from '@root/browser/proxy-view'
+ import { Channel, invoke } from '@tauri-apps/api/core'
+ import type { DownloadEvent } from '@tauri-apps/plugin-updater'
+ import dayjs from 'dayjs'
+@@ -52,7 +53,7 @@ export async function saveProfileFile(index: string, fileData: string) {
+ }
+ 
+ export async function importProfile(url: string, option?: IProfileOption) {
+-  return invoke<void>('import_profile', {
++  return invoke<ValidationOutcome | null>('import_profile', {
+     url,
+     option: option || { with_proxy: true },
+   })
+@@ -135,7 +136,7 @@ export async function forgetSelectedNode(groupName: string) {
+ }
+ 
+ export async function getProxyView(): Promise<ProxyViewV1> {
+-  const view = await invoke<ProxyViewV1>('get_proxy_view')
++  const view = await getWebProxyView()
+   if (view.schemaVersion !== 1) {
+     throw new Error('Unsupported proxy view schema: ' + view.schemaVersion)
+   }
+diff --git a/src/services/delay.test.ts b/src/services/delay.test.ts
+index 5f6a51af..724690a8 100644
+--- a/src/services/delay.test.ts
++++ b/src/services/delay.test.ts
+@@ -141,8 +141,8 @@ test('same-named provider members keep separate measurements and listeners', asy
+   second.node.source = { kind: 'provider', providerName: 'b', proxyName: 'N' }
+   const { healthcheckNodeInProvider } = await import('tauri-plugin-mihomo-api')
+   vi.mocked(healthcheckNodeInProvider)
+-    .mockResolvedValueOnce({ delay: 40 })
+-    .mockResolvedValueOnce({ delay: 125 })
++    .mockResolvedValueOnce({ delay: 40, target: 'N', status: 'success' })
++    .mockResolvedValueOnce({ delay: 125, target: 'N', status: 'success' })
+   const firstListener = vi.fn()
+   const secondListener = vi.fn()
+   delayManager.setListener(first, 'provider-collision', firstListener)
+diff --git a/src/services/delay.ts b/src/services/delay.ts
+index 323809b6..a3abb54d 100644
+--- a/src/services/delay.ts
++++ b/src/services/delay.ts
+@@ -328,7 +328,17 @@ class DelayManager {
+       debugLog(`[DelayManager] 调用API测试延迟，代理: ${name}, URL: ${url}`)
+ 
+       const timeoutPromise = new Promise<ProxyDelay>((resolve) => {
+-        setTimeout(() => resolve({ delay: 0 }), timeout)
++        setTimeout(
++          () =>
++            resolve({
++              target: name,
++              status: 'timeout',
++              delay: 0,
++              errorCode: 'timeout',
++              errorMessage: '延迟测试超时',
++            }),
++          timeout,
++        )
+       })
+ 
+       const result = await Promise.race([
+diff --git a/src/services/monaco.ts b/src/services/monaco.ts
+index e590d439..4d67b626 100644
+--- a/src/services/monaco.ts
++++ b/src/services/monaco.ts
+@@ -50,9 +50,9 @@ export const loadMonacoEditor = () => {
+   loadPromise ??= Promise.all([
+     import('@monaco-editor/react'),
+     import('monaco-editor'),
+-    import('monaco-editor/editor/editor.worker?worker'),
+-    import('monaco-editor/language/css/css.worker?worker'),
+-    import('monaco-editor/language/typescript/ts.worker?worker'),
++    import('monaco-editor/esm/vs/editor/editor.worker?worker'),
++    import('monaco-editor/esm/vs/language/css/css.worker?worker'),
++    import('monaco-editor/esm/vs/language/typescript/ts.worker?worker'),
+     import('monaco-yaml'),
+     import('meta-json-schema/schemas/meta-json-schema.json'),
+     import('types-pac/pac.d.ts?raw'),
+diff --git a/src/services/profile-health.test.ts b/src/services/profile-health.test.ts
+new file mode 100644
+index 00000000..3354eb37
+--- /dev/null
++++ b/src/services/profile-health.test.ts
+@@ -0,0 +1,74 @@
++import { describe, expect, it } from "vitest";
++
++import { getExpectedRuntimeInfo } from "../../../../browser/runtime";
++
++import {
++  getProfileHealth,
++  hasUsableProxyProviderSnapshot,
++  hasUsableProxySnapshot,
++  shouldFreezeProxySnapshots,
++  shouldRefreshAfterRecovery,
++} from "./profile-health";
++
++describe("profile health helpers", () => {
++  it("freezes proxy snapshots while runtime profile health is degraded", () => {
++    expect(
++      shouldFreezeProxySnapshots({
++        status: "degraded",
++        activeProfileId: "demo",
++        lastGoodProfileId: "demo",
++        lastAppliedAt: "2026-03-31T01:44:24Z",
++        lastError: "订阅拉取超时（20s）",
++        providerCounts: { "high-premium": 7 },
++      }),
++    ).toBe(true);
++  });
++
++  it("requests a recovery refresh only when health turns ready again", () => {
++    const degraded = {
++      status: "degraded" as const,
++      activeProfileId: "demo",
++      lastGoodProfileId: "demo",
++      lastAppliedAt: "2026-03-31T01:44:24Z",
++      lastError: "订阅拉取超时（20s）",
++      providerCounts: { "high-premium": 7 },
++    };
++    const ready = {
++      ...degraded,
++      status: "ready" as const,
++      lastError: "",
++    };
++
++    expect(shouldRefreshAfterRecovery(degraded, ready)).toBe(true);
++    expect(shouldRefreshAfterRecovery(ready, ready)).toBe(false);
++  });
++
++  it("treats proxy and provider snapshots as usable when shape is complete", () => {
++    expect(
++      hasUsableProxySnapshot({
++        groups: [],
++        proxies: [],
++        global: { all: [] },
++      }),
++    ).toBe(true);
++    expect(hasUsableProxyProviderSnapshot({ "high-premium": {} })).toBe(true);
++    expect(hasUsableProxySnapshot(null)).toBe(false);
++  });
++
++  it("extracts optional profile health from runtime info", () => {
++    const expected = getExpectedRuntimeInfo();
++    const runtimeInfo = {
++      ...expected,
++      profileHealth: {
++        status: "degraded" as const,
++        activeProfileId: "demo",
++        lastGoodProfileId: "demo",
++        lastAppliedAt: "2026-03-31T01:44:24Z",
++        lastError: "订阅拉取超时（20s）",
++        providerCounts: { "high-premium": 7 },
++      },
++    };
++
++    expect(getProfileHealth(runtimeInfo)?.status).toBe("degraded");
++  });
++});
+diff --git a/src/services/profile-health.ts b/src/services/profile-health.ts
+new file mode 100644
+index 00000000..b0cd82e9
+--- /dev/null
++++ b/src/services/profile-health.ts
+@@ -0,0 +1,39 @@
++import type { RuntimeInfo, RuntimeProfileHealth } from "@root/browser/runtime";
++
++export const getProfileHealth = (
++  runtimeInfo: RuntimeInfo | null | undefined,
++): RuntimeProfileHealth | null => {
++  const health = runtimeInfo?.profileHealth;
++  if (!health) {
++    return null;
++  }
++  return health;
++};
++
++export const shouldFreezeProxySnapshots = (
++  health: RuntimeProfileHealth | null | undefined,
++) => health?.status === "degraded";
++
++export const shouldRefreshAfterRecovery = (
++  previous: RuntimeProfileHealth | null | undefined,
++  next: RuntimeProfileHealth | null | undefined,
++) => previous?.status === "degraded" && next?.status === "ready";
++
++export const hasUsableProxySnapshot = (value: unknown) => {
++  if (!value || typeof value !== "object") {
++    return false;
++  }
++  const candidate = value as {
++    groups?: unknown[];
++    proxies?: unknown[];
++    global?: { all?: unknown[] } | null;
++  };
++  return (
++    Array.isArray(candidate.groups) ||
++    Array.isArray(candidate.proxies) ||
++    !!candidate.global
++  );
++};
++
++export const hasUsableProxyProviderSnapshot = (value: unknown) =>
++  !!value && typeof value === "object";
+diff --git a/src/services/proxy-scroll-positions.test.ts b/src/services/proxy-scroll-positions.test.ts
+new file mode 100644
+index 00000000..be67d716
+--- /dev/null
++++ b/src/services/proxy-scroll-positions.test.ts
+@@ -0,0 +1,108 @@
++import { afterEach, describe, expect, it, vi } from 'vitest'
++
++import {
++  getProxyScrollPosition,
++  PROXY_SCROLL_POSITIONS_KEY,
++  PROXY_SCROLL_POSITIONS_SCHEMA_VERSION,
++  saveProxyScrollPosition,
++} from './proxy-scroll-positions'
++
++const createStorage = () => {
++  const values = new Map<string, string>()
++  return {
++    getItem: vi.fn((key: string) => values.get(key) ?? null),
++    setItem: vi.fn((key: string, value: string) => values.set(key, value)),
++    removeItem: vi.fn((key: string) => values.delete(key)),
++  } as unknown as Storage
++}
++
++afterEach(() => {
++  vi.restoreAllMocks()
++})
++
++describe('proxy scroll position storage', () => {
++  it('migrates v2.4.7 rule and global positions in place', () => {
++    const storage = createStorage()
++    storage.setItem(
++      PROXY_SCROLL_POSITIONS_KEY,
++      JSON.stringify({ rule: 120, global: 240 }),
++    )
++
++    expect(getProxyScrollPosition('rule:normal', storage)).toBe(120)
++    expect(JSON.parse(storage.getItem(PROXY_SCROLL_POSITIONS_KEY) ?? '')).toEqual(
++      {
++        version: PROXY_SCROLL_POSITIONS_SCHEMA_VERSION,
++        'rule:normal': 120,
++        'global:normal': 240,
++      },
++    )
++    expect(getProxyScrollPosition('global:normal', storage)).toBe(240)
++  })
++
++  it('accepts existing new keys and adds an explicit schema version', () => {
++    const storage = createStorage()
++    storage.setItem(
++      PROXY_SCROLL_POSITIONS_KEY,
++      JSON.stringify({ 'rule:normal': 80 }),
++    )
++
++    expect(getProxyScrollPosition('rule:normal', storage)).toBe(80)
++    expect(JSON.parse(storage.getItem(PROXY_SCROLL_POSITIONS_KEY) ?? '')).toEqual(
++      { version: PROXY_SCROLL_POSITIONS_SCHEMA_VERSION, 'rule:normal': 80 },
++    )
++  })
++
++  it('drops unknown schema versions and malformed stored values', () => {
++    const storage = createStorage()
++    storage.setItem(
++      PROXY_SCROLL_POSITIONS_KEY,
++      JSON.stringify({ version: PROXY_SCROLL_POSITIONS_SCHEMA_VERSION + 1 }),
++    )
++    expect(getProxyScrollPosition('rule:normal', storage)).toBeUndefined()
++    expect(storage.getItem(PROXY_SCROLL_POSITIONS_KEY)).toBeNull()
++
++    storage.setItem(PROXY_SCROLL_POSITIONS_KEY, 'not-json')
++    expect(getProxyScrollPosition('global:normal', storage)).toBeUndefined()
++    expect(storage.getItem(PROXY_SCROLL_POSITIONS_KEY)).toBeNull()
++  })
++
++  it('removes legacy fields when writing a migrated key', () => {
++    const storage = createStorage()
++    storage.setItem(
++      PROXY_SCROLL_POSITIONS_KEY,
++      JSON.stringify({ version: PROXY_SCROLL_POSITIONS_SCHEMA_VERSION, rule: 120 }),
++    )
++
++    saveProxyScrollPosition('rule:normal', 300, storage)
++    expect(JSON.parse(storage.getItem(PROXY_SCROLL_POSITIONS_KEY) ?? '')).toEqual(
++      {
++        version: PROXY_SCROLL_POSITIONS_SCHEMA_VERSION,
++        'rule:normal': 300,
++      },
++    )
++  })
++
++  it('treats a throwing localStorage getter as unavailable', () => {
++    const originalDescriptor = Object.getOwnPropertyDescriptor(
++      globalThis,
++      'localStorage',
++    )
++    Object.defineProperty(globalThis, 'localStorage', {
++      configurable: true,
++      get() {
++        throw new Error('storage is unavailable')
++      },
++    })
++
++    try {
++      expect(getProxyScrollPosition('rule:normal')).toBeUndefined()
++      expect(() => saveProxyScrollPosition('rule:normal', 300)).not.toThrow()
++    } finally {
++      if (originalDescriptor) {
++        Object.defineProperty(globalThis, 'localStorage', originalDescriptor)
++      } else {
++        Reflect.deleteProperty(globalThis, 'localStorage')
++      }
++    }
++  })
++})
+diff --git a/src/services/proxy-scroll-positions.ts b/src/services/proxy-scroll-positions.ts
+new file mode 100644
+index 00000000..24c0a78a
+--- /dev/null
++++ b/src/services/proxy-scroll-positions.ts
+@@ -0,0 +1,127 @@
++export const PROXY_SCROLL_POSITIONS_KEY = 'proxy-scroll-positions'
++export const PROXY_SCROLL_POSITIONS_SCHEMA_VERSION = 2
++
++const LEGACY_SCROLL_POSITION_KEYS = ['rule', 'global'] as const
++
++type StoredScrollPositions = Record<string, unknown>
++
++const getStorage = (): Storage | null => {
++  try {
++    return globalThis.localStorage ?? null
++  } catch {
++    return null
++  }
++}
++
++const isRecord = (value: unknown): value is StoredScrollPositions =>
++  typeof value === 'object' && value !== null && !Array.isArray(value)
++
++const isScrollPosition = (value: unknown): value is number =>
++  typeof value === 'number' && Number.isFinite(value) && value >= 0
++
++const legacyKeyFor = (scrollPositionKey: string) => {
++  if (!scrollPositionKey.endsWith(':normal')) return null
++
++  const mode = scrollPositionKey.slice(0, -':normal'.length)
++  return LEGACY_SCROLL_POSITION_KEYS.includes(
++    mode as (typeof LEGACY_SCROLL_POSITION_KEYS)[number],
++  )
++    ? mode
++    : null
++}
++
++const clearStoredPositions = (storage: Storage) => {
++  try {
++    storage.removeItem(PROXY_SCROLL_POSITIONS_KEY)
++  } catch {
++    // Storage can be unavailable in private browsing or when quota is denied.
++  }
++}
++
++const persistPositions = (storage: Storage, positions: StoredScrollPositions) => {
++  try {
++    storage.setItem(
++      PROXY_SCROLL_POSITIONS_KEY,
++      JSON.stringify(positions),
++    )
++  } catch (error) {
++    console.error('Error saving scroll position:', error)
++  }
++}
++
++const loadPositions = (storage: Storage): StoredScrollPositions | null => {
++  let raw: string | null
++  try {
++    raw = storage.getItem(PROXY_SCROLL_POSITIONS_KEY)
++  } catch {
++    return null
++  }
++  if (!raw) return null
++
++  let parsed: unknown
++  try {
++    parsed = JSON.parse(raw)
++  } catch {
++    clearStoredPositions(storage)
++    return null
++  }
++  if (!isRecord(parsed)) {
++    clearStoredPositions(storage)
++    return null
++  }
++
++  if (
++    parsed.version !== undefined &&
++    parsed.version !== PROXY_SCROLL_POSITIONS_SCHEMA_VERSION
++  ) {
++    clearStoredPositions(storage)
++    return null
++  }
++
++  const positions = { ...parsed }
++  let changed = parsed.version !== PROXY_SCROLL_POSITIONS_SCHEMA_VERSION
++
++  for (const legacyKey of LEGACY_SCROLL_POSITION_KEYS) {
++    const newKey = `${legacyKey}:normal`
++    if (!isScrollPosition(positions[newKey]) && isScrollPosition(positions[legacyKey])) {
++      positions[newKey] = positions[legacyKey]
++      changed = true
++    }
++    if (legacyKey in positions) {
++      delete positions[legacyKey]
++      changed = true
++    }
++  }
++
++  positions.version = PROXY_SCROLL_POSITIONS_SCHEMA_VERSION
++  if (changed) persistPositions(storage, positions)
++  return positions
++}
++
++export const getProxyScrollPosition = (
++  scrollPositionKey: string,
++  storage = getStorage(),
++): number | undefined => {
++  if (!storage) return undefined
++
++  const positions = loadPositions(storage)
++  const savedPosition = positions?.[scrollPositionKey]
++  return isScrollPosition(savedPosition) ? savedPosition : undefined
++}
++
++export const saveProxyScrollPosition = (
++  scrollPositionKey: string,
++  scrollTop: number,
++  storage = getStorage(),
++) => {
++  if (!storage || !isScrollPosition(scrollTop)) return
++
++  const positions = loadPositions(storage) ?? {
++    version: PROXY_SCROLL_POSITIONS_SCHEMA_VERSION,
++  }
++  const legacyKey = legacyKeyFor(scrollPositionKey)
++  if (legacyKey) delete positions[legacyKey]
++  positions[scrollPositionKey] = scrollTop
++  positions.version = PROXY_SCROLL_POSITIONS_SCHEMA_VERSION
++  persistPositions(storage, positions)
++}
+diff --git a/src/services/runtime-probe.test.ts b/src/services/runtime-probe.test.ts
+new file mode 100644
+index 00000000..ee8943af
+--- /dev/null
++++ b/src/services/runtime-probe.test.ts
+@@ -0,0 +1,91 @@
++import { afterEach, describe, expect, it, vi } from "vitest";
++
++import { probeRuntime } from "./runtime-probe";
++
++afterEach(() => {
++  vi.unstubAllGlobals();
++  vi.restoreAllMocks();
++});
++
++describe("probeRuntime", () => {
++  it("maps plain-text timeout failures into structured probe errors", async () => {
++    vi.stubGlobal("window", {
++      __LZCAPP_MIHOMO__: {
++        vergeApiBaseUrl: "/verge-api",
++      },
++    } as typeof globalThis & {
++      __LZCAPP_MIHOMO__?: {
++        vergeApiBaseUrl?: string;
++      };
++    });
++
++    vi.stubGlobal(
++      "fetch",
++      vi.fn(async () =>
++        new Response("ETIMEDOUT timeout\n", {
++          status: 502,
++          headers: {
++            "Content-Type": "text/plain; charset=utf-8",
++          },
++        }),
++      ),
++    );
++
++    await expect(
++      probeRuntime({
++        kind: "ip_info",
++        timeoutMs: 5000,
++      }),
++    ).rejects.toMatchObject({
++      code: "TIMEOUT",
++      message: "ETIMEDOUT timeout",
++    });
++  });
++
++  it("preserves successful JSON envelopes from the probe backend", async () => {
++    vi.stubGlobal("window", {
++      __LZCAPP_MIHOMO__: {
++        vergeApiBaseUrl: "/verge-api",
++      },
++    } as typeof globalThis & {
++      __LZCAPP_MIHOMO__?: {
++        vergeApiBaseUrl?: string;
++      };
++    });
++
++    vi.stubGlobal(
++      "fetch",
++      vi.fn(async () =>
++        new Response(
++          JSON.stringify({
++            ok: true,
++            code: "OK",
++            message: "ok",
++            durationMs: 42,
++            fromCache: false,
++            data: { status: "success" },
++          }),
++          {
++            status: 200,
++            headers: {
++              "Content-Type": "application/json; charset=utf-8",
++            },
++          },
++        ),
++      ),
++    );
++
++    await expect(
++      probeRuntime<{ status: string }>({
++        kind: "unlock",
++      }),
++    ).resolves.toEqual({
++      ok: true,
++      code: "OK",
++      message: "ok",
++      durationMs: 42,
++      fromCache: false,
++      data: { status: "success" },
++    });
++  });
++});
+diff --git a/src/services/runtime-probe.ts b/src/services/runtime-probe.ts
+new file mode 100644
+index 00000000..155f053e
+--- /dev/null
++++ b/src/services/runtime-probe.ts
+@@ -0,0 +1,177 @@
++import { invoke } from "@tauri-apps/api/core";
++import { extractErrorMessage } from "foxts/extract-error-message";
++
++export type ProbeCode =
++  | "OK"
++  | "TIMEOUT"
++  | "UPSTREAM_TLS"
++  | "PROXY_UNREACHABLE"
++  | "NO_ACTIVE_PROXY"
++  | "TARGET_BLOCKED"
++  | "UNKNOWN";
++
++export type ProbeEnvelope<T = unknown> = {
++  ok: boolean;
++  code: ProbeCode;
++  message: string;
++  data?: T;
++  durationMs: number;
++  fromCache: boolean;
++};
++
++export type ProbeRequest = {
++  kind: "ip_info" | "unlock" | "url";
++  target?: string;
++  timeoutMs?: number;
++  proxyGroup?: string;
++};
++
++const hasWebPortRuntime = () =>
++  typeof window !== "undefined" &&
++  !!window.__LZCAPP_MIHOMO__?.vergeApiBaseUrl;
++
++export const createProbeError = (
++  code: ProbeCode,
++  message: string,
++  payload?: unknown,
++) => {
++  const error = new Error(message) as Error & {
++    code?: ProbeCode;
++    payload?: unknown;
++  };
++  error.code = code;
++  error.payload = payload;
++  return error;
++};
++
++const classifyProbeFailure = (
++  rawText: string,
++  status: number,
++): Pick<ProbeEnvelope, "code" | "message"> => {
++  const text = rawText.trim();
++  const upper = text.toUpperCase();
++
++  if (upper.includes("ETIMEDOUT") || upper.includes("TIMEOUT")) {
++    return {
++      code: "TIMEOUT",
++      message: text || "探测超时。",
++    };
++  }
++
++  if (
++    upper.includes("ECONNREFUSED") ||
++    upper.includes("ECONNRESET") ||
++    upper.includes("EHOSTUNREACH") ||
++    upper.includes("ENETUNREACH")
++  ) {
++    return {
++      code: "PROXY_UNREACHABLE",
++      message: text || "探测代理不可达。",
++    };
++  }
++
++  if (upper.includes("TLS") || upper.includes("SSL")) {
++    return {
++      code: "UPSTREAM_TLS",
++      message: text || "上游 TLS 握手失败。",
++    };
++  }
++
++  return {
++    code: "UNKNOWN",
++    message: text || `HTTP ${status}`,
++  };
++};
++
++const buildProbeEnvelope = <T>(
++  response: Response,
++  rawText: string,
++): ProbeEnvelope<T> => {
++  const failure = classifyProbeFailure(rawText, response.status);
++  return {
++    ok: false,
++    code: failure.code,
++    message: failure.message,
++    durationMs: 0,
++    fromCache: false,
++  };
++};
++
++const parseProbeResponse = async <T>(response: Response) => {
++  let payload: ProbeEnvelope<T>;
++  const rawText = await response.text();
++
++  try {
++    const contentType = response.headers.get("content-type") ?? "";
++    if (contentType.includes("application/json")) {
++      payload = JSON.parse(rawText) as ProbeEnvelope<T>;
++    } else {
++      payload = buildProbeEnvelope<T>(response, rawText);
++    }
++  } catch (error) {
++    payload = buildProbeEnvelope<T>(
++      response,
++      rawText || extractErrorMessage(error) || "探测响应解析失败。",
++    );
++  }
++
++  if (!response.ok || !payload.ok) {
++    throw createProbeError(
++      payload?.code || "UNKNOWN",
++      payload.message || "探测失败。",
++      payload,
++    );
++  }
++
++  return payload;
++};
++
++export const probeRuntime = async <T>(
++  request: ProbeRequest,
++): Promise<ProbeEnvelope<T>> => {
++  if (hasWebPortRuntime()) {
++    const response = await fetch("/fetch/probe", {
++      method: "POST",
++      credentials: "same-origin",
++      headers: {
++        "Content-Type": "application/json",
++      },
++      body: JSON.stringify(request),
++    });
++    return parseProbeResponse<T>(response);
++  }
++
++  if (request.kind === "ip_info") {
++    const result = await invoke<T>("get_ip_info");
++    return {
++      ok: true,
++      code: "OK",
++      message: "ok",
++      data: result,
++      durationMs: 0,
++      fromCache: false,
++    };
++  }
++
++  if (request.kind === "unlock") {
++    const result = await invoke<T>("check_media_unlock");
++    return {
++      ok: true,
++      code: "OK",
++      message: "ok",
++      data: result,
++      durationMs: 0,
++      fromCache: false,
++    };
++  }
++
++  const result = await invoke<T>("test_delay", { url: request.target });
++  return {
++    ok: true,
++    code: "OK",
++    message: "ok",
++    data: result,
++    durationMs: 0,
++    fromCache: false,
++  };
++};
+diff --git a/src/services/web-runtime.test.ts b/src/services/web-runtime.test.ts
+new file mode 100644
+index 00000000..d0450f64
+--- /dev/null
++++ b/src/services/web-runtime.test.ts
+@@ -0,0 +1,147 @@
++import { afterEach, describe, expect, it, vi } from "vitest";
++
++import {
++  assessRuntimeContract,
++  createWebCommandResult,
++  getExpectedRuntimeInfo,
++  getWebActionPolicy,
++} from "../../../../browser/runtime";
++
++afterEach(() => {
++  vi.unstubAllGlobals();
++});
++
++describe("getWebActionPolicy", () => {
++  it("marks system proxy as disabled with lazycat guidance", () => {
++    vi.stubGlobal("window", {
++      __LZCAPP_MIHOMO__: {},
++    } as unknown as typeof globalThis);
++
++    expect(getWebActionPolicy("systemProxy")).toEqual({
++      mode: "disabled",
++      reason:
++        "LazyCat 微服 Web 版不支持接管宿主机系统代理，请使用虚拟网卡模式（TUN）或显式代理入口。",
++    });
++  });
++
++  it("marks directory open as degraded with copy-path fallback", () => {
++    vi.stubGlobal("window", {
++      __LZCAPP_MIHOMO__: {},
++    } as unknown as typeof globalThis);
++
++    expect(getWebActionPolicy("directoryOpen")).toEqual({
++      mode: "degraded",
++      reason: "LazyCat Web 版无法直接打开宿主机目录，将改为复制目录路径。",
++      label: "复制路径",
++      fallback: "copy-path",
++    });
++  });
++
++  it("marks devtools as disabled with browser guidance", () => {
++    vi.stubGlobal("window", {
++      __LZCAPP_MIHOMO__: {},
++    } as unknown as typeof globalThis);
++
++    expect(getWebActionPolicy("devtools")).toEqual({
++      mode: "disabled",
++      reason: "请使用浏览器 DevTools。",
++      label: "浏览器 DevTools",
++    });
++  });
++
++  it("ignores runtime capability overrides for system proxy", () => {
++    const expected = getExpectedRuntimeInfo();
++    vi.stubGlobal("window", {
++      __LZCAPP_MIHOMO__: {
++        runtimeInfo: {
++          ...expected,
++          capabilities: {
++            ...expected.capabilities,
++            systemProxy: {
++              mode: "degraded",
++              reason: "runtime override",
++              label: "custom policy",
++            },
++          },
++        },
++      },
++    } as typeof globalThis & {
++      __LZCAPP_MIHOMO__?: {
++        runtimeInfo?: typeof expected;
++      };
++    });
++
++    expect(getWebActionPolicy("systemProxy")).toEqual({
++      mode: "disabled",
++      reason:
++        "LazyCat 微服 Web 版不支持接管宿主机系统代理，请使用虚拟网卡模式（TUN）或显式代理入口。",
++    });
++  });
++
++  it("prefers runtime capability overrides when the backend reports empty runtime mode", () => {
++    const expected = getExpectedRuntimeInfo();
++    vi.stubGlobal("window", {
++      __LZCAPP_MIHOMO__: {
++        runtimeInfo: {
++          ...expected,
++          capabilities: {
++            ...expected.capabilities,
++            runtimeProfile: {
++              mode: "degraded",
++              reason:
++                "当前没有活动配置文件；运行态修改会写入空配置运行态，需要持久配置时请先新建或选择配置。",
++              label: "空配置运行态",
++            },
++          },
++        },
++      },
++    } as typeof globalThis & {
++      __LZCAPP_MIHOMO__?: {
++        runtimeInfo?: typeof expected;
++      };
++    });
++
++    expect(getWebActionPolicy("runtimeProfile")).toEqual({
++      mode: "degraded",
++      reason:
++        "当前没有活动配置文件；运行态修改会写入空配置运行态，需要持久配置时请先新建或选择配置。",
++      label: "空配置运行态",
++    });
++  });
++});
++
++describe("createWebCommandResult", () => {
++  it("preserves kind, message and data payload", () => {
++    expect(
++      createWebCommandResult("degraded", "copied", { path: "/tmp/demo" }),
++    ).toEqual({
++      kind: "degraded",
++      message: "copied",
++      data: { path: "/tmp/demo" },
++    });
++  });
++});
++
++describe("assessRuntimeContract", () => {
++  it("blocks startup when package fingerprint mismatches", () => {
++    const expected = getExpectedRuntimeInfo();
++    expect(
++      assessRuntimeContract({
++        ...expected,
++        packageFingerprint: `${expected.packageFingerprint}-drift`,
++      }).status,
++    ).toBe("blocked");
++  });
++
++  it("warns on build drift when contract is still compatible", () => {
++    const expected = getExpectedRuntimeInfo();
++    const assessment = assessRuntimeContract({
++      ...expected,
++      buildId: `${expected.buildId}-next`,
++      gitCommit: "deadbeef",
++    });
++
++    expect(assessment.status).toBe("warning");
++    expect(assessment.warning?.code).toBe("DEPLOYMENT_DRIFT");
++  });
++});
+diff --git a/src/services/webdav-status.test.ts b/src/services/webdav-status.test.ts
+new file mode 100644
+index 00000000..2f151fb1
+--- /dev/null
++++ b/src/services/webdav-status.test.ts
+@@ -0,0 +1,211 @@
++import { afterEach, describe, expect, it, vi } from 'vitest'
++
++import {
++  buildWebdavSignature,
++  clearWebdavStatus,
++  getWebdavStatus,
++  setWebdavStatus,
++  WEBDAV_STATUS_KEY,
++  WEBDAV_STATUS_SCHEMA_VERSION,
++  WEBDAV_STATUS_TTL_MS,
++} from './webdav-status'
++
++const NOW = 1_700_000_000_000
++
++const createStorage = () => {
++  const values = new Map<string, string>()
++  return {
++    getItem: vi.fn((key: string) => values.get(key) ?? null),
++    setItem: vi.fn((key: string, value: string) => values.set(key, value)),
++    removeItem: vi.fn((key: string) => values.delete(key)),
++  } as unknown as Storage
++}
++
++const config = {
++  webdav_url: 'https://dav.example.test/backup',
++  webdav_username: 'alice',
++  webdav_password: 'do-not-store-this',
++}
++
++afterEach(() => {
++  vi.unstubAllGlobals()
++  vi.restoreAllMocks()
++})
++
++describe('WebDAV status storage', () => {
++  it('uses an endpoint and username identity without persisting the password', () => {
++    const storage = createStorage()
++    vi.stubGlobal('localStorage', storage)
++    vi.spyOn(Date, 'now').mockReturnValue(NOW)
++
++    const signature = buildWebdavSignature(config)
++    setWebdavStatus(signature, 'ready')
++
++    const raw = storage.getItem(WEBDAV_STATUS_KEY) ?? ''
++    const payload = JSON.parse(raw) as Record<string, unknown>
++    expect(signature).toBe(
++      JSON.stringify([config.webdav_url, config.webdav_username]),
++    )
++    expect(raw).not.toContain(config.webdav_password)
++    expect(payload.version).toBe(WEBDAV_STATUS_SCHEMA_VERSION)
++    expect(payload.updatedAt).toBe(NOW)
++    expect(getWebdavStatus(signature)).toBe('ready')
++  })
++
++  it('removes expired status instead of returning stale state', () => {
++    const storage = createStorage()
++    vi.stubGlobal('localStorage', storage)
++    vi.spyOn(Date, 'now').mockReturnValue(NOW)
++    const signature = buildWebdavSignature(config)
++
++    storage.setItem(
++      WEBDAV_STATUS_KEY,
++      JSON.stringify({
++        version: WEBDAV_STATUS_SCHEMA_VERSION,
++        signature,
++        status: 'ready',
++        updatedAt: NOW - WEBDAV_STATUS_TTL_MS - 1,
++      }),
++    )
++
++    expect(getWebdavStatus(signature)).toBe('unknown')
++    expect(storage.getItem(WEBDAV_STATUS_KEY)).toBeNull()
++  })
++
++  it('clears legacy password-bearing entries without migrating them', () => {
++    const storage = createStorage()
++    vi.stubGlobal('localStorage', storage)
++    vi.spyOn(Date, 'now').mockReturnValue(NOW)
++    const signature = buildWebdavSignature(config)
++    const legacySignature = JSON.stringify([
++      config.webdav_url,
++      config.webdav_username,
++      config.webdav_password,
++    ])
++
++    storage.setItem(
++      WEBDAV_STATUS_KEY,
++      JSON.stringify({
++        signature: legacySignature,
++        status: 'ready',
++        updatedAt: NOW,
++      }),
++    )
++
++    expect(getWebdavStatus(signature)).toBe('unknown')
++    expect(storage.getItem(WEBDAV_STATUS_KEY)).toBeNull()
++  })
++
++  it('clears password-bearing fields even when the signature is current', () => {
++    const storage = createStorage()
++    vi.stubGlobal('localStorage', storage)
++    vi.spyOn(Date, 'now').mockReturnValue(NOW)
++    const signature = buildWebdavSignature(config)
++
++    storage.setItem(
++      WEBDAV_STATUS_KEY,
++      JSON.stringify({
++        version: WEBDAV_STATUS_SCHEMA_VERSION,
++        signature,
++        status: 'ready',
++        updatedAt: NOW,
++        password: config.webdav_password,
++      }),
++    )
++
++    expect(getWebdavStatus(signature)).toBe('unknown')
++    expect(storage.getItem(WEBDAV_STATUS_KEY)).toBeNull()
++  })
++
++  it('clears unknown schema versions and explicit invalidation', () => {
++    const storage = createStorage()
++    vi.stubGlobal('localStorage', storage)
++    vi.spyOn(Date, 'now').mockReturnValue(NOW)
++    const signature = buildWebdavSignature(config)
++
++    storage.setItem(
++      WEBDAV_STATUS_KEY,
++      JSON.stringify({
++        version: WEBDAV_STATUS_SCHEMA_VERSION + 1,
++        signature,
++        status: 'ready',
++        updatedAt: NOW,
++      }),
++    )
++    expect(getWebdavStatus(signature)).toBe('unknown')
++    expect(storage.getItem(WEBDAV_STATUS_KEY)).toBeNull()
++
++    setWebdavStatus(signature, 'ready')
++    clearWebdavStatus()
++    expect(storage.getItem(WEBDAV_STATUS_KEY)).toBeNull()
++  })
++
++  it('removes status for an empty configuration or explicit unknown state', () => {
++    const storage = createStorage()
++    vi.stubGlobal('localStorage', storage)
++    vi.spyOn(Date, 'now').mockReturnValue(NOW)
++    const signature = buildWebdavSignature(config)
++
++    setWebdavStatus(signature, 'ready')
++    expect(getWebdavStatus('')).toBe('unknown')
++    expect(storage.getItem(WEBDAV_STATUS_KEY)).toBeNull()
++
++    setWebdavStatus(signature, 'ready')
++    setWebdavStatus(signature, 'unknown')
++    expect(storage.getItem(WEBDAV_STATUS_KEY)).toBeNull()
++    expect(
++      buildWebdavSignature({ webdav_password: config.webdav_password }),
++    ).toBe('')
++  })
++
++  it('clears an empty stored value as corrupted data', () => {
++    const storage = createStorage()
++    vi.stubGlobal('localStorage', storage)
++    const signature = buildWebdavSignature(config)
++
++    storage.setItem(WEBDAV_STATUS_KEY, '')
++
++    expect(getWebdavStatus(signature)).toBe('unknown')
++    expect(storage.getItem(WEBDAV_STATUS_KEY)).toBeNull()
++  })
++
++  it('does not write a legacy password-bearing signature', () => {
++    const storage = createStorage()
++    vi.stubGlobal('localStorage', storage)
++    const legacySignature = JSON.stringify([
++      config.webdav_url,
++      config.webdav_username,
++      config.webdav_password,
++    ])
++
++    setWebdavStatus(legacySignature, 'ready')
++
++    expect(storage.getItem(WEBDAV_STATUS_KEY)).toBeNull()
++  })
++
++  it('treats a throwing localStorage getter as unavailable', () => {
++    const signature = buildWebdavSignature(config)
++    const originalDescriptor = Object.getOwnPropertyDescriptor(
++      globalThis,
++      'localStorage',
++    )
++    Object.defineProperty(globalThis, 'localStorage', {
++      configurable: true,
++      get() {
++        throw new Error('storage is unavailable')
++      },
++    })
++
++    try {
++      expect(getWebdavStatus(signature)).toBe('unknown')
++      expect(() => clearWebdavStatus()).not.toThrow()
++      expect(() => setWebdavStatus(signature, 'ready')).not.toThrow()
++    } finally {
++      if (originalDescriptor) {
++        Object.defineProperty(globalThis, 'localStorage', originalDescriptor)
++      } else {
++        Reflect.deleteProperty(globalThis, 'localStorage')
++      }
++    }
++  })
++})
+diff --git a/src/services/webdav-status.ts b/src/services/webdav-status.ts
+index b964b3f7..6fb8eb9a 100644
+--- a/src/services/webdav-status.ts
++++ b/src/services/webdav-status.ts
+@@ -1,13 +1,16 @@
+ export type WebdavStatus = 'unknown' | 'ready' | 'failed'
+ 
++export const WEBDAV_STATUS_KEY = 'webdav_status_cache'
++export const WEBDAV_STATUS_SCHEMA_VERSION = 1
++export const WEBDAV_STATUS_TTL_MS = 5 * 60 * 1000
++
+ interface WebdavStatusCache {
++  version: typeof WEBDAV_STATUS_SCHEMA_VERSION
+   signature: string
+-  status: WebdavStatus
++  status: Exclude<WebdavStatus, 'unknown'>
+   updatedAt: number
+ }
+ 
+-const WEBDAV_STATUS_KEY = 'webdav_status_cache'
+-
+ export const buildWebdavSignature = (
+   verge?: Pick<
+     IVergeConfig,
+@@ -16,40 +19,131 @@ export const buildWebdavSignature = (
+ ) => {
+   const url = verge?.webdav_url?.trim() ?? ''
+   const username = verge?.webdav_username?.trim() ?? ''
+-  const password = verge?.webdav_password ?? ''
+ 
+-  if (!url && !username && !password) return ''
++  if (!url || !username) return ''
++
++  return JSON.stringify([url, username])
++}
++
++const isPasswordFreeSignature = (value: unknown): value is string => {
++  if (typeof value !== 'string') return false
+ 
+-  return JSON.stringify([url, username, password])
++  try {
++    const parts: unknown = JSON.parse(value)
++    return (
++      Array.isArray(parts) &&
++      parts.length === 2 &&
++      parts.every((part) => typeof part === 'string')
++    )
++  } catch {
++    return false
++  }
+ }
+ 
+-const canUseStorage = () => typeof localStorage !== 'undefined'
++const isRecord = (value: unknown): value is Record<string, unknown> =>
++  typeof value === 'object' && value !== null && !Array.isArray(value)
++
++const isWebdavStatusCache = (value: unknown): value is WebdavStatusCache => {
++  if (!isRecord(value)) return false
++
++  const keys = Object.keys(value)
++  if (
++    keys.length !== 4 ||
++    !['version', 'signature', 'status', 'updatedAt'].every((key) =>
++      keys.includes(key),
++    )
++  ) {
++    return false
++  }
++
++  return (
++    value.version === WEBDAV_STATUS_SCHEMA_VERSION &&
++    isPasswordFreeSignature(value.signature) &&
++    (value.status === 'ready' || value.status === 'failed') &&
++    typeof value.updatedAt === 'number'
++  )
++}
++
++const isValidTimestamp = (value: unknown, now: number) =>
++  typeof value === 'number' &&
++  Number.isInteger(value) &&
++  Number.isFinite(value) &&
++  value > 0 &&
++  value <= now &&
++  now - value <= WEBDAV_STATUS_TTL_MS
++
++const getStorage = (): Storage | null => {
++  try {
++    return globalThis.localStorage ?? null
++  } catch {
++    return null
++  }
++}
++
++export const clearWebdavStatus = () => {
++  const storage = getStorage()
++  if (!storage) return
++
++  try {
++    storage.removeItem(WEBDAV_STATUS_KEY)
++  } catch {
++    // Storage can be unavailable in private browsing or when quota is denied.
++  }
++}
+ 
+ export const getWebdavStatus = (signature: string): WebdavStatus => {
+-  if (!signature || !canUseStorage()) return 'unknown'
++  if (!signature || !isPasswordFreeSignature(signature)) {
++    clearWebdavStatus()
++    return 'unknown'
++  }
++  const storage = getStorage()
++  if (!storage) return 'unknown'
+ 
+-  const raw = localStorage.getItem(WEBDAV_STATUS_KEY)
+-  if (!raw) return 'unknown'
++  let raw: string | null
++  try {
++    raw = storage.getItem(WEBDAV_STATUS_KEY)
++  } catch {
++    return 'unknown'
++  }
++  if (raw === null) return 'unknown'
+ 
+   try {
+-    const data = JSON.parse(raw) as Partial<WebdavStatusCache>
+-    if (!data || data.signature !== signature) return 'unknown'
+-    return data.status === 'ready' || data.status === 'failed'
+-      ? data.status
+-      : 'unknown'
++    const data: unknown = JSON.parse(raw)
++    if (!isWebdavStatusCache(data) || data.signature !== signature) {
++      clearWebdavStatus()
++      return 'unknown'
++    }
++
++    if (!isValidTimestamp(data.updatedAt, Date.now())) {
++      clearWebdavStatus()
++      return 'unknown'
++    }
++
++    return data.status
+   } catch {
++    clearWebdavStatus()
+     return 'unknown'
+   }
+ }
+ 
+ export const setWebdavStatus = (signature: string, status: WebdavStatus) => {
+-  if (!signature || !canUseStorage()) return
++  if (!signature || !isPasswordFreeSignature(signature) || status === 'unknown') {
++    clearWebdavStatus()
++    return
++  }
++  const storage = getStorage()
++  if (!storage) return
+ 
+   const payload: WebdavStatusCache = {
++    version: WEBDAV_STATUS_SCHEMA_VERSION,
+     signature,
+     status,
+     updatedAt: Date.now(),
+   }
+ 
+-  localStorage.setItem(WEBDAV_STATUS_KEY, JSON.stringify(payload))
++  try {
++    storage.setItem(WEBDAV_STATUS_KEY, JSON.stringify(payload))
++  } catch {
++    // Storage can be unavailable in private browsing or when quota is denied.
++  }
+ }
+diff --git a/src/utils/monaco-worker-ignore.ts b/src/utils/monaco-worker-ignore.ts
+new file mode 100644
+index 00000000..980158d1
+--- /dev/null
++++ b/src/utils/monaco-worker-ignore.ts
+@@ -0,0 +1,38 @@
++// These warnings are safe to ignore: they occur when Monaco models or workers are manually disposed.
++const ignoredGlobalErrorMessages = [
++  "Missing requestHandler or method:",
++  "Could not create web worker(s). Falling back to loading web worker code in main thread",
++  "Cannot use 'in' operator to search for 'then' in undefined",
++];
++
++const isIgnoredMessage = (message: string) =>
++  ignoredGlobalErrorMessages.some((snippet) => message.includes(snippet));
++
++export const isIgnoredMonacoWorkerError = (reason: unknown) => {
++  const message = String(
++    reason instanceof Error ? reason.message : (reason ?? ""),
++  );
++  return isIgnoredMessage(message);
++};
++
++const shouldIgnoreConsoleArgs = (args: unknown[]) =>
++  args.some((arg) => {
++    const message =
++      typeof arg === "string" ? arg : arg instanceof Error ? arg.message : "";
++    return isIgnoredMessage(message);
++  });
++
++export const patchMonacoWorkerConsole = () => {
++  const originalWarn = console.warn;
++  const originalError = console.error;
++
++  console.warn = (...args) => {
++    if (shouldIgnoreConsoleArgs(args)) return;
++    originalWarn(...args);
++  };
++
++  console.error = (...args) => {
++    if (shouldIgnoreConsoleArgs(args)) return;
++    originalError(...args);
++  };
++};
+diff --git a/src/utils/normalize-epoch.test.ts b/src/utils/normalize-epoch.test.ts
+new file mode 100644
+index 00000000..8c9ecfa9
+--- /dev/null
++++ b/src/utils/normalize-epoch.test.ts
+@@ -0,0 +1,28 @@
++import { describe, expect, it } from "vitest";
++
++import {
++  normalizeEpochToMs,
++  normalizePlausibleEpochToMs,
++} from "./normalize-epoch";
++
++describe("normalizeEpochToMs", () => {
++  it("normalizes seconds to milliseconds", () => {
++    expect(normalizeEpochToMs(1_741_848_000)).toBe(1_741_848_000_000);
++  });
++
++  it("keeps millisecond timestamps unchanged", () => {
++    expect(normalizeEpochToMs(1_741_848_000_000)).toBe(1_741_848_000_000);
++  });
++});
++
++describe("normalizePlausibleEpochToMs", () => {
++  it("keeps current-era timestamps", () => {
++    expect(normalizePlausibleEpochToMs(1_741_848_000_000)).toBe(
++      1_741_848_000_000,
++    );
++  });
++
++  it("rejects implausibly large future timestamps", () => {
++    expect(normalizePlausibleEpochToMs(1_741_848_000_000_000)).toBe(0);
++  });
++});
+diff --git a/src/utils/normalize-epoch.ts b/src/utils/normalize-epoch.ts
+new file mode 100644
+index 00000000..acaecfac
+--- /dev/null
++++ b/src/utils/normalize-epoch.ts
+@@ -0,0 +1,20 @@
++const MILLISECOND_EPOCH_THRESHOLD = 1e11;
++const MAX_REASONABLE_EPOCH_MS = Date.UTC(2100, 0, 1);
++
++export const normalizeEpochToMs = (value?: number | null) => {
++  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
++    return 0;
++  }
++
++  // Some runtimes return epoch seconds while the LazyCat web runtime already
++  // returns epoch milliseconds for profile.updated.
++  return value >= MILLISECOND_EPOCH_THRESHOLD ? value : value * 1000;
++};
++
++export const normalizePlausibleEpochToMs = (value?: number | null) => {
++  const normalized = normalizeEpochToMs(value);
++  if (!normalized || normalized > MAX_REASONABLE_EPOCH_MS) {
++    return 0;
++  }
++  return normalized;
++};
+diff --git a/src/utils/open-external-url.ts b/src/utils/open-external-url.ts
+index da912c62..7c84f489 100644
+--- a/src/utils/open-external-url.ts
++++ b/src/utils/open-external-url.ts
+@@ -1,4 +1,4 @@
+-import { openUrl } from '@tauri-apps/plugin-opener'
++const openUrl = async (url: string) => { window.open(url, '_blank', 'noopener,noreferrer') }
+ 
+ export async function openExternalUrl(raw: string) {
+   const url = new URL(raw.trim())
+diff --git a/src/utils/parse-clash-log.test.ts b/src/utils/parse-clash-log.test.ts
+new file mode 100644
+index 00000000..d407d72e
+--- /dev/null
++++ b/src/utils/parse-clash-log.test.ts
+@@ -0,0 +1,63 @@
++import { describe, expect, it } from "vitest";
++
++import { parseClashLogLine, parseClashLogLines } from "./parse-clash-log";
++
++describe("parseClashLogLine", () => {
++  it("parses Mihomo journal lines into ILogItem", () => {
++    expect(
++      parseClashLogLine(
++        'time="2026-03-12T15:16:32.190504926+08:00" level=info msg="Start initial configuration in progress"',
++      ),
++    ).toEqual({
++      time: "03-12 15:16:32",
++      type: "info",
++      payload: "Start initial configuration in progress",
++    });
++  });
++
++  it("normalizes warn and err levels", () => {
++    expect(
++      parseClashLogLine(
++        'time="2026-03-12T15:16:32.190504926+08:00" level=warn msg="warn line"',
++      ),
++    )?.toMatchObject({ type: "warning" });
++    expect(
++      parseClashLogLine(
++        'time="2026-03-12T15:16:32.190504926+08:00" level=err msg="err line"',
++      ),
++    )?.toMatchObject({ type: "error" });
++  });
++
++  it("ignores systemd and malformed lines", () => {
++    expect(
++      parseClashLogLine(
++        "Started mihomo.service - Mihomo (Clash Meta).",
++      ),
++    ).toBeNull();
++    expect(parseClashLogLine("")).toBeNull();
++    expect(parseClashLogLine("not a clash log")).toBeNull();
++  });
++});
++
++describe("parseClashLogLines", () => {
++  it("keeps only parseable Mihomo lines", () => {
++    expect(
++      parseClashLogLines([
++        'time="2026-03-12T15:16:32.190504926+08:00" level=info msg="line 1"',
++        "Started mihomo.service - Mihomo (Clash Meta).",
++        'time="2026-03-12T15:16:33.190504926+08:00" level=warning msg="line 2"',
++      ]),
++    ).toEqual([
++      {
++        time: "03-12 15:16:32",
++        type: "info",
++        payload: "line 1",
++      },
++      {
++        time: "03-12 15:16:33",
++        type: "warning",
++        payload: "line 2",
++      },
++    ]);
++  });
++});
+diff --git a/src/utils/parse-clash-log.ts b/src/utils/parse-clash-log.ts
+new file mode 100644
+index 00000000..32db85dc
+--- /dev/null
++++ b/src/utils/parse-clash-log.ts
+@@ -0,0 +1,44 @@
++import dayjs from "dayjs";
++
++const MIHOMO_JOURNAL_LINE =
++  /^time="(.+?)"\s+level=(debug|info|warning|warn|error|err)\s+msg="([\s\S]*?)"$/i;
++
++const LEVEL_ALIAS: Record<string, ILogItem["type"]> = {
++  debug: "debug",
++  info: "info",
++  warning: "warning",
++  warn: "warning",
++  error: "error",
++  err: "error",
++};
++
++export const parseClashLogLine = (line: string): ILogItem | null => {
++  const trimmed = String(line || "").trim();
++  if (!trimmed) return null;
++
++  const match = trimmed.match(MIHOMO_JOURNAL_LINE);
++  if (!match) return null;
++
++  const [, rawTime, rawLevel, payload] = match;
++  const type = LEVEL_ALIAS[rawLevel.toLowerCase()];
++  const parsedTime = dayjs(rawTime);
++
++  if (!type || !parsedTime.isValid()) {
++    return null;
++  }
++
++  return {
++    time: parsedTime.format("MM-DD HH:mm:ss"),
++    type,
++    payload,
++  };
++};
++
++export const parseClashLogLines = (lines: string[]): ILogItem[] =>
++  lines.reduce<ILogItem[]>((acc, line) => {
++    const parsed = parseClashLogLine(line);
++    if (parsed) {
++      acc.push(parsed);
++    }
++    return acc;
++  }, []);

@@ -15,6 +15,15 @@
 - `Verge API`：懒猫 Web 版运行时后端，监听 `172.18.0.1:9091`
 - `container proxy`：容器显式代理入口，监听 `172.18.0.1:17890`
 
+## 上游版本
+
+- Dashboard 基于 Clash Verge Rev `v2.5.8`，WebPort `2.5.8-webport.0`，LPK `0.4.0`。
+- Web adapter 将 controller 与活动 YAML 转换为上游 ProxyView v1，保留 provider 来源与同名节点顺序；配置 degraded 时保留最后成功快照。
+- 运行状态来自宿主机 controller，系统代理、sidecar 和桌面服务安装保持禁用。
+- Mihomo core 默认固定为稳定版 `v1.19.33`（2026-10-21 发布）。
+- 核心升级仍通过共享 updater 校验 release digest、架构、版本与现有配置，并保留自动回滚。
+- 仓库版本与目标机已安装版本分别核实；LPK 不包含宿主机核心。
+
 ## 当前推荐基线
 
 仓库当前支持的保守基线是：

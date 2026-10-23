@@ -5,6 +5,7 @@
       "telegram": "Telegram 頻道",
       "github": "GitHub 專案位址"
     },
+    "actionsGroupLabel": "設定相關連結",
     "title": "設定"
   },
   "sections": {
@@ -36,11 +37,17 @@
       },
       "actions": {
         "installService": "安裝服務",
-        "uninstallService": "解除安裝服務"
+        "uninstallService": "解除安裝服務",
+        "switchToServiceMode": "切換到服務模式"
       },
       "fields": {
         "systemProxy": "系統代理",
         "tunMode": "虛擬網路介面卡模式"
+      },
+      "messages": {
+        "installedCheckProxy": "服務已安裝，內核已透過服務執行。請檢查系統代理開關，若剛才的變更未生效請重新操作一次。",
+        "installedCoreNotOnService": "服務已安裝，但內核未透過服務執行。請檢查內核狀態後重試。",
+        "installedProxyRestored": "服務已安裝，核心已透過服務執行，剛才的系統代理變更已重新套用。"
       }
     },
     "externalController": {
@@ -283,8 +290,15 @@
       },
       "messages": {
         "portInUse": "Port {{port}} is already in use",
+        "runningPort": "目前執行中的連接埠：{{port}}",
+        "duplicatePort": "已啟用的監聽連接埠不能重複",
+        "invalidPort": "請輸入 1 至 65535 之間的連接埠號碼",
         "saved": "連結埠設定已儲存",
-        "saveFailed": "連結埠設定儲存失敗"
+        "saveFailed": "連結埠設定儲存失敗",
+        "automaticFallback": "連結埠 {{oldPort}} 已被佔用，本次執行改用 {{newPort}}。設定未變更，下次啟動會重新嘗試 {{oldPort}}。",
+        "automaticFallbackFailed": "混合代理連結埠自動切換失敗：{{error}}",
+        "portTooLow": "連結埠不能小於 1000",
+        "portTooHigh": "連結埠不能大於 65535"
       }
     },
     "clashCore": {
@@ -429,7 +443,15 @@
         "update": "更新"
       },
       "messages": {
-        "breakChangeError": "此版本為重大更新，不支援應用程式內更新，請解除安裝後手動下載安裝"
+        "breakChangeError": "此版本為重大更新，不支援應用程式內更新，請解除安裝後手動下載安裝",
+        "available": "有新版本可用"
+      },
+      "alerts": {
+        "note": "備註",
+        "tip": "提示",
+        "important": "重要",
+        "warning": "警告",
+        "caution": "注意"
       }
     },
     "sysproxy": {
@@ -489,7 +511,15 @@
     "dns": {
       "dialog": {
         "title": "DNS 覆寫",
+        "profileScope": "DNS 覆寫開關依訂閱分別儲存，僅對對應訂閱生效。",
         "warning": "如果你不清楚這裡的設定請不要修改，並保持 DNS 覆寫關閉"
+      },
+      "protection": {
+        "title": "是否開啟 DNS 覆寫？",
+        "message": "目前訂閱包含自訂 DNS 設定。開啟 DNS 覆寫可能覆蓋這些設定，導致節點無法連線或部分網站無法存取。是否仍要開啟？",
+        "enableAnyway": "仍然開啟",
+        "keepDisabled": "保持關閉",
+        "autoDisabled": "偵測到目前訂閱包含自訂 DNS 設定，已自動關閉 DNS 覆寫。"
       },
       "sections": {
         "general": "DNS 設定",
@@ -590,6 +620,11 @@
       "messages": {
         "supportedPlaceholders": "支援 %host, %port, %secret",
         "placeholderInstruction": "使用 %host, %port, %secret 表示 主機, 連接埠, 存取金鑰"
+      },
+      "errors": {
+        "clashInfoUnavailable": "內核連線資訊暫時無法取得",
+        "invalidServer": "內核伺服器位址「{{server}}」無效",
+        "openFailed": "開啟 Web UI 失敗"
       }
     },
     "hotkey": {
@@ -617,6 +652,32 @@
     }
   },
   "feedback": {
+    "errors": {
+      "clash": {
+        "configUpdateFailed": "更新內核設定失敗",
+        "modeUpdateFailed": "切換代理模式失敗",
+        "restartFailed": "重啟內核失敗",
+        "startFailed": "啟動內核失敗",
+        "serviceCoreStopped": "服務執行的內核意外停止",
+        "stopFailed": "停止內核失敗"
+      },
+      "clashService": {
+        "installFailed": "安裝服務失敗",
+        "uninstallFailed": "解除安裝服務失敗",
+        "reinstallFailed": "重新安裝服務失敗",
+        "repairFailed": "修復服務失敗",
+        "sidecarFailed": "繼續使用 Sidecar 失敗",
+        "coreAlreadyRunning": "無法啟動核心：已有核心程序正在執行。請結束相關應用程式或清理殘留程序後重試。若仍無法解決，請重新啟動電腦。"
+      },
+      "sysproxy": {
+        "privilegeRequired": "無法設定系統代理：macOS 以權限不足為由拒絕了這次修改。請安裝 Clash Verge 服務；管理者也可以在系統設定 → 隱私權與安全性的進階選項中，關閉存取系統層級設定需要管理者密碼的要求。",
+        "directFallback": "系統代理設定失敗，已回退為直連。",
+        "guardStopped": "系統代理守衛連續多次失敗後已停止，系統代理不再被自動維持。",
+        "sidecarWhileServiceReady": "系統代理設定失敗：Clash Verge 服務已就緒，但內核仍以 Sidecar 執行。重新啟動內核即可切換到服務模式。",
+        "coreNotReady": "無法開啟系統代理：內核尚未執行。請先啟動內核（或安裝/修復 Clash Verge 服務）後重試。",
+        "systemCallFailed": "系統代理寫入失敗：Windows 系統呼叫未成功，通常是瞬時故障。請稍後重試。"
+      }
+    },
     "notifications": {
       "clash": {
         "restartSuccess": "已重啟 Clash 內核",
@@ -627,7 +688,13 @@
         "geoDataUpdated": "已更新 GeoData"
       },
       "clashService": {
+        "appDataNotOwned": "服務拒絕啟動核心：磁碟上應用程式資料目錄的擁有者不是目前帳戶（常見於使用者目錄位於外接磁碟）。修復服務無法解決此問題，請在終端機執行以下命令，然後重新啟動軟體：",
         "installSuccess": "已成功安裝服務",
+        "permissionFallback": "{{reason}} 已切換至一般模式（Sidecar），一般權限下無法使用 TUN。可依文件修復後重新安裝服務；不想或不會修復時，可直接以系統管理員身分執行軟體，無需安裝服務。",
+        "permissionWritableReason": "核心檔案或上層資料夾允許一般帳戶修改，服務為防止核心被替換而拒絕以高權限執行。",
+        "permissionRejectedReason": "服務無法確認核心檔案及所在目錄是否安全，已拒絕以高權限執行。",
+        "permissionRepairGuide": "查看修復方法",
+        "sidecarFallback": "服務無法啟動核心，已降級為 Sidecar 模式執行，服務仍無法使用。",
         "uninstallSuccess": "已成功解除安裝服務"
       },
       "updater": {

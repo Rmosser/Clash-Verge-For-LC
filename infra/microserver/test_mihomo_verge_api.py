@@ -27,6 +27,28 @@ SPEC.loader.exec_module(MODULE)
 
 
 class MihomoVergeApiTests(unittest.TestCase):
+    def test_upstream_runtime_state_reports_controller_failure(self):
+        with patch.object(MODULE, "ensure_state"), patch.object(MODULE, "controller_request", side_effect=OSError("offline")):
+            state = MODULE.invoke_command("get_runtime_state", {})
+        self.assertEqual(state["mode"], "NotRunning")
+        self.assertFalse(state["serviceUsable"])
+        self.assertFalse(state["sidecarAllowed"])
+
+    def test_upstream_port_save_restores_overlay_after_apply_failure(self):
+        settings = {"mixedPort": 7890}
+        old = {"mode": "rule"}
+        with patch.object(MODULE, "ensure_state"), patch.object(MODULE, "load_overlay", return_value=old), patch.object(MODULE, "save_overlay") as save, patch.object(MODULE, "apply_runtime_for_current_or_empty_state", side_effect=RuntimeError("invalid")):
+            with self.assertRaises(RuntimeError):
+                MODULE.invoke_command("save_proxy_ports", {"settings": settings})
+        self.assertEqual(save.call_args_list[-1].args[0], old)
+
+    def test_upstream_core_upgrade_remains_stable_and_version_pinned(self):
+        with patch.object(MODULE, "ensure_state"), patch.object(MODULE, "upgrade_core_release", return_value={"STATUS": "already_current", "PREV_VERSION": "v1.19.33", "TARGET_VERSION": "v1.19.33"}) as upgrade:
+            result = MODULE.invoke_command("upgrade_clash_core", {"force": True, "version": "alpha"})
+        upgrade.assert_called_once_with("verge-mihomo")
+        self.assertFalse(result["upgraded"])
+
+
     def test_operation_log_redacts_credentials_from_urls_and_headers(self) -> None:
         message = (
             "GET /public-config?token=query-secret HTTP/1.1 "
@@ -684,7 +706,7 @@ class MihomoVergeApiTests(unittest.TestCase):
         with patch.object(MODULE, "load_runtime_contract", return_value=contract):
             payload = MODULE.runtime_contract_probe_payload()
 
-        self.assertEqual(payload["appVersion"], "2.5.2-webport.0")
+        self.assertEqual(payload["appVersion"], "2.5.8-webport.0")
         self.assertEqual(payload["apiSchemaVersion"], "2026.08-lzc-v2")
         self.assertEqual(payload["uiSchemaVersion"], "2026.08-lzc-v2")
         self.assertEqual(payload["systemProxy"], {"mode": "enabled"})
@@ -1017,7 +1039,7 @@ rules:
         self.assertEqual(ctx.exception.code, "PROFILE_FETCH_NETWORK_ERROR")
 
     def test_runtime_contract_is_v252_webport(self) -> None:
-        self.assertEqual(MODULE.APP_VERSION, "2.5.2-webport.0")
+        self.assertEqual(MODULE.APP_VERSION, "2.5.8-webport.0")
         self.assertEqual(MODULE.DEFAULT_RUNTIME_CONTRACT["apiSchemaVersion"], "2026.08-lzc-v2")
         self.assertEqual(MODULE.DEFAULT_RUNTIME_CONTRACT["uiSchemaVersion"], "2026.08-lzc-v2")
 

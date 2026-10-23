@@ -498,10 +498,10 @@ from pathlib import Path
 
 payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 expected = {
-    "appVersion": "2.5.2-webport.0",
+    "appVersion": "2.5.8-webport.0",
     "apiSchemaVersion": "2026.08-lzc-v2",
     "uiSchemaVersion": "2026.08-lzc-v2",
-    "packageFingerprint": "cloud.lazycat.app.clash-verge-for-lc/2.5.2-webport.0",
+    "packageFingerprint": "cloud.lazycat.app.clash-verge-for-lc/2.5.8-webport.0",
     "buildId": os.environ["EXPECTED_BUILD_ID"],
     "gitCommit": os.environ["EXPECTED_GIT_COMMIT"],
 }
@@ -521,10 +521,10 @@ from pathlib import Path
 
 payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 expected = {
-    "appVersion": "2.5.2-webport.0",
+    "appVersion": "2.5.8-webport.0",
     "apiSchemaVersion": "2026.08-lzc-v2",
     "uiSchemaVersion": "2026.08-lzc-v2",
-    "packageFingerprint": "cloud.lazycat.app.clash-verge-for-lc/2.5.2-webport.0",
+    "packageFingerprint": "cloud.lazycat.app.clash-verge-for-lc/2.5.8-webport.0",
     "buildId": os.environ["EXPECTED_BUILD_ID"],
     "gitCommit": os.environ["EXPECTED_GIT_COMMIT"],
 }

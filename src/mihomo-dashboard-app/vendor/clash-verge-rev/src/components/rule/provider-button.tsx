@@ -22,9 +22,10 @@ import { useTranslation } from 'react-i18next'
 import { updateRuleProvider } from 'tauri-plugin-mihomo-api'
 
 import { useAppRefreshers, useRulesData } from '@/providers/app-data-context'
+import { syncRuntimeProviders } from '@/services/cmds'
+import { mutate } from '@/services/mutate'
 import { showNotice } from '@/services/notice-service'
 
-// 辅助组件 - 类型框
 const TypeBox = styled(Box)<{ component?: React.ElementType }>(({ theme }) => ({
   display: 'inline-block',
   border: '1px solid #ccc',
@@ -44,20 +45,23 @@ export const ProviderButton = () => {
   const { refreshRules, refreshRuleProviders } = useAppRefreshers()
   const [updating, setUpdating] = useState<Record<string, boolean>>({})
 
-  // 检查是否有提供者
   const hasProviders = Object.keys(ruleProviders || {}).length > 0
 
-  // 更新单个规则提供者
   const updateProvider = useLockFn(async (name: string) => {
     try {
-      // 设置更新状态
       setUpdating((prev) => ({ ...prev, [name]: true }))
 
-      await updateRuleProvider(name)
+      await mutate(() => updateRuleProvider(name), {
+        id: `update-rule-provider-${name}`,
+        errorNotice: false,
+      })
 
-      // 刷新数据
       await refreshRules()
       await refreshRuleProviders()
+      void mutate(() => syncRuntimeProviders(), {
+        id: 'sync-runtime-providers',
+        errorNotice: false,
+      })
 
       showNotice.success(
         'rules.feedback.notifications.provider.updateSuccess',
@@ -71,22 +75,18 @@ export const ProviderButton = () => {
         message: String(err),
       })
     } finally {
-      // 清除更新状态
       setUpdating((prev) => ({ ...prev, [name]: false }))
     }
   })
 
-  // 更新所有规则提供者
   const updateAllProviders = useLockFn(async () => {
     try {
-      // 获取所有provider的名称
       const allProviders = Object.keys(ruleProviders || {})
       if (allProviders.length === 0) {
         showNotice.info('rules.feedback.notifications.provider.none')
         return
       }
 
-      // 设置所有provider为更新中状态
       const newUpdating = allProviders.reduce(
         (acc, key) => {
           acc[key] = true
@@ -96,21 +96,24 @@ export const ProviderButton = () => {
       )
       setUpdating(newUpdating)
 
-      // 改为串行逐个更新所有provider
       for (const name of allProviders) {
         try {
-          await updateRuleProvider(name)
-          // 每个更新完成后更新状态
+          await mutate(() => updateRuleProvider(name), {
+            id: `update-rule-provider-${name}`,
+            errorNotice: false,
+          })
           setUpdating((prev) => ({ ...prev, [name]: false }))
         } catch (err) {
           console.error(`更新 ${name} 失败`, err)
-          // 继续执行下一个，不中断整体流程
         }
       }
 
-      // 刷新数据
       await refreshRules()
       await refreshRuleProviders()
+      void mutate(() => syncRuntimeProviders(), {
+        id: 'sync-runtime-providers',
+        errorNotice: false,
+      })
 
       showNotice.success('rules.feedback.notifications.provider.allUpdated')
     } catch (err) {
@@ -118,7 +121,6 @@ export const ProviderButton = () => {
         message: String(err),
       })
     } finally {
-      // 清除所有更新状态
       setUpdating({})
     }
   })
@@ -235,10 +237,14 @@ export const ProviderButton = () => {
                       secondary={
                         <Box sx={{ display: 'flex' }}>
                           <TypeBox component="span">
-                            {provider.vehicleType}
+                            {typeof provider.vehicleType === 'string'
+                              ? provider.vehicleType
+                              : 'Unknown'}
                           </TypeBox>
                           <TypeBox component="span">
-                            {provider.behavior}
+                            {typeof provider.behavior === 'string'
+                              ? provider.behavior
+                              : 'Unknown'}
                           </TypeBox>
                         </Box>
                       }

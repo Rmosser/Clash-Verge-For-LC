@@ -67,7 +67,7 @@ bash scripts/deploy_dashboard.sh --confirm
 ## Mihomo core-only 升级
 
 core-only 路径不重写配置、systemd unit、TUN、DNS 或 container proxy，只更新
-共享 updater、Verge API 和 Mihomo 二进制。当前固定 stable 版本为 `v1.19.30`。
+共享 updater、Verge API 和 Mihomo 二进制。当前固定 stable 版本为 `v1.19.33`。
 
 先升级开发机：
 
@@ -75,7 +75,7 @@ core-only 路径不重写配置、systemd unit、TUN、DNS 或 container proxy�
 MICROSERVER_HOST=rainierdev.heiyu.space \
 MIHOMO_TUN_ENABLE=0 MIHOMO_DNS_ENABLE=0 \
 bash scripts/deploy_microserver.sh --confirm \
-  --upgrade-core --only-core --core-version v1.19.30
+  --upgrade-core --only-core --core-version v1.19.33
 ```
 
 通过开发机验收后，对 `rainierspace` 使用相同的显式版本命令。updater 会在

@@ -27,7 +27,7 @@ REPOSITORY = "MetaCubeX/mihomo"
 RELEASE_API = f"https://api.github.com/repos/{REPOSITORY}/releases"
 DOWNLOAD_BASE = f"https://github.com/{REPOSITORY}/releases/download"
 USER_AGENT = "Clash-Verge-For-LC-mihomo-updater/1.0"
-DEFAULT_STABLE_TAG = os.environ.get("MIHOMO_CORE_VERSION", "v1.19.30")
+DEFAULT_STABLE_TAG = os.environ.get("MIHOMO_CORE_VERSION", "v1.19.33")
 DOWNLOAD_ATTEMPTS = 3
 DOWNLOAD_TIMEOUT = 120
 

@@ -273,3 +273,8 @@ export const invoke = async <T>(
 };
 
 export const convertFileSrc = (path: string) => resolveAppFileUrl(path);
+
+// Desktop streaming commands are unsupported by the Web runtime.
+export class Channel<T> {
+  onmessage: (message: T) => void = () => {};
+}

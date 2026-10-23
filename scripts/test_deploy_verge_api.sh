@@ -182,7 +182,7 @@ if [[ "$url" == *runtime-info* ]]; then
     printf '%s\n' 1 >"$state/api_nrestarts"
     : >"$state/final_nrestarts_set"
   fi
-  printf '{"appVersion":"2.5.2-webport.0","apiSchemaVersion":"2026.08-lzc-v2","uiSchemaVersion":"2026.08-lzc-v2","packageFingerprint":"cloud.lazycat.app.clash-verge-for-lc/2.5.2-webport.0","buildId":"%s","gitCommit":"%s","systemProxy":{"mode":"disabled"}}\n' \
+  printf '{"appVersion":"2.5.8-webport.0","apiSchemaVersion":"2026.08-lzc-v2","uiSchemaVersion":"2026.08-lzc-v2","packageFingerprint":"cloud.lazycat.app.clash-verge-for-lc/2.5.8-webport.0","buildId":"%s","gitCommit":"%s","systemProxy":{"mode":"disabled"}}\n' \
     "$EXPECTED_BUILD_ID" "$EXPECTED_GIT_COMMIT"
   exit 0
 fi
@@ -302,7 +302,7 @@ write_fixture() {
   printf '%s\n' baseline-contract >"$case_root/remote/runtime-contract.json"
   printf '%s\n' 'print("candidate")' >"$case_root/candidate/api.py"
   printf '%s\n' candidate-unit >"$case_root/candidate/unit"
-  printf '%s\n' '{"appVersion":"2.5.2-webport.0","apiSchemaVersion":"2026.08-lzc-v2","uiSchemaVersion":"2026.08-lzc-v2","packageFingerprint":"cloud.lazycat.app.clash-verge-for-lc/2.5.2-webport.0","buildId":"test-build","gitCommit":"0123456789012345678901234567890123456789","capabilities":{"systemProxy":{"mode":"disabled"}}}' >"$case_root/candidate/runtime-contract.json"
+  printf '%s\n' '{"appVersion":"2.5.8-webport.0","apiSchemaVersion":"2026.08-lzc-v2","uiSchemaVersion":"2026.08-lzc-v2","packageFingerprint":"cloud.lazycat.app.clash-verge-for-lc/2.5.8-webport.0","buildId":"test-build","gitCommit":"0123456789012345678901234567890123456789","capabilities":{"systemProxy":{"mode":"disabled"}}}' >"$case_root/candidate/runtime-contract.json"
 }
 
 populate_backup() {

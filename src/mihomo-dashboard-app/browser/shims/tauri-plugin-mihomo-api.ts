@@ -142,6 +142,10 @@ export class MihomoWebSocket {
     return MihomoWebSocket.connect("/memory");
   }
 
+  static connect_connections_count() {
+    return MihomoWebSocket.connect("/connections?count=true");
+  }
+
   static connect_connections() {
     return MihomoWebSocket.connect("/connections");
   }
@@ -264,4 +268,8 @@ export const updateGeo = async () => {
 };
 export const upgradeCore = async () => {
   await vergeInvoke("upgrade_core", {});
+};
+
+export const unfixedProxy = async (name: string) => {
+  await deleteReq(`/group/${encodeName(name)}`);
 };

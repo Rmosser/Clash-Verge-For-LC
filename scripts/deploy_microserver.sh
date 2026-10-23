@@ -44,7 +44,7 @@ AUTO_TEST_URL="${MIHOMO_AUTO_TEST_URL-https://api.openai.com/v1/models}"
 DOH_PROXY_RULES_ENABLE="${MIHOMO_DOH_PROXY_RULES_ENABLE:-1}" # 1=enabled (default), 0=disabled
 INSTALL_NET_SAFE_APPLY="${LZC_NET_SAFE_APPLY_INSTALL:-1}" # 1=install (default), 0=skip
 CONTAINER_PROXY_ENABLE="${MIHOMO_CONTAINER_PROXY_ENABLE:-1}" # 1=enabled (default), 0=disabled
-DEFAULT_CORE_VERSION="${MIHOMO_VERSION:-v1.19.30}"
+DEFAULT_CORE_VERSION="${MIHOMO_VERSION:-v1.19.33}"
 
 UPGRADE_CORE=0
 ONLY_CORE=0
@@ -64,7 +64,7 @@ Usage: scripts/deploy_microserver.sh [options]
 
 Options:
   --upgrade-core            Upgrade mihomo core even if already installed
-  --core-version <tag>      Upgrade/install exact release tag (default: v1.19.30)
+  --core-version <tag>      Upgrade/install exact release tag (default: v1.19.33)
   --only-core               Upgrade core only (skip config/unit/mmdb deploy)
   --no-rollback             Disable automatic rollback on upgrade failure
   --confirm                 Confirm the approved host and SSH fingerprint before mutating it
@@ -73,7 +73,7 @@ Options:
 Notes:
   - Default behavior keeps backward compatibility: deploy config/unit and only install core if missing.
   - Host-native network defaults are conservative: TUN=0 and DNS=0; enabling either is explicit.
-  - The default core release is pinned to v1.19.30; use --core-version to override it.
+  - The default core release is pinned to v1.19.33; use --core-version to override it.
   - Use --upgrade-core --only-core --core-version <tag> for a core-only upgrade.
 USAGE
 }
@@ -247,7 +247,7 @@ if [[ -z "$MIHOMO_TAG" ]]; then
   MIHOMO_TAG="$DEFAULT_CORE_VERSION"
 fi
 if [[ "$MIHOMO_TAG" == "latest" || -z "$MIHOMO_TAG" ]]; then
-  echo "ERROR: Mihomo core version must resolve to an exact release tag; use --core-version v1.19.30." >&2
+  echo "ERROR: Mihomo core version must resolve to an exact release tag; use --core-version v1.19.33." >&2
   exit 1
 fi
 if [[ "$MIHOMO_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then

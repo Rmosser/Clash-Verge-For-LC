@@ -34,29 +34,44 @@ import { HomeProfileCard } from '@/components/home/home-profile-card'
 import { ProxyTunCard } from '@/components/home/proxy-tun-card'
 import { useProfiles } from '@/hooks/use-profiles'
 import { useVerge } from '@/hooks/use-verge'
-import { entry_lightweight_mode, openWebUrl } from '@/services/cmds'
-import { getWebActionPolicy } from '@root/browser/runtime'
 
-const LazyTestCard = lazy(() =>
+import { getWebActionPolicy } from '@root/browser/runtime'
+import { entry_lightweight_mode } from '@/services/cmds'
+import { mutate } from '@/services/mutate'
+import { showNotice } from '@/services/notice-service'
+import { openExternalUrl } from '@/utils/open-external-url'
+
+const preloadTestCard = () =>
   import('@/components/home/test-card').then((module) => ({
     default: module.TestCard,
-  })),
-)
-const LazyIpInfoCard = lazy(() =>
+  }))
+const preloadIpInfoCard = () =>
   import('@/components/home/ip-info-card').then((module) => ({
     default: module.IpInfoCard,
-  })),
-)
-const LazyClashInfoCard = lazy(() =>
+  }))
+const preloadClashInfoCard = () =>
   import('@/components/home/clash-info-card').then((module) => ({
     default: module.ClashInfoCard,
-  })),
-)
-const LazySystemInfoCard = lazy(() =>
+  }))
+const preloadSystemInfoCard = () =>
   import('@/components/home/system-info-card').then((module) => ({
     default: module.SystemInfoCard,
-  })),
-)
+  }))
+
+const LazyTestCard = lazy(preloadTestCard)
+const LazyIpInfoCard = lazy(preloadIpInfoCard)
+const LazyClashInfoCard = lazy(preloadClashInfoCard)
+const LazySystemInfoCard = lazy(preloadSystemInfoCard)
+
+// Used by bootstrap to initiate optional card imports without blocking render.
+
+export const preloadHomePageCards = () =>
+  Promise.all([
+    preloadTestCard().catch(() => {}),
+    preloadIpInfoCard().catch(() => {}),
+    preloadClashInfoCard().catch(() => {}),
+    preloadSystemInfoCard().catch(() => {}),
+  ])
 
 // 定义首页卡片设置接口
 interface HomeCardsSettings {
@@ -73,12 +88,17 @@ interface HomeCardsSettings {
   [key: string]: boolean
 }
 
-// 首页设置对话框组件接口
-interface HomeSettingsDialogProps {
-  open: boolean
-  onClose: () => void
-  homeCards: HomeCardsSettings
-  onSave: (cards: HomeCardsSettings) => void
+const DEFAULT_HOME_CARDS: HomeCardsSettings = {
+  info: false,
+  profile: true,
+  proxy: true,
+  network: true,
+  mode: true,
+  traffic: true,
+  clashinfo: true,
+  systeminfo: true,
+  test: true,
+  ip: true,
 }
 
 const serializeCardFlags = (cards: HomeCardsSettings) =>
@@ -87,12 +107,16 @@ const serializeCardFlags = (cards: HomeCardsSettings) =>
     .map((key) => `${key}:${cards[key] ? 1 : 0}`)
     .join('|')
 
+// 首页设置对话框组件接口
+interface HomeSettingsDialogProps {
+  onClose: () => void
+  homeCards: HomeCardsSettings
+}
+
 // 首页设置对话框组件
 const HomeSettingsDialog = ({
-  open,
   onClose,
   homeCards,
-  onSave,
 }: HomeSettingsDialogProps) => {
   const { t } = useTranslation()
   const [cards, setCards] = useState<HomeCardsSettings>(homeCards)
@@ -107,12 +131,11 @@ const HomeSettingsDialog = ({
 
   const handleSave = async () => {
     await patchVerge({ home_cards: cards })
-    onSave(cards)
     onClose()
   }
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
+    <Dialog open onClose={onClose} maxWidth="xs" fullWidth>
       <DialogTitle>{t('home.page.settings.title')}</DialogTitle>
       <DialogContent>
         <FormGroup>
@@ -217,56 +240,17 @@ const HomePage = () => {
 
   // 设置弹窗的状态
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [localHomeCards, setLocalHomeCards] = useState<{
-    value: HomeCardsSettings
-    baseSignature: string
-  } | null>(null)
 
   // 卡片显示状态
-  const defaultCards = useMemo<HomeCardsSettings>(
-    () => ({
-      info: false,
-      profile: true,
-      proxy: true,
-      network: true,
-      mode: true,
-      traffic: true,
-      clashinfo: true,
-      systeminfo: true,
-      test: true,
-      ip: true,
-    }),
-    [],
-  )
-
-  const vergeHomeCards = useMemo<HomeCardsSettings | null>(
-    () => (verge?.home_cards as HomeCardsSettings | undefined) ?? null,
-    [verge],
-  )
-
-  const remoteHomeCards = useMemo<HomeCardsSettings>(
-    () => vergeHomeCards ?? defaultCards,
-    [defaultCards, vergeHomeCards],
-  )
-
-  const remoteSignature = useMemo(
-    () => serializeCardFlags(remoteHomeCards),
-    [remoteHomeCards],
-  )
-
-  const pendingLocalCards = useMemo<HomeCardsSettings | null>(() => {
-    if (!localHomeCards) return null
-    return localHomeCards.baseSignature === remoteSignature
-      ? localHomeCards.value
-      : null
-  }, [localHomeCards, remoteSignature])
-
-  const effectiveHomeCards = pendingLocalCards ?? remoteHomeCards
+  const homeCards =
+    (verge?.home_cards as HomeCardsSettings | undefined) ?? DEFAULT_HOME_CARDS
 
   // 文档链接函数
-  const toGithubDoc = useLockFn(() => {
-    return openWebUrl('https://clash-verge-rev.github.io/index.html')
-  })
+  const toGithubDoc = useLockFn(() =>
+    openExternalUrl('https://clash-verge-rev.github.io/index.html').catch(
+      showNotice.error,
+    ),
+  )
 
   // 新增：打开设置弹窗
   const openSettings = useCallback(() => {
@@ -275,7 +259,7 @@ const HomePage = () => {
 
   const renderCard = useCallback(
     (cardKey: string, component: React.ReactNode, size: number = 6) => {
-      if (!effectiveHomeCards[cardKey]) return null
+      if (!homeCards[cardKey]) return null
 
       return (
         <Grid size={size} key={cardKey}>
@@ -283,7 +267,7 @@ const HomePage = () => {
         </Grid>
       )
     },
-    [effectiveHomeCards],
+    [homeCards],
   )
 
   const criticalCards = useMemo(
@@ -298,27 +282,6 @@ const HomePage = () => {
     ],
     [current, mutateProfiles, renderCard],
   )
-
-  // 新增：保存设置时用requestIdleCallback/setTimeout
-  const handleSaveSettings = (newCards: HomeCardsSettings) => {
-    if (window.requestIdleCallback) {
-      window.requestIdleCallback(() =>
-        setLocalHomeCards({
-          value: newCards,
-          baseSignature: remoteSignature,
-        }),
-      )
-    } else {
-      setTimeout(
-        () =>
-          setLocalHomeCards({
-            value: newCards,
-            baseSignature: remoteSignature,
-          }),
-        0,
-      )
-    }
-  }
 
   const nonCriticalCards = useMemo(
     () => [
@@ -360,10 +323,6 @@ const HomePage = () => {
     ],
     [t, renderCard],
   )
-  const dialogKey = useMemo(
-    () => `${serializeCardFlags(effectiveHomeCards)}:${settingsOpen ? 1 : 0}`,
-    [effectiveHomeCards, settingsOpen],
-  )
   return (
     <BasePage
       title={t('home.page.title')}
@@ -372,7 +331,12 @@ const HomePage = () => {
         <Box sx={{ display: 'flex', alignItems: 'center' }}>
           <Tooltip title={t('home.page.tooltips.lightweightMode')} arrow>
             <IconButton
-              onClick={async () => await entry_lightweight_mode()}
+              onClick={async () =>
+                await mutate(() => entry_lightweight_mode(), {
+                  id: 'entry-lightweight-mode',
+                  errorNotice: false,
+                })
+              }
               size="small"
               color="inherit"
               disabled={lightweightPolicy.mode === 'disabled'}
@@ -401,13 +365,13 @@ const HomePage = () => {
       </Grid>
 
       {/* 首页设置弹窗 */}
-      <HomeSettingsDialog
-        key={dialogKey}
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        homeCards={effectiveHomeCards}
-        onSave={handleSaveSettings}
-      />
+      {settingsOpen && (
+        <HomeSettingsDialog
+          key={serializeCardFlags(homeCards)}
+          onClose={() => setSettingsOpen(false)}
+          homeCards={homeCards}
+        />
+      )}
     </BasePage>
   )
 }

@@ -44,7 +44,7 @@ if MODULE_DIR not in sys.path:
 from mihomo_core_updater import DEFAULT_STABLE_TAG, upgrade_core
 
 
-APP_VERSION = os.environ.get("MIHOMO_VERGE_APP_VERSION", "2.5.2-webport.0")
+APP_VERSION = os.environ.get("MIHOMO_VERGE_APP_VERSION", "2.5.8-webport.0")
 BUILD_ID = os.environ.get("MIHOMO_VERGE_BUILD_ID", "")
 GIT_COMMIT = os.environ.get("MIHOMO_VERGE_GIT_COMMIT", "")
 PACKAGE_FINGERPRINT = os.environ.get("MIHOMO_VERGE_PACKAGE_FINGERPRINT", "")
@@ -4150,6 +4150,66 @@ def public_config_payload() -> dict[str, Any]:
 def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
     set_log_context(command=cmd)
     ensure_state()
+
+    if cmd == "get_runtime_state":
+        try:
+            version = controller_request("GET", "/version", timeout=6)
+            ready = isinstance(version, dict) and bool(version.get("version"))
+        except Exception:
+            ready = False
+        return {"mode": "Service" if ready else "NotRunning", "service": "ready" if ready else "unavailable",
+                "serviceUnavailableReason": None if ready else "Mihomo controller unavailable",
+                "pendingAction": None, "sidecarAllowed": False, "isAdmin": False,
+                "opInFlight": False, "serviceUsable": ready, "tunCapable": False,
+                "serviceNeedsAttention": not ready}
+
+    if cmd == "get_pending_failures":
+        return []  # Desktop system-proxy operations do not run in this Web runtime.
+    if cmd == "get_sidecar_failure":
+        return {"revision": 0, "detail": None}
+    if cmd in {"take_service_fallback_notice", "get_core_startup_error", "take_service_owner_notice", "take_discarded_keys_notice"}:
+        return None
+    if cmd in {"take_dns_override_notice", "take_service_repair_notice"}:
+        return False
+    if cmd in {"record_selected_node", "forget_selected_node", "sync_runtime_providers"}:
+        return None  # Mihomo owns selections/providers; no desktop tray/cache to sync.
+    if cmd == "upgrade_clash_core":
+        result = upgrade_core_release("verge-mihomo")
+        return {"upgraded": result.get("STATUS") != "already_current", "from": result.get("PREV_VERSION", ""), "to": result.get("TARGET_VERSION", "")}
+    if cmd == "save_proxy_ports":
+        settings = args.get("settings") or {}
+        payload = {"mixed-port": settings.get("mixedPort")}
+        for key, target in (("socks", "socks-port"), ("http", "port"), ("redir", "redir-port"), ("tproxy", "tproxy-port")):
+            item = settings.get(key) or {}
+            payload[target] = item.get("port") if item.get("enabled") else 0
+        for key, port in payload.items():
+            if type(port) is not int or not 0 <= port <= 65535 or (key == "mixed-port" and port == 0):
+                raise ValueError("Invalid proxy port")
+        old_overlay = load_overlay()
+        try:
+            save_overlay(deep_merge(old_overlay, payload))
+            apply_runtime_for_current_or_empty_state()
+        except Exception:
+            save_overlay(old_overlay)
+            raise
+        return {"status": "saved"}
+    if cmd == "probe_listener":
+        request = args.get("request") or {}
+        address = str(request.get("address") or "")
+        host, separator, raw_port = address.rpartition(":")
+        host = host.strip("[]")
+        transports = request.get("transports") or []
+        if not separator or not raw_port.isdigit() or not 1 <= int(raw_port) <= 65535 or not transports or any(t not in {"tcp", "udp"} for t in transports):
+            return {"status": "invalid", "message": "Invalid listener address or transport"}
+        for transport in transports:
+            try:
+                with socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET, socket.SOCK_STREAM if transport == "tcp" else socket.SOCK_DGRAM) as probe:
+                    probe.bind((host, int(raw_port)))
+            except OSError as exc:
+                if exc.errno == 98:
+                    return {"status": "conflict", "port": int(raw_port), "transport": transport}
+                return {"status": "indeterminate", "message": sanitize_log_text(str(exc))}
+        return {"status": "available"}
 
     if cmd == "get_profiles":
         return get_profiles_state()
