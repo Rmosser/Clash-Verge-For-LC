@@ -6,7 +6,7 @@ LPK v2 的包名、版本和本地化元数据以
 `src/mihomo-dashboard-app/package.yml` 为准；应用路由、服务和 healthcheck
 仍由相邻的 `lzc-manifest.yml` 定义。
 
-构建需要本机 Docker；fetchproxy 的官方 Node 24 固定摘要镜像完整内嵌在 LPK 中，
+构建需要本机 Docker、crane 和支持 tar 安全解包的 Python 3.12+；fetchproxy 的官方 Node 24 固定摘要镜像完整内嵌在 LPK 中，
 安装时不依赖 Docker Hub 或懒猫镜像标签。当前构建目标为两台盒子使用的 linux/amd64。
 
 ## 只出包
@@ -27,6 +27,8 @@ output/release/<version>/
 - `clash-verge-for-lc-<version>.lpk.sha256`
 - `INSTALL.md`
 - `build-info.txt`
+
+构建脚本使用官方原始 OCI 层替换 CLI 本地导出层，并核对每层长度、摘要、解压后 diff ID 和完整 tar 内容，避免 CLI 2.0.9 的截断层问题。
 
 ## LPK 包含什么
 

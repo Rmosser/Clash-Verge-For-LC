@@ -93,6 +93,7 @@ write_sha256() {
 require_cmd python3
 require_cmd lzc-cli
 require_cmd npm
+require_cmd crane
 
 PNPM_CMD=(npm exec --yes --package=pnpm@11.3.0 -- pnpm)
 
@@ -147,6 +148,15 @@ if [[ ! -f "$LPK_PATH" ]]; then
   echo "ERROR: expected LPK was not created: $LPK_PATH" >&2
   exit 1
 fi
+
+# lzc-cli 2.0.9 can truncate a locally exported layer while producing a valid
+# gzip/digest. Replace it with verified registry-original OCI blobs.
+OCI_TMP="$(mktemp -d)"
+trap 'rm -rf -- "$OCI_TMP"' EXIT
+NODE_IMAGE="$(sed -n 's/^FROM //p' "$APP_DIR/fetchproxy-image/Dockerfile")"
+crane pull "$NODE_IMAGE" "$OCI_TMP/node.oci.tar" --platform linux/amd64 --format=oci
+python3 "$ROOT/scripts/repair_dashboard_image.py" "$LPK_PATH" "$OCI_TMP/node.oci.tar"
+lzc-cli lpk lint "$LPK_PATH"
 
 (
   cd "$RELEASE_DIR"
