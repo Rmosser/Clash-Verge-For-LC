@@ -509,7 +509,7 @@ export const getSidecarFailure = async () => {
 }
 
 export const getAppUptime = async () => {
-  return invoke<number>('get_app_uptime')
+  return (await invoke<number>('get_app_uptime')) * 1000
 }
 
 export type ServiceInstallOutcome =

@@ -1,3 +1,4 @@
+import { isLzcWebRuntime } from '@root/browser/runtime'
 import {
   DeleteForeverRounded,
   PauseCircleOutlineRounded,
@@ -135,11 +136,11 @@ const ProxyControlSwitches = ({
   const { t } = useTranslation()
   const { verge, mutateVerge, patchVerge } = useVerge()
   const { uninstallServiceAndStartSidecar } = useServiceUninstaller()
-  const { indicator: systemProxyIndicator, toggleSystemProxy } =
+  const { indicator: systemProxyIndicator, toggleSystemProxy, systemProxyDisabled, systemProxyDisabledReason } =
     useSystemProxyState()
   const { runState, isTunModeAvailable, isLoading } = useSystemState()
   // Offer to uninstall only a service that is actually there and working.
-  const isServiceInstallReady = runState.serviceUsable
+  const isServiceInstallReady = runState.serviceUsable && !isLzcWebRuntime()
 
   const sysproxyRef = useRef<DialogRef>(null)
   const tunRef = useRef<DialogRef>(null)
@@ -185,7 +186,8 @@ const ProxyControlSwitches = ({
         <SwitchRow
           label={t('settings.sections.proxyControl.fields.systemProxy')}
           active={systemProxyIndicator}
-          infoTitle={t('settings.sections.proxyControl.tooltips.systemProxy')}
+          disabled={systemProxyDisabled}
+          infoTitle={systemProxyDisabled ? systemProxyDisabledReason : t('settings.sections.proxyControl.tooltips.systemProxy')}
           onInfoClick={() => sysproxyRef.current?.open()}
           onToggle={handleSystemProxyToggle}
           onError={onError}
@@ -197,6 +199,7 @@ const ProxyControlSwitches = ({
         <SwitchRow
           label={t('settings.sections.proxyControl.fields.tunMode')}
           active={(enable_tun_mode && isTunModeAvailable) || false}
+          disabled={isLzcWebRuntime()}
           infoTitle={t('settings.sections.proxyControl.tooltips.tunMode')}
           onInfoClick={() => tunRef.current?.open()}
           onToggle={handleTunToggle}

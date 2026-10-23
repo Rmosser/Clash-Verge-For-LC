@@ -1,3 +1,34 @@
+diff --git a/src/components/home/proxy-tun-card.tsx b/src/components/home/proxy-tun-card.tsx
+index ca47d964..678cc12d 100644
+--- a/src/components/home/proxy-tun-card.tsx
++++ b/src/components/home/proxy-tun-card.tsx
+@@ -144,7 +144,7 @@ export const ProxyTunCard: FC = () => {
+   const { verge } = useVerge()
+   const { isTunModeAvailable } = useSystemState()
+   // Display the observed OS state, not the requested configuration.
+-  const { indicator: systemProxyIndicator } = useSystemProxyState()
++  const { indicator: systemProxyIndicator, systemProxyDisabled, systemProxyDisabledReason } = useSystemProxyState()
+ 
+   const { enable_tun_mode } = verge ?? {}
+ 
+@@ -160,7 +160,7 @@ export const ProxyTunCard: FC = () => {
+   const tabDescription = useMemo(() => {
+     if (activeTab === 'system') {
+       return {
+-        text: systemProxyIndicator
++        text: systemProxyDisabled ? systemProxyDisabledReason : systemProxyIndicator
+           ? t('home.components.proxyTun.status.systemProxyEnabled')
+           : t('home.components.proxyTun.status.systemProxyDisabled'),
+         tooltip: t('home.components.proxyTun.tooltips.systemProxy'),
+@@ -175,7 +175,7 @@ export const ProxyTunCard: FC = () => {
+         tooltip: t('home.components.proxyTun.tooltips.tunMode'),
+       }
+     }
+-  }, [activeTab, systemProxyIndicator, enable_tun_mode, isTunModeAvailable, t])
++  }, [activeTab, systemProxyIndicator, systemProxyDisabled, systemProxyDisabledReason, enable_tun_mode, isTunModeAvailable, t])
+ 
+   return (
+     <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
 diff --git a/src/components/profile/grouped-virtual-list.tsx b/src/components/profile/grouped-virtual-list.tsx
 index 07b657f3..208f6078 100644
 --- a/src/components/profile/grouped-virtual-list.tsx
@@ -1056,6 +1087,47 @@ index e96a96bc..56aadf60 100644
 +    //width: 85px;
    }
  `
+diff --git a/src/components/shared/proxy-control-switches.tsx b/src/components/shared/proxy-control-switches.tsx
+index 8f77df4d..c11cbacd 100644
+--- a/src/components/shared/proxy-control-switches.tsx
++++ b/src/components/shared/proxy-control-switches.tsx
+@@ -1,3 +1,4 @@
++import { isLzcWebRuntime } from '@root/browser/runtime'
+ import {
+   DeleteForeverRounded,
+   PauseCircleOutlineRounded,
+@@ -135,11 +136,11 @@ const ProxyControlSwitches = ({
+   const { t } = useTranslation()
+   const { verge, mutateVerge, patchVerge } = useVerge()
+   const { uninstallServiceAndStartSidecar } = useServiceUninstaller()
+-  const { indicator: systemProxyIndicator, toggleSystemProxy } =
++  const { indicator: systemProxyIndicator, toggleSystemProxy, systemProxyDisabled, systemProxyDisabledReason } =
+     useSystemProxyState()
+   const { runState, isTunModeAvailable, isLoading } = useSystemState()
+   // Offer to uninstall only a service that is actually there and working.
+-  const isServiceInstallReady = runState.serviceUsable
++  const isServiceInstallReady = runState.serviceUsable && !isLzcWebRuntime()
+ 
+   const sysproxyRef = useRef<DialogRef>(null)
+   const tunRef = useRef<DialogRef>(null)
+@@ -185,7 +186,8 @@ const ProxyControlSwitches = ({
+         <SwitchRow
+           label={t('settings.sections.proxyControl.fields.systemProxy')}
+           active={systemProxyIndicator}
+-          infoTitle={t('settings.sections.proxyControl.tooltips.systemProxy')}
++          disabled={systemProxyDisabled}
++          infoTitle={systemProxyDisabled ? systemProxyDisabledReason : t('settings.sections.proxyControl.tooltips.systemProxy')}
+           onInfoClick={() => sysproxyRef.current?.open()}
+           onToggle={handleSystemProxyToggle}
+           onError={onError}
+@@ -197,6 +199,7 @@ const ProxyControlSwitches = ({
+         <SwitchRow
+           label={t('settings.sections.proxyControl.fields.tunMode')}
+           active={(enable_tun_mode && isTunModeAvailable) || false}
++          disabled={isLzcWebRuntime()}
+           infoTitle={t('settings.sections.proxyControl.tooltips.tunMode')}
+           onInfoClick={() => tunRef.current?.open()}
+           onToggle={handleTunToggle}
 diff --git a/src/hooks/system-proxy-lock.test.ts b/src/hooks/system-proxy-lock.test.ts
 new file mode 100644
 index 00000000..177436c3
@@ -2298,7 +2370,7 @@ index 254994bc..71f209d4 100644
              startIcon={
                isCheckingAll ? (
 diff --git a/src/services/cmds.ts b/src/services/cmds.ts
-index c5d7c119..bc222523 100644
+index c5d7c119..7e9bc1e4 100644
 --- a/src/services/cmds.ts
 +++ b/src/services/cmds.ts
 @@ -1,3 +1,4 @@
@@ -2324,6 +2396,15 @@ index c5d7c119..bc222523 100644
    if (view.schemaVersion !== 1) {
      throw new Error('Unsupported proxy view schema: ' + view.schemaVersion)
    }
+@@ -508,7 +509,7 @@ export const getSidecarFailure = async () => {
+ }
+ 
+ export const getAppUptime = async () => {
+-  return invoke<number>('get_app_uptime')
++  return (await invoke<number>('get_app_uptime')) * 1000
+ }
+ 
+ export type ServiceInstallOutcome =
 diff --git a/src/services/delay.test.ts b/src/services/delay.test.ts
 index 5f6a51af..724690a8 100644
 --- a/src/services/delay.test.ts

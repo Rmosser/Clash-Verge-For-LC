@@ -144,7 +144,7 @@ export const ProxyTunCard: FC = () => {
   const { verge } = useVerge()
   const { isTunModeAvailable } = useSystemState()
   // Display the observed OS state, not the requested configuration.
-  const { indicator: systemProxyIndicator } = useSystemProxyState()
+  const { indicator: systemProxyIndicator, systemProxyDisabled, systemProxyDisabledReason } = useSystemProxyState()
 
   const { enable_tun_mode } = verge ?? {}
 
@@ -160,7 +160,7 @@ export const ProxyTunCard: FC = () => {
   const tabDescription = useMemo(() => {
     if (activeTab === 'system') {
       return {
-        text: systemProxyIndicator
+        text: systemProxyDisabled ? systemProxyDisabledReason : systemProxyIndicator
           ? t('home.components.proxyTun.status.systemProxyEnabled')
           : t('home.components.proxyTun.status.systemProxyDisabled'),
         tooltip: t('home.components.proxyTun.tooltips.systemProxy'),
@@ -175,7 +175,7 @@ export const ProxyTunCard: FC = () => {
         tooltip: t('home.components.proxyTun.tooltips.tunMode'),
       }
     }
-  }, [activeTab, systemProxyIndicator, enable_tun_mode, isTunModeAvailable, t])
+  }, [activeTab, systemProxyIndicator, systemProxyDisabled, systemProxyDisabledReason, enable_tun_mode, isTunModeAvailable, t])
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
