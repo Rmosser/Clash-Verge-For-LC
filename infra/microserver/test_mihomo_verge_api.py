@@ -34,13 +34,37 @@ class MihomoVergeApiTests(unittest.TestCase):
         self.assertFalse(state["serviceUsable"])
         self.assertFalse(state["sidecarAllowed"])
 
-    def test_upstream_port_save_restores_overlay_after_apply_failure(self):
+    def test_upstream_port_save_persists_flags_and_renders_listeners(self):
+        settings = {"mixedPort": 8890, "socks": {"enabled": True, "port": 8891},
+                    "http": {"enabled": False, "port": 8892}}
+        old = {"verge_mixed_port": 7890, "verge_socks_enabled": False,
+               "verge_http_enabled": True, "enable_tun_mode": False, "enable_dns_settings": False}
+        with patch.object(MODULE, "ensure_state"), patch.object(MODULE, "load_overlay", return_value={}), \
+             patch.object(MODULE, "get_verge_config_state", return_value=old), \
+             patch.object(MODULE, "save_overlay") as overlay, patch.object(MODULE, "save_verge_config_state") as verge, \
+             patch.object(MODULE, "apply_runtime_for_current_or_empty_state"):
+            MODULE.invoke_command("save_proxy_ports", {"settings": settings})
+            saved = verge.call_args.args[0]
+            self.assertEqual(saved["verge_mixed_port"], 8890)
+            self.assertTrue(saved["verge_socks_enabled"])
+            self.assertFalse(saved["verge_http_enabled"])
+            text, _ = MODULE.build_runtime_text(base_text="secret: synthetic-test\nport: 7892\n", overlay_state=overlay.call_args.args[0], verge_state=saved, dns_state={})
+        self.assertEqual(MODULE.extract_int(text, "mixed-port"), 8890)
+        self.assertEqual(MODULE.extract_int(text, "socks-port"), 8891)
+        self.assertIsNone(MODULE.extract_scalar(text, "port"))
+
+    def test_upstream_port_save_restores_settings_after_apply_failure(self):
         settings = {"mixedPort": 7890}
         old = {"mode": "rule"}
-        with patch.object(MODULE, "ensure_state"), patch.object(MODULE, "load_overlay", return_value=old), patch.object(MODULE, "save_overlay") as save, patch.object(MODULE, "apply_runtime_for_current_or_empty_state", side_effect=RuntimeError("invalid")):
+        old_verge = {"verge_mixed_port": 8890, "verge_socks_enabled": True}
+        with patch.object(MODULE, "ensure_state"), patch.object(MODULE, "load_overlay", return_value=old), \
+             patch.object(MODULE, "get_verge_config_state", return_value=old_verge), \
+             patch.object(MODULE, "save_overlay") as save, patch.object(MODULE, "save_verge_config_state") as save_verge, \
+             patch.object(MODULE, "apply_runtime_for_current_or_empty_state", side_effect=RuntimeError("invalid")):
             with self.assertRaises(RuntimeError):
                 MODULE.invoke_command("save_proxy_ports", {"settings": settings})
         self.assertEqual(save.call_args_list[-1].args[0], old)
+        self.assertEqual(save_verge.call_args_list[-1].args[0], old_verge)
 
     def test_upstream_core_upgrade_remains_stable_and_version_pinned(self):
         with patch.object(MODULE, "ensure_state"), patch.object(MODULE, "upgrade_core_release", return_value={"STATUS": "already_current", "PREV_VERSION": "v1.19.33", "TARGET_VERSION": "v1.19.33"}) as upgrade:

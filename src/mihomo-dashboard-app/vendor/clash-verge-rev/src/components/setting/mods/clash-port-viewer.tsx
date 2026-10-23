@@ -170,6 +170,7 @@ export const ClashPortViewer = forwardRef<ClashPortViewerRef>((_, ref) => {
     async (settings: ProxyPortSettings) =>
       mutate(() => saveProxyPorts(settings), {
         id: 'save-proxy-ports',
+        revalidate: [['getVergeConfig'], ['getClashInfo'], ['getRuntimeConfig']],
         errorNotice: false,
       }),
     {

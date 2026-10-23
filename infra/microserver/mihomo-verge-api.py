@@ -4188,13 +4188,30 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
         for key, port in payload.items():
             if type(port) is not int or not 0 <= port <= 65535 or (key == "mixed-port" and port == 0):
                 raise ValueError("Invalid proxy port")
-        old_overlay = load_overlay()
-        try:
-            save_overlay(deep_merge(old_overlay, payload))
-            apply_runtime_for_current_or_empty_state()
-        except Exception:
-            save_overlay(old_overlay)
-            raise
+        with PROFILE_MUTATION_LOCK:
+            old_overlay = load_overlay()
+            old_verge = get_verge_config_state()
+            updated_verge = copy.deepcopy(old_verge)
+            updated_verge["verge_mixed_port"] = payload["mixed-port"]
+            for key, enabled_key, port_key in (
+                ("socks", "verge_socks_enabled", "verge_socks_port"),
+                ("http", "verge_http_enabled", "verge_port"),
+                ("redir", "verge_redir_enabled", "verge_redir_port"),
+                ("tproxy", "verge_tproxy_enabled", "verge_tproxy_port"),
+            ):
+                item = settings.get(key) or {}
+                updated_verge[enabled_key] = bool(item.get("enabled"))
+                port = item.get("port")
+                if type(port) is int and 1 <= port <= 65535:
+                    updated_verge[port_key] = port
+            try:
+                save_overlay(deep_merge(old_overlay, payload))
+                save_verge_config_state(updated_verge)
+                apply_runtime_for_current_or_empty_state()
+            except Exception:
+                save_overlay(old_overlay)
+                save_verge_config_state(old_verge)
+                raise
         return {"status": "saved"}
     if cmd == "probe_listener":
         request = args.get("request") or {}

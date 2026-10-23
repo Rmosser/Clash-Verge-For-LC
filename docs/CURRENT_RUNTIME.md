@@ -35,6 +35,8 @@
 - `172.18.0.1:9091` 作为 Verge API
 - `172.18.0.1:17890` 作为容器显式代理入口
 
+端口设置保存时同步 GUI 配置与运行覆盖层；可选端口的启用状态参与生成 Mihomo 配置，应用失败时恢复两份设置。
+
 ## 运行时恢复与健康契约
 
 - `install_host_native_bootstrap.sh` 将宿主机文件（含 API 必需的 `mihomo_core_updater.py`）发布为不可变 generation；
