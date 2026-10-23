@@ -17,6 +17,7 @@
 - `172.18.0.1:9090`：controller
 - `172.18.0.1:9091`：Verge API
 - `172.18.0.1:17890`：container proxy
+- 可选 `172.18.0.1:17896` → `127.0.0.1:7896`：pinned container proxy（见 [CONTAINER_PROXY_GUIDE.md](CONTAINER_PROXY_GUIDE.md#固定节点入口)）
 
 `deploy_microserver.sh` 默认使用该保守基线。生产命令仍显式带环境变量，便于审阅并避免本地 `.env` 覆盖意图。
 
@@ -52,8 +53,8 @@ bash scripts/deploy_microserver.sh --confirm
 - 下发 `/etc/mihomo/config.yaml`
 - 下发 `mihomo.service`
 - 下发 `mihomo-verge-api.service`
-- 下发 `mihomo-container-proxy.socket`
-- 恢复 `9090`、`9091`、`17890` 运行链
+- 下发 `mihomo-container-proxy.socket` 与 `mihomo-container-proxy-pinned.socket`
+- 恢复 `9090`、`9091`、`17890`、`17896` 运行链；它会覆盖 `config.yaml`，pinned listener 需通过 Verge API 重新渲染才会回来
 
 ### 2. 安装或重装 dashboard
 
@@ -152,7 +153,7 @@ MICROSERVER_HOST=rainierdev.heiyu.space bash scripts/selfcheck.sh
 - `Linger=yes`
 - `lzc-mihomo-bootstrap.service` 为 `active`
 - 三个宿主机服务都为 `active`
-- 四个监听都出现
+- 四个监听都出现；启用了 pinned 入口时还应有 `172.18.0.1:17896` 与 `127.0.0.1:7896`
 
 ### `rainierspace`
 
@@ -181,6 +182,14 @@ MICROSERVER_HOST=rainierspace.heiyu.space bash scripts/selfcheck.sh
 
 - `systemctl status mihomo-container-proxy.socket`
 - `journalctl -u mihomo-container-proxy.socket -b`
+
+### `17896` 不通或出口不对
+
+先查：
+
+- `systemctl status mihomo-container-proxy-pinned.socket`
+- `ss -lnt | grep 127.0.0.1:7896`：没有说明 overlay 的 `lzc-pinned-listeners` 未渲染进 `config.yaml`
+- `grep -A6 '^listeners:' /etc/mihomo/config.yaml` 里的 `proxy:` 是否还在当前订阅中
 
 ### `9090` 不在
 

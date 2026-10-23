@@ -27,6 +27,8 @@ CFG_LOCAL="$(lzc_resolve_path_from_root "$ROOT" "${MIHOMO_CONFIG_LOCAL:-var/priv
 UNIT_LOCAL="$ROOT/infra/mihomo/mihomo.service"
 CONTAINER_PROXY_SOCKET_LOCAL="$ROOT/infra/microserver/mihomo-container-proxy.socket"
 CONTAINER_PROXY_SERVICE_LOCAL="$ROOT/infra/microserver/mihomo-container-proxy.service"
+PINNED_PROXY_SOCKET_LOCAL="$ROOT/infra/microserver/mihomo-container-proxy-pinned.socket"
+PINNED_PROXY_SERVICE_LOCAL="$ROOT/infra/microserver/mihomo-container-proxy-pinned.service"
 VERGE_API_LOCAL="$ROOT/infra/microserver/mihomo-verge-api.py"
 CORE_UPDATER_LOCAL="$ROOT/infra/microserver/mihomo_core_updater.py"
 VERGE_API_UNIT_LOCAL="$ROOT/infra/microserver/mihomo-verge-api.service"
@@ -131,6 +133,8 @@ TMP_CFG="/tmp/mihomo.config.$TS.yaml"
 TMP_UNIT="/tmp/mihomo.service.$TS"
 TMP_CONTAINER_PROXY_SOCKET="/tmp/mihomo-container-proxy.socket.$TS"
 TMP_CONTAINER_PROXY_SERVICE="/tmp/mihomo-container-proxy.service.$TS"
+TMP_PINNED_PROXY_SOCKET="/tmp/mihomo-container-proxy-pinned.socket.$TS"
+TMP_PINNED_PROXY_SERVICE="/tmp/mihomo-container-proxy-pinned.service.$TS"
 TMP_VERGE_API="/tmp/mihomo-verge-api.py.$TS"
 TMP_CORE_UPDATER="/tmp/mihomo_core_updater.py.$TS"
 TMP_VERGE_API_UNIT="/tmp/mihomo-verge-api.service.$TS"
@@ -400,10 +404,13 @@ NETSAFE
 fi
 
 if [[ "$CONTAINER_PROXY_ENABLE" == "1" && "$ONLY_CORE" != "1" ]]; then
-  if [[ ! -f "$CONTAINER_PROXY_SOCKET_LOCAL" || ! -f "$CONTAINER_PROXY_SERVICE_LOCAL" ]]; then
+  if [[ ! -f "$CONTAINER_PROXY_SOCKET_LOCAL" || ! -f "$CONTAINER_PROXY_SERVICE_LOCAL" ||
+        ! -f "$PINNED_PROXY_SOCKET_LOCAL" || ! -f "$PINNED_PROXY_SERVICE_LOCAL" ]]; then
     echo "ERROR: missing container proxy unit(s):" >&2
     echo "  - $CONTAINER_PROXY_SOCKET_LOCAL" >&2
     echo "  - $CONTAINER_PROXY_SERVICE_LOCAL" >&2
+    echo "  - $PINNED_PROXY_SOCKET_LOCAL" >&2
+    echo "  - $PINNED_PROXY_SERVICE_LOCAL" >&2
     exit 1
   fi
 
@@ -412,6 +419,10 @@ scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHost
     "$CONTAINER_PROXY_SOCKET_LOCAL" "$SSH_USER@$HOST:$TMP_CONTAINER_PROXY_SOCKET" >/dev/null
 scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
     "$CONTAINER_PROXY_SERVICE_LOCAL" "$SSH_USER@$HOST:$TMP_CONTAINER_PROXY_SERVICE" >/dev/null
+scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
+    "$PINNED_PROXY_SOCKET_LOCAL" "$SSH_USER@$HOST:$TMP_PINNED_PROXY_SOCKET" >/dev/null
+scp -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${MIHOMO_KNOWN_HOSTS_FILE:?target identity was not prepared}" \
+    "$PINNED_PROXY_SERVICE_LOCAL" "$SSH_USER@$HOST:$TMP_PINNED_PROXY_SERVICE" >/dev/null
 fi
 
 echo "Applying on microserver ..."
@@ -422,6 +433,8 @@ echo "Applying on microserver ..."
   TMP_UNIT="$TMP_UNIT" \
   TMP_CONTAINER_PROXY_SOCKET="$TMP_CONTAINER_PROXY_SOCKET" \
   TMP_CONTAINER_PROXY_SERVICE="$TMP_CONTAINER_PROXY_SERVICE" \
+  TMP_PINNED_PROXY_SOCKET="$TMP_PINNED_PROXY_SOCKET" \
+  TMP_PINNED_PROXY_SERVICE="$TMP_PINNED_PROXY_SERVICE" \
   TMP_VERGE_API="$TMP_VERGE_API" \
   TMP_CORE_UPDATER="$TMP_CORE_UPDATER" \
   TMP_VERGE_API_UNIT="$TMP_VERGE_API_UNIT" \
@@ -448,6 +461,8 @@ cfg=/etc/mihomo/config.yaml
 unit=/etc/systemd/system/mihomo.service
 container_proxy_socket=/etc/systemd/system/mihomo-container-proxy.socket
 container_proxy_service=/etc/systemd/system/mihomo-container-proxy.service
+pinned_proxy_socket=/etc/systemd/system/mihomo-container-proxy-pinned.socket
+pinned_proxy_service=/etc/systemd/system/mihomo-container-proxy-pinned.service
 verge_api_service=/etc/systemd/system/mihomo-verge-api.service
 verge_api_secret=/etc/mihomo/verge-api.secret
 verge_api_bin=/usr/local/lib/lzc-mihomo/mihomo-verge-api.py
@@ -556,6 +571,7 @@ snapshot_target() {
 snapshot_index=0
 snapshot_targets=(
   "$cfg" "$unit" "$container_proxy_socket" "$container_proxy_service"
+  "$pinned_proxy_socket" "$pinned_proxy_service"
   "$verge_api_service" "$verge_api_secret" "$verge_api_bin"
   "$resolved_sync_service" "$resolved_sync_bin" "$resolved_sync_dropin_dir"
   "$runtime_contract" "/var/lib/mihomo/Country.mmdb" "/var/lib/mihomo/verge"
@@ -563,7 +579,7 @@ snapshot_targets=(
 for snapshot_path in "${snapshot_targets[@]}"; do
   snapshot_target "$snapshot_path"
 done
-snapshot_services=(mihomo.service mihomo-verge-api.service mihomo-container-proxy.socket mihomo-resolved-sync.service)
+snapshot_services=(mihomo.service mihomo-verge-api.service mihomo-container-proxy.socket mihomo-container-proxy-pinned.socket mihomo-resolved-sync.service)
 for snapshot_service in "${snapshot_services[@]}"; do
   service_exists=0
   if systemctl cat "$snapshot_service" >/dev/null 2>&1 ||
@@ -608,7 +624,7 @@ verify_snapshot() {
   while IFS=$'\t' read -r snapshot_service snapshot_active snapshot_enabled; do
     [[ -n "$snapshot_service" ]] || continue
     case "$snapshot_service" in
-      mihomo.service|mihomo-verge-api.service|mihomo-container-proxy.socket|mihomo-resolved-sync.service) ;;
+      mihomo.service|mihomo-verge-api.service|mihomo-container-proxy.socket|mihomo-container-proxy-pinned.socket|mihomo-resolved-sync.service) ;;
       *) return 1 ;;
     esac
     if [[ "$snapshot_active" == absent ]]; then
@@ -620,7 +636,8 @@ verify_snapshot() {
   done < "$snapshot_service_state"
   while IFS=$'\t' read -r path state type size digest backup archive_digest mode uid gid; do
     [[ "$path" == "$cfg" || "$path" == "$unit" || "$path" == "$container_proxy_socket" ||
-       "$path" == "$container_proxy_service" || "$path" == "$verge_api_service" ||
+       "$path" == "$container_proxy_service" || "$path" == "$pinned_proxy_socket" ||
+       "$path" == "$pinned_proxy_service" || "$path" == "$verge_api_service" ||
        "$path" == "$verge_api_secret" || "$path" == "$verge_api_bin" ||
        "$path" == "$resolved_sync_service" || "$path" == "$resolved_sync_bin" ||
        "$path" == "$resolved_sync_dropin_dir" || "$path" == "$runtime_contract" ||
@@ -1034,6 +1051,17 @@ if [[ "${CONTAINER_PROXY_ENABLE}" == "1" ]]; then
     systemctl enable --now mihomo-container-proxy.socket >/dev/null || log "WARN: failed to enable mihomo-container-proxy.socket"
   else
     log "NOTE: container proxy socket/service not installed (missing tmp files or systemd-socket-proxyd)."
+  fi
+  # The pinned entry forwards to the Verge API overlay's pinned listener (127.0.0.1:7896); this deploy
+  # replaces config.yaml, so re-render through the Verge API (enhance_profiles) to bring the listener back.
+  if [[ -x /lib/systemd/systemd-socket-proxyd && -f "${TMP_PINNED_PROXY_SOCKET}" && -f "${TMP_PINNED_PROXY_SERVICE}" ]]; then
+    install -o root -g root -m 644 "${TMP_PINNED_PROXY_SOCKET}" "${pinned_proxy_socket}"
+    install -o root -g root -m 644 "${TMP_PINNED_PROXY_SERVICE}" "${pinned_proxy_service}"
+    rm -f "${TMP_PINNED_PROXY_SOCKET}" "${TMP_PINNED_PROXY_SERVICE}" || true
+    systemctl daemon-reload
+    systemctl enable --now mihomo-container-proxy-pinned.socket >/dev/null || log "WARN: failed to enable mihomo-container-proxy-pinned.socket"
+  else
+    log "NOTE: pinned container proxy socket/service not installed (missing tmp files or systemd-socket-proxyd)."
   fi
 fi
 

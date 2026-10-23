@@ -23,6 +23,9 @@ bash scripts/test_legacy_cleanup_isolation.sh
 echo "==> rollback snapshot contract fixture"
 python3 -B scripts/test_rollback_snapshot_contract.py
 
+echo "==> pinned container proxy contract"
+python3 -B scripts/test_pinned_proxy_contract.py
+
 echo "==> runtime restore and health recovery drill"
 python3 -B scripts/test_restore_recovery.py
 

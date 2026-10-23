@@ -2969,6 +2969,66 @@ def empty_runtime_requires_repair() -> bool:
     return False
 
 
+PINNED_LISTENERS_KEY = "lzc-pinned-listeners"
+PINNED_LISTENER_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
+# Host services that already own a loopback port, plus the Verge SOCKS default even while SOCKS is off.
+PINNED_LISTENER_RESERVED_PORTS = {1053, 7891, 9090, 9091}
+
+
+def pinned_listener_reserved_ports(overlay: dict[str, Any], verge: dict[str, Any]) -> set[int]:
+    reserved = set(PINNED_LISTENER_RESERVED_PORTS)
+    reserved.add(parse_int(overlay.get("mixed-port", verge.get("verge_mixed_port")) or 7890, 7890))
+    for yaml_key, enabled_key, port_key in (
+        ("socks-port", "verge_socks_enabled", "verge_socks_port"),
+        ("port", "verge_http_enabled", "verge_port"),
+        ("redir-port", "verge_redir_enabled", "verge_redir_port"),
+        ("tproxy-port", "verge_tproxy_enabled", "verge_tproxy_port"),
+    ):
+        if verge.get(enabled_key):
+            port = parse_int(overlay.get(yaml_key, verge.get(port_key)), 0)
+            if port:
+                reserved.add(port)
+    return reserved
+
+
+def normalize_pinned_listeners(value: Any, reserved_ports: set[int]) -> list[dict[str, Any]]:
+    """Validate the overlay's pinned listeners: loopback mixed ports that always egress through one named proxy.
+
+    Containers reach one through its own socket unit (mihomo-container-proxy-pinned: 172.18.0.1:17896 ->
+    127.0.0.1:7896), so an app can be pinned to a node while the user keeps switching the PROXY group."""
+    if value in (None, []):
+        return []
+    if not isinstance(value, list):
+        raise ApiError("PINNED_LISTENER_INVALID", f"{PINNED_LISTENERS_KEY} 必须是列表")
+    listeners: list[dict[str, Any]] = []
+    names: set[str] = set()
+    ports: set[int] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            raise ApiError("PINNED_LISTENER_INVALID", "固定节点监听口必须是对象")
+        name, port, proxy = item.get("name"), item.get("port"), item.get("proxy")
+        if not isinstance(name, str) or not PINNED_LISTENER_NAME_RE.fullmatch(name) or name in names:
+            raise ApiError("PINNED_LISTENER_INVALID", f"监听口名称无效或重复：{name!r}（小写字母、数字、短横线）")
+        if isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535 or port in ports:
+            raise ApiError("PINNED_LISTENER_INVALID", f"监听口 {name} 的端口无效或重复：{port!r}")
+        if port in reserved_ports:
+            raise ApiError("PINNED_LISTENER_PORT_CONFLICT", f"监听口 {name} 的端口 {port} 已被其他代理端口或宿主机服务占用")
+        if not isinstance(proxy, str) or not proxy.strip() or len(proxy) > 200 or any(c in proxy for c in "\r\n"):
+            raise ApiError("PINNED_LISTENER_INVALID", f"监听口 {name} 的节点名无效")
+        names.add(name)
+        ports.add(port)
+        listeners.append({"name": name, "type": "mixed", "port": port, "listen": "127.0.0.1", "proxy": proxy})
+    return listeners
+
+
+def runtime_proxy_names() -> set[str]:
+    payload = controller_request("GET", "/proxies", timeout=6)
+    proxies = payload.get("proxies") if isinstance(payload, dict) else None
+    if not isinstance(proxies, dict):
+        raise ApiError("PINNED_LISTENER_UNVERIFIED", "读不到当前运行的节点列表，无法确认节点存在", recoverable=True)
+    return set(proxies)
+
+
 def build_runtime_text(
     item: dict[str, Any] | None = None,
     base_text: str | None = None,
@@ -3013,6 +3073,15 @@ def build_runtime_text(
                 text = set_top_level_value(text, yaml_key, port_value)
         else:
             text = remove_top_level_key(text, yaml_key)
+
+    pinned = normalize_pinned_listeners(overlay.get(PINNED_LISTENERS_KEY), pinned_listener_reserved_ports(overlay, verge))
+    if pinned:
+        # A profile without the node still renders: Mihomo then refuses that listener's connections instead
+        # of falling back to PROXY, and the operations log says why.
+        for listener in pinned:
+            if listener["proxy"] not in text:
+                append_operation_log(f"固定节点监听口 {listener['name']} 指向的节点 {listener['proxy']} 不在当前配置中")
+        text = set_top_level_value(text, "listeners", pinned)
 
     controller_secret_value = (
         overlay.get("secret")
@@ -4520,6 +4589,17 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
         overlay = deep_merge(load_overlay(), payload)
         if "external-controller" in overlay:
             overlay["external-controller"] = "172.18.0.1:9090"
+        if PINNED_LISTENERS_KEY in payload:
+            pinned = normalize_pinned_listeners(
+                payload[PINNED_LISTENERS_KEY], pinned_listener_reserved_ports(overlay, get_verge_config_state())
+            )
+            known = runtime_proxy_names() if pinned else set()
+            missing = [p["proxy"] for p in pinned if p["proxy"] not in known]
+            if missing:
+                raise ApiError("PINNED_LISTENER_UNKNOWN_PROXY", f"当前配置里没有这些节点：{'、'.join(missing)}")
+            overlay[PINNED_LISTENERS_KEY] = [{k: p[k] for k in ("name", "port", "proxy")} for p in pinned]
+            if not pinned:
+                overlay.pop(PINNED_LISTENERS_KEY, None)
         save_overlay(overlay)
         apply_runtime_for_current_or_empty_state()
         return {"secret": controller_secret()}

@@ -5,7 +5,7 @@
 ## 适用范围
 
 - 懒猫应用：`cloud.lazycat.app.clash-verge-for-lc`
-- 宿主机运行时：`mihomo`、`mihomo-verge-api`、`mihomo-container-proxy`
+- 宿主机运行时：`mihomo`、`mihomo-verge-api`、`mihomo-container-proxy`、可选的 `mihomo-container-proxy-pinned`
 - 目标机器：`rainierdev.heiyu.space`、`rainierspace.heiyu.space`
 
 ## 固定术语
@@ -13,7 +13,8 @@
 - `dashboard`：浏览器里的 Clash Verge Web 前端
 - `controller`：Mihomo controller，监听 `172.18.0.1:9090`
 - `Verge API`：懒猫 Web 版运行时后端，监听 `172.18.0.1:9091`
-- `container proxy`：容器显式代理入口，监听 `172.18.0.1:17890`
+- `container proxy`：容器显式代理入口，监听 `172.18.0.1:17890`，跟随 `PROXY` 等规则选路
+- `pinned container proxy`：可选的固定节点容器入口，监听 `172.18.0.1:17896`，转发到 Verge API overlay `lzc-pinned-listeners` 生成的 `127.0.0.1:7896` listener，始终只走指定节点
 
 ## 上游版本
 
@@ -34,6 +35,7 @@
 - `172.18.0.1:9090` 作为 controller
 - `172.18.0.1:9091` 作为 Verge API
 - `172.18.0.1:17890` 作为容器显式代理入口
+- 可选：`172.18.0.1:17896` 作为固定节点容器入口（`127.0.0.1:7896` listener 由 overlay 生成）
 
 端口设置保存时同步 GUI 配置与运行覆盖层；可选端口的启用状态参与生成 Mihomo 配置，应用失败时恢复两份设置。
 
@@ -80,7 +82,9 @@ bash scripts/deploy_microserver.sh --confirm
 ## 容器出网 contract
 
 - 不要假设 TUN 会自动代理 Docker 容器
-- 容器统一走 `172.18.0.1:17890`
+- 容器默认走 `172.18.0.1:17890`，跟随用户在 dashboard 里选的 `PROXY`
+- 需要固定出口的应用改走 `172.18.0.1:17896`；它只经过 overlay 指定的节点，节点缺失时连接失败，不回落到 `PROXY`
+- `lzc-pinned-listeners` 保存在 Verge API overlay，随每次 profile 渲染写入 `listeners:`；bootstrap generation 用 `PINNED_PROXY_ENABLED` 记录 socket 是否启用，缺省视为 0
 - 具体环境变量和 Node.js 说明见 [CONTAINER_PROXY_GUIDE.md](CONTAINER_PROXY_GUIDE.md)
 
 ## 变更规则
