@@ -41,6 +41,11 @@ function ipv4FirstLookup(hostname, options, callback) {
       return callback(e);
     }
 
+    // Node's autoSelectFamily requests all addresses and expects an array.
+    // Returning a single address in that mode causes ERR_INVALID_IP_ADDRESS.
+    if (options && options.all) {
+      return callback(null, addresses.sort((a, b) => a.family - b.family));
+    }
     let chosen = addresses[0];
     for (const a of addresses) {
       if (a && a.family === 4) {
@@ -446,6 +451,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  httpRequestFollowRedirects,
   normalizeProbeErrorCode,
   normalizeProbeForwardResponse,
   pickPassthroughHeaders,

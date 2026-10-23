@@ -1,13 +1,20 @@
 import { createRequire } from "node:module";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 
 import { describe, expect, it } from "vitest";
 
 const require = createRequire(import.meta.url);
 const {
+  httpRequestFollowRedirects,
   normalizeProbeErrorCode,
   normalizeProbeForwardResponse,
   pickPassthroughHeaders,
 } = require("../public/lzcapp-fetch-proxy.js") as {
+  httpRequestFollowRedirects: (url: string, timeout: number, maxBytes: number) => Promise<{
+    statusCode: number;
+    body: Buffer;
+  }>;
   normalizeProbeErrorCode: (text: string, statusCode: number) => string;
   normalizeProbeForwardResponse: (forwarded: {
     statusCode?: number;
@@ -24,6 +31,19 @@ const {
 };
 
 describe("lzcapp-fetch-proxy probe normalization", () => {
+  it("fetches a hostname with Node automatic address-family selection", async () => {
+    const server = createServer((_req, res) => res.end("resolved"));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const response = await httpRequestFollowRedirects(`http://localhost:${port}/`, 2000, 1024);
+      expect(response.statusCode).toBe(200);
+      expect(response.body.toString()).toBe("resolved");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+    }
+  });
+
   it("classifies timeout signatures as TIMEOUT", () => {
     expect(normalizeProbeErrorCode("ETIMEDOUT timeout", 502)).toBe("TIMEOUT");
   });
