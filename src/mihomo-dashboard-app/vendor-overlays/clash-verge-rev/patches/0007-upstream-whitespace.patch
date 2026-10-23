@@ -1,0 +1,13 @@
+diff --git a/src/components/profile/grouped-virtual-list.tsx b/src/components/profile/grouped-virtual-list.tsx
+index 208f607..f9f912d 100644
+--- a/src/components/profile/grouped-virtual-list.tsx
++++ b/src/components/profile/grouped-virtual-list.tsx
+@@ -20,7 +20,7 @@ export interface GroupedVirtualItem<T> {
+   item: T
+ }
+ 
+- 
++
+ export function buildGroupedItems<T>(
+   prepend: T[],
+   original: T[],

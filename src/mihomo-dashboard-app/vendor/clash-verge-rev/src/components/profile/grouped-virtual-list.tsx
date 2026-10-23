@@ -20,7 +20,7 @@ export interface GroupedVirtualItem<T> {
   item: T
 }
 
- 
+
 export function buildGroupedItems<T>(
   prepend: T[],
   original: T[],
