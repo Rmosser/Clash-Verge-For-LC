@@ -346,7 +346,7 @@ validate_generation() {
   fi
 }
 
-live_mirror_usable() {
+validate_live_mirror() {
   # Only a complete, verified copy taken on top of the generation being applied may replace its state.
   local generation="$1" base
   [[ -d "$live_root" && ! -L "$live_root" ]] || return 1
@@ -361,6 +361,32 @@ live_mirror_usable() {
   ) || return 1
   base="$(read_value "$live_root/metadata.env" BASE_GENERATION || true)"
   [[ -n "$base" && "$base" == "$generation" ]]
+}
+
+live_mirror_usable() {
+  # A writer killed between the two directory renames leaves the last committed copy in .live-old.
+  # Validate each candidate independently, including its generation, before selecting it.
+  local generation="$1" candidate
+  for candidate in "$bootstrap_root/live" "$bootstrap_root/.live-old"; do
+    live_root="$candidate"
+    if validate_live_mirror "$generation"; then
+      return 0
+    fi
+  done
+  live_root="$bootstrap_root/live"
+  return 1
+}
+
+merge_generation_logs() {
+  # The mirror carries only the alert outbox from logs/; every other log file comes from the generation,
+  # without overwriting the mirrored outbox. (Copying the directory itself would nest it once logs/ exists.)
+  local source="$1" destination="$2" log_file
+  [[ -d "$source" ]] || return 0
+  install -d -m 755 "$destination"
+  for log_file in "$source"/*; do
+    [[ -f "$log_file" && ! -e "$destination/${log_file##*/}" ]] || continue
+    cp -a -- "$log_file" "$destination/"
+  done
 }
 
 restore_selections() {
@@ -400,6 +426,16 @@ for group, choice in json.load(open(selections_path, encoding="utf-8")).items():
         restored += 1
 print("restored=%d skipped=%d" % (restored, skipped))
 PY
+}
+
+restore_selections_checked() {
+  local result
+  if result="$(restore_selections 2>&1)"; then
+    log "node selections: $result"
+  else
+    log "node selection restore failed; retaining pending transaction: $result"
+    return 1
+  fi
 }
 
 write_pending() {
@@ -660,9 +696,7 @@ apply_generation() {
   if live_mirror_usable "$generation"; then
     install -o root -g mihomo -m 640 "$live_root/etc-mihomo/config.yaml" /etc/mihomo/config.yaml
     replace_directory "$live_root/var-lib-mihomo/verge" /var/lib/mihomo/verge
-    if [[ -d "$apply_stage/var-lib-mihomo/verge/logs" ]]; then
-      cp -a -- "$apply_stage/var-lib-mihomo/verge/logs" /var/lib/mihomo/verge/logs
-    fi
+    merge_generation_logs "$apply_stage/var-lib-mihomo/verge/logs" /var/lib/mihomo/verge/logs
     chown -R mihomo:mihomo /var/lib/mihomo
     if /usr/local/bin/mihomo -t -d /var/lib/mihomo -f /etc/mihomo/config.yaml >/dev/null 2>&1; then
       live_used=1
@@ -713,7 +747,7 @@ apply_generation() {
     systemctl is-active mihomo-container-proxy-pinned.socket >/dev/null
   fi
   if [[ "$live_used" == 1 ]]; then
-    log "node selections: $(restore_selections 2>&1 | tail -1)"
+    restore_selections_checked || return 1
   fi
 
   printf '%s\n' "$generation" >"$applied_generation_file.tmp.$$"

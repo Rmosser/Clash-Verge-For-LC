@@ -48,19 +48,28 @@
 - generation 应用先写 pending transaction、停止相关服务、完成独立 staging
   校验，再切换文件并验证 Mihomo controller 与 Verge API；进程在中途被杀时，
   下一次启动会依据 pending generation 重做完整应用，不把混代文件当作成功。
+- 配置了 pinned listener 时，健康巡检每 5 分钟经 controller 的 delay 接口探测一次各 listener 的节点
+  （`MIHOMO_PINNED_PROBE_URL`，默认 `https://www.gstatic.com/generate_204`）；连续 2 次失败记
+  `pinned.<name>` 告警，恢复后记 ok。告警发件箱 `logs/alerts.jsonl` 与 `logs/alert-state.json`
+  随 live 镜像持久化，重启后不重发已投递告警、不丢待发告警。
 - 懒猫重启会重置 `/etc` 与 `/var/lib`。Verge API 把可变运行状态（`config.yaml`、
   不含 `logs/` 的 verge 目录、select 组的当前选择）镜像到
   `/root/.config/lzc-mihomo-bootstrap/live/`，每次成功应用配置后与每轮健康巡检时
   刷新，并记录基准 generation；bootstrap 应用同一 generation 时把通过校验的镜像
   覆盖上去，并在 controller 就绪后恢复节点选择。基准不一致或校验失败时只用
   generation，因此回滚到旧 generation 不会被镜像覆盖。
+  镜像发布先持久化 staging，再切换目录；若切换中断，bootstrap 会对 `.live-old/`
+  执行相同的 manifest 与 generation 校验并恢复上一份完整镜像。节点选择恢复请求
+  失败时保留 pending transaction、返回失败并由启动服务重试；pending 存在期间
+  API 不刷新镜像，避免默认选择覆盖待恢复的选择。
 - `mihomo-resolved-sync.service` 每次 `apply` 都重新探测当前 IPv4 default-route
   interface；持久化 interface 只用于没有 default route 时的安全 revert，不能驱动
   新的 DNS assignment。
 - `/healthz` 同时探测 Mihomo `/version` controller、restore transaction 和告警
   delivery channel；controller 或恢复事务异常、告警日志损坏、已配置告警的发送未确认时返回 HTTP 503。
-  外部 webhook 是可选通知能力：未配置时不阻止应用健康检查，Web 控制台明确显示未启用。Verge API 可按
-  `MIHOMO_ALERT_WEBHOOK_URL` 配置主动告警，所有状态转换和 delivery receipt 先
+  外部通知是可选能力：未配置时不阻止应用健康检查，Web 控制台明确显示未启用。Verge API 可按
+  `/root/.config/lzc-mihomo-alerts/telegram.json`（Telegram bot，经宿主机 `127.0.0.1:7890` 发出，
+  优先）或 `MIHOMO_ALERT_WEBHOOK_URL` 配置主动告警，所有状态转换和 delivery receipt 先
   fsync 到 `/var/lib/mihomo/verge/logs/alerts.jsonl`。启动及每次 append/flush 都会
   逐行恢复 JSONL；损坏行会被隔离并记录到同目录的
   `alerts.jsonl.corrupt.jsonl`，不会阻断后续有效告警，也不会与新 append 粘连。
@@ -91,6 +100,9 @@ bash scripts/deploy_microserver.sh --confirm
 - 容器默认走 `172.18.0.1:17890`，跟随用户在 dashboard 里选的 `PROXY`
 - 需要固定出口的应用改走 `172.18.0.1:17896`；它只经过 overlay 指定的节点，节点缺失时连接失败，不回落到 `PROXY`
 - `lzc-pinned-listeners` 保存在 Verge API overlay，随每次 profile 渲染写入 `listeners:`；bootstrap generation 用 `PINNED_PROXY_ENABLED` 记录 socket 是否启用，缺省视为 0
+- pinned listeners 追加到 profile 原有列表，保留原入站选项与注释；同名或端口范围冲突会拒绝应用。
+  支持 block/flow 列表和 mapping；列表别名、merge key 或 name/port 的别名应先展开为字面值。
+  overlay 应用失败会恢复此前的 overlay；清空 pinned 列表不会删除 profile 自有 listeners。
 - 具体环境变量和 Node.js 说明见 [CONTAINER_PROXY_GUIDE.md](CONTAINER_PROXY_GUIDE.md)
 
 ## 变更规则

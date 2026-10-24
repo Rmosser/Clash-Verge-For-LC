@@ -135,15 +135,30 @@ bash scripts/install_host_native_bootstrap.sh --confirm
   generation，才会覆盖上去并在 controller 就绪后恢复节点选择；镜像校验失败则按
   generation 原样启动。改动后约 60 秒内才进入镜像，重新安装 bootstrap 会产生新
   generation，旧镜像随之失效、直到下一轮巡检重写。
+- 镜像目录切换中断时，bootstrap 可从 `.live-old/` 恢复上一份完整镜像；仍须通过
+  manifest 与基准 generation 校验。节点选择恢复失败会保留 `state/pending.env` 并
+  使 bootstrap 返回失败，由 systemd 重试；API 此时暂停镜像写入。排查 controller
+  请求失败原因后重试 bootstrap，不要手动清除 pending 来跳过选择恢复。
 
 ### 健康与告警
 
 `/healthz` 只有在 Verge API、Mihomo controller `/version` 且没有未决 restore
 transaction 时才返回 200；controller 不可达或恢复状态未知时返回 503。API
 会在 `/var/lib/mihomo/verge/logs/alerts.jsonl` 保留可重放的告警 outbox，并按
-状态转换和 cooldown 去重。需要主动投递时，在 root systemd drop-in 中设置
-`MIHOMO_ALERT_WEBHOOK_URL`，并保留 `MIHOMO_HEALTH_WATCH_INTERVAL_SECONDS` 的
-轮询间隔；不要把 webhook secret 写进仓库。
+状态转换和 cooldown 去重。需要主动投递时有两种通道：
+
+- **Telegram（推荐，优先于 webhook）**：在宿主机写 `/root/.config/lzc-mihomo-alerts/telegram.json`
+  （root、600）：`{"bot_token": "...", "chat_id": "...", "label": "rainierspace"}`，可选
+  `proxy`（默认 `http://127.0.0.1:7890`，宿主机直连不到 api.telegram.org）和
+  `repeat_seconds`（同一组件持续异常时的提醒间隔，默认 3600）。文件在 `/root` 下，重启不丢；Verge API
+  每次投递时读取，改完无需重启。消息形如「🔴 Clash · rainierspace：Mihomo 控制接口异常」，恢复时发
+  「✅ … 已恢复」。Mihomo 本身不可用时消息发不出去，outbox 会退避重试（默认 5 次，约 15 分钟内）。
+- **webhook**：在 root systemd drop-in 中设置 `MIHOMO_ALERT_WEBHOOK_URL`，POST 原始 JSON 并带
+  `Idempotency-Key`。
+
+两种都依赖 `MIHOMO_HEALTH_WATCH_INTERVAL_SECONDS` 的巡检；不要把 bot token 或 webhook secret 写进仓库。
+告警组件：`controller`（Mihomo 控制接口）、`restore`（运行时恢复）、`pinned.<name>`（固定节点入口，
+见 [CONTAINER_PROXY_GUIDE.md](CONTAINER_PROXY_GUIDE.md#固定节点入口)）。
 
 ## 重启后的验收
 

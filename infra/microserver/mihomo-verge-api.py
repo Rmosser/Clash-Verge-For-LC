@@ -90,6 +90,18 @@ ALERT_STATE_PATH = Path(
     os.environ.get("MIHOMO_ALERT_STATE", str(LOGS_DIR / "alert-state.json"))
 )
 ALERT_WEBHOOK_URL = os.environ.get("MIHOMO_ALERT_WEBHOOK_URL", "").strip()
+# Telegram channel: {"bot_token", "chat_id", "label", "proxy"?, "repeat_seconds"?} in a root-only file under
+# /root, which a LazyCat reboot keeps. It takes precedence over the webhook when both are set.
+ALERT_TELEGRAM_PATH = Path(
+    os.environ.get("MIHOMO_ALERT_TELEGRAM_FILE", "/root/.config/lzc-mihomo-alerts/telegram.json")
+)
+ALERT_TELEGRAM_DEFAULT_PROXY = "http://127.0.0.1:7890"  # api.telegram.org is unreachable directly from the box
+ALERT_TELEGRAM_REPEAT_SECONDS = 3600  # a still-failing component reminds hourly, not every health round
+ALERT_COMPONENT_LABELS = {"controller": "Mihomo 控制接口", "restore": "运行时恢复"}
+# Probe each pinned listener's node through the controller's delay test; alert after consecutive failures.
+PINNED_PROBE_URL = os.environ.get("MIHOMO_PINNED_PROBE_URL", "https://www.gstatic.com/generate_204")
+PINNED_PROBE_EVERY_SECONDS = 300
+PINNED_PROBE_FAILURES = 2
 ALERT_COOLDOWN_SECONDS = max(
     0,
     int(os.environ.get("MIHOMO_ALERT_COOLDOWN_SECONDS", "300")),
@@ -126,6 +138,9 @@ HEALTH_WATCH_STOP = threading.Event()
 BOOTSTRAP_ROOT = Path(os.environ.get("MIHOMO_BOOTSTRAP_ROOT", "/root/.config/lzc-mihomo-bootstrap"))
 LIVE_MIRROR_DIR = BOOTSTRAP_ROOT / "live"
 LIVE_MIRROR_EXCLUDE = {"logs"}  # append-only and restored from the generation; mirroring it would churn every minute
+# ...except the alert outbox and its state: a reboot must neither resend delivered alerts nor drop pending ones.
+LIVE_MIRROR_KEEP = {"logs/alerts.jsonl", "logs/alert-state.json"}
+PINNED_PROBE_STATE: dict[str, Any] = {"at": float("-inf"), "failures": {}}
 LIVE_MIRROR_LOCK = threading.Lock()
 
 SENSITIVE_QUERY_PARAMETER_RE = re.compile(
@@ -823,6 +838,104 @@ def _alert_retry_delay(attempt: int) -> float:
     )
 
 
+def telegram_alert_config() -> dict[str, Any] | None:
+    try:
+        data = json.loads(ALERT_TELEGRAM_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    token, chat = str(data.get("bot_token") or ""), str(data.get("chat_id") or "")
+    if not re.fullmatch(r"\d+:[A-Za-z0-9_-]{20,}", token) or not re.fullmatch(r"-?\d+", chat):
+        return None
+    repeat = data.get("repeat_seconds", ALERT_TELEGRAM_REPEAT_SECONDS)
+    return {
+        "bot_token": token,
+        "chat_id": chat,
+        "label": str(data.get("label") or socket.gethostname())[:40],
+        "proxy": str(data.get("proxy") or ALERT_TELEGRAM_DEFAULT_PROXY),
+        "repeat_seconds": repeat if isinstance(repeat, int) and not isinstance(repeat, bool) and repeat >= 0
+        else ALERT_TELEGRAM_REPEAT_SECONDS,
+    }
+
+
+def alert_channel_configured() -> bool:
+    return bool(ALERT_WEBHOOK_URL or telegram_alert_config())
+
+
+def alert_repeat_seconds() -> float:
+    telegram = telegram_alert_config()
+    return telegram["repeat_seconds"] if telegram else ALERT_COOLDOWN_SECONDS
+
+
+def alert_component_label(component: str) -> str:
+    if component.startswith("pinned."):
+        return f"固定节点入口 {component[len('pinned.'):]}"
+    return ALERT_COMPONENT_LABELS.get(component, component)
+
+
+def telegram_alert_text(event: dict[str, Any], label: str) -> str:
+    degraded = event.get("status") != "ok"
+    head = (f"{'🔴' if degraded else '✅'} Clash · {label}："
+            f"{alert_component_label(str(event.get('component') or ''))}{'异常' if degraded else '已恢复'}")
+    details = str(event.get("details") or "").strip()
+    return f"{head}\n{details[:1500]}" if details and degraded else head
+
+
+def send_alert(event_id: str, event: dict[str, Any]) -> None:
+    """Deliver one alert; raise on any failure so the outbox records an attempt and retries."""
+    telegram = telegram_alert_config()
+    if telegram:
+        body = json.dumps(
+            {"chat_id": telegram["chat_id"], "text": telegram_alert_text(event, telegram["label"]),
+             "disable_web_page_preview": True},
+            ensure_ascii=False,
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            f"https://api.telegram.org/bot{telegram['bot_token']}/sendMessage",
+            data=body,
+            headers={"Content-Type": "application/json", "User-Agent": "mihomo-verge-api-alert/1.0"},
+            method="POST",
+        )
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"https": telegram["proxy"], "http": telegram["proxy"]})
+        )
+        # Error texts can carry the request URL and with it the bot token: report only their kind.
+        try:
+            with opener.open(request, timeout=ALERT_WEBHOOK_TIMEOUT_SECONDS) as response:
+                accepted = json.loads(response.read() or b"{}").get("ok") is True
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"telegram returned HTTP {exc.code}") from None
+        except Exception as exc:
+            raise RuntimeError(f"telegram unreachable: {type(exc).__name__}") from None
+        if not accepted:
+            raise RuntimeError("telegram rejected the message")
+        return
+    payload = json.dumps(
+        {
+            "id": event_id,
+            "createdAt": event.get("createdAt"),
+            "component": event.get("component"),
+            "status": event.get("status"),
+            "details": event.get("details", ""),
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        ALERT_WEBHOOK_URL,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "mihomo-verge-api-alert/1.0",
+            "Idempotency-Key": event_id,
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=ALERT_WEBHOOK_TIMEOUT_SECONDS) as response:
+        if not (200 <= int(response.status) < 300):
+            raise RuntimeError(f"alert endpoint returned HTTP {response.status}")
+
+
 def alert_health_payload() -> dict[str, Any]:
     """Expose alert channel readiness independently from controller health."""
     with ALERT_LOCK:
@@ -834,8 +947,8 @@ def alert_health_payload() -> dict[str, Any]:
             return {
                 "status": "degraded",
                 "ready": False,
-                "enabled": bool(ALERT_WEBHOOK_URL),
-                "configured": bool(ALERT_WEBHOOK_URL),
+                "enabled": alert_channel_configured(),
+                "configured": alert_channel_configured(),
                 "outbox": str(ALERT_OUTBOX_PATH),
                 "corruptionCount": 1,
                 "pending": 0,
@@ -881,20 +994,21 @@ def alert_health_payload() -> dict[str, Any]:
             corruption_count += orphan_receipts
             last_error = "delivery receipt has no matching alert event"
 
-        if not ALERT_WEBHOOK_URL:
-            last_error = "alert webhook is not configured"
+        configured = alert_channel_configured()
+        if not configured:
+            last_error = "alert channel (webhook or Telegram) is not configured"
         elif pending and not last_error:
             last_error = "alert delivery is pending"
         ready = bool(
-            ALERT_WEBHOOK_URL
+            configured
             and corruption_count == 0
             and pending == 0
         )
         return {
             "status": "ok" if ready else "degraded",
             "ready": ready,
-            "enabled": bool(ALERT_WEBHOOK_URL),
-            "configured": bool(ALERT_WEBHOOK_URL),
+            "enabled": configured,
+            "configured": configured,
             "outbox": str(ALERT_OUTBOX_PATH),
             "corruptionCount": corruption_count,
             "pending": pending,
@@ -942,7 +1056,7 @@ def record_runtime_alert(
         if previous_status == "ok" and status == "ok":
             return None
         changed = previous_status != status
-        if not changed and now - last_emitted < ALERT_COOLDOWN_SECONDS:
+        if not changed and now - last_emitted < alert_repeat_seconds():
             return None
         event = {
             "id": uuid.uuid4().hex,
@@ -950,7 +1064,7 @@ def record_runtime_alert(
             "component": component,
             "status": status,
             "details": sanitize_log_text(details)[:1000],
-            "delivery": "pending" if ALERT_WEBHOOK_URL else "disabled",
+            "delivery": "pending" if alert_channel_configured() else "disabled",
         }
         # Keep the state update and the durable event ordered: a crash can
         # duplicate an alert, but can never suppress the first durable event.
@@ -981,7 +1095,7 @@ def flush_alert_outbox() -> None:
         except Exception as exc:
             append_operation_log("alert outbox load failed", error=exc)
             return
-        if not ALERT_WEBHOOK_URL:
+        if not alert_channel_configured():
             return
         delivery_receipts: dict[str, dict[str, Any]] = {}
         for event in events:
@@ -1045,33 +1159,8 @@ def flush_alert_outbox() -> None:
                     error=receipt_error,
                 )
                 continue
-            payload = json.dumps(
-                {
-                    "id": event_id,
-                    "createdAt": event.get("createdAt"),
-                    "component": event.get("component"),
-                    "status": event.get("status"),
-                    "details": event.get("details", ""),
-                },
-                ensure_ascii=False,
-            ).encode("utf-8")
-            request = urllib.request.Request(
-                ALERT_WEBHOOK_URL,
-                data=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "User-Agent": "mihomo-verge-api-alert/1.0",
-                    "Idempotency-Key": event_id,
-                },
-                method="POST",
-            )
             try:
-                with urllib.request.urlopen(
-                    request,
-                    timeout=ALERT_WEBHOOK_TIMEOUT_SECONDS,
-                ) as response:
-                    if not (200 <= int(response.status) < 300):
-                        raise RuntimeError(f"alert endpoint returned HTTP {response.status}")
+                send_alert(event_id, event)
             except Exception as exc:
                 append_operation_log("alert delivery failed", error=exc)
                 status = "exhausted" if attempt >= ALERT_MAX_ATTEMPTS else "failed"
@@ -3034,6 +3123,146 @@ def runtime_proxy_names() -> set[str]:
     return set(proxies)
 
 
+def split_yaml_flow(text: str, delimiter: str = ",") -> list[str]:
+    """Split a flow collection without splitting quoted strings or nested collections.
+
+    This only locates literal listener identity fields; Mihomo remains the YAML validator.
+    Comments are removed from this inspection copy, never from the rendered profile.
+    """
+    parts: list[str] = []
+    part = ""
+    quote = ""
+    depth = 0
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if quote:
+            part += char
+            if char == "\\" and quote == '"' and index + 1 < len(text):
+                index += 1
+                part += text[index]
+            elif char == quote:
+                if quote == "'" and text[index:index + 2] == "''":
+                    index += 1
+                    part += "'"
+                else:
+                    quote = ""
+        elif char in "\"'" and (index == 0 or text[index - 1].isspace() or text[index - 1] in "[{,:"):
+            quote = char
+            part += char
+        elif char == "#" and (index == 0 or text[index - 1].isspace()):
+            newline = text.find("\n", index)
+            index = len(text) if newline < 0 else newline
+            part += "\n"
+        elif char in "[{":
+            depth += 1
+            part += char
+        elif char in "]}":
+            depth -= 1
+            part += char
+        elif char == delimiter and depth == 0:
+            parts.append(part.strip())
+            part = ""
+        else:
+            part += char
+        index += 1
+    if quote or depth:
+        raise ApiError("PINNED_LISTENER_MERGE_UNSUPPORTED", "listeners 的引号或 flow collection 不完整")
+    parts.append(part.strip())
+    return parts
+
+
+def check_profile_listener_conflicts(entries: list[str], pinned: list[dict[str, Any]]) -> None:
+    names = {p["name"] for p in pinned}
+    ports = {p["port"] for p in pinned}
+    for entry in entries:
+        entry = entry.strip()
+        if entry.startswith("{"):
+            entry = split_yaml_flow(entry, "\0")[0].strip()
+            if not entry.endswith("}"):
+                raise ApiError("PINNED_LISTENER_MERGE_UNSUPPORTED", "listeners 的 mapping 不完整")
+            fields = split_yaml_flow(entry[1:-1])
+        else:
+            # Dedent the mapping after removing the sequence marker. Ignore nested option fields.
+            lines = entry.splitlines()
+            indents = [len(line) - len(line.lstrip()) for line in lines[1:]
+                       if line.strip() and not line.lstrip().startswith("#")]
+            indent = min(indents) if indents else 0
+            fields = lines[:1] + [line.strip() for line in lines[1:]
+                                  if line.strip() and len(line) - len(line.lstrip()) == indent]
+        identity: dict[str, str] = {}
+        for field in fields:
+            key_text, colon, raw = field.partition(":")
+            key = parse_yaml_scalar(key_text)
+            if key == "<<":
+                raise ApiError("PINNED_LISTENER_MERGE_UNSUPPORTED", "合并 pinned listener 前请展开 listeners 的 YAML merge key")
+            if key in ("name", "port") and colon:
+                raw = split_yaml_flow(raw, "\0")[0].strip()
+                if not raw or raw.startswith(("*", "&", "!", "|", ">")):
+                    raise ApiError("PINNED_LISTENER_MERGE_UNSUPPORTED", "listeners 的 name/port 必须是字面值")
+                identity[key] = json.loads(raw) if raw.startswith('"') else parse_yaml_scalar(raw)
+        if "name" not in identity:
+            raise ApiError("PINNED_LISTENER_MERGE_UNSUPPORTED", "无法安全读取 listeners 的 name；请使用显式 mapping")
+        if identity["name"] in names:
+            raise ApiError("PINNED_LISTENER_NAME_CONFLICT", f"固定监听口与 profile 重名：{identity['name']}")
+        # TUN and other non-port listeners have no TCP listener port to conflict with.
+        for span in re.split(r"[/,]", identity.get("port", "0")):
+            bounds = span.strip().split("-")
+            if not 1 <= len(bounds) <= 2 or not all(re.fullmatch(r"\d+", n) for n in bounds):
+                raise ApiError("PINNED_LISTENER_MERGE_UNSUPPORTED", "无法安全读取 listeners 的端口范围")
+            low, high = int(bounds[0]), int(bounds[-1])
+            if any(low <= port <= high for port in ports):
+                raise ApiError("PINNED_LISTENER_PORT_CONFLICT", f"固定监听口与 profile 端口冲突：{identity['port']}")
+
+
+def merge_pinned_listeners(text: str, pinned: list[dict[str, Any]]) -> str:
+    """Append to the source profile, preserving its listener options and comments verbatim."""
+    block_range = top_level_block_range(text, "listeners")
+    if block_range is None:
+        return set_top_level_value(text, "listeners", pinned)
+    start, end = block_range
+    block = text[start:end]
+    # Skip leading comments for inspection, while keeping the original block for output.
+    raw_value = block.partition(":")[2]
+    value = raw_value.strip()
+    while value.startswith("#"):
+        value = value.partition("\n")[2].lstrip()
+    if not value or re.fullmatch(r"(?:null|~|\[\s*\])(?:\s+#.*)?", value):
+        return set_top_level_value(text, "listeners", pinned)
+    if value.startswith("["):
+        value = split_yaml_flow(raw_value, "\0")[0].strip()
+        if not value.endswith("]"):
+            raise ApiError("PINNED_LISTENER_MERGE_UNSUPPORTED", "listeners 的列表不完整")
+        entries = [entry for entry in split_yaml_flow(value[1:-1]) if entry]
+        check_profile_listener_conflicts(entries, pinned)
+        # The final collection bracket may be followed by comments containing brackets.
+        # Locate it by scanning prefixes until the complete inspected value is reached.
+        close = None
+        for match in re.finditer(r"\]", block):
+            try:
+                if split_yaml_flow(block[:match.end()].partition(":")[2], "\0")[0].strip() == value:
+                    close = match.start()
+                    break
+            except ApiError:
+                continue
+        if close is None:
+            raise ApiError("PINNED_LISTENER_MERGE_UNSUPPORTED", "无法定位 listeners 列表结尾")
+        separator = "" if not entries or value[:-1].rstrip().endswith(",") else ", "
+        merged = block[:close] + "\n" + separator + json.dumps(pinned, ensure_ascii=False)[1:-1]
+        merged += "\n" + block[close:]
+    else:
+        matches = list(re.finditer(r"(?m)^( *)-\s+", block))
+        if not matches:
+            raise ApiError("PINNED_LISTENER_MERGE_UNSUPPORTED", "listeners 必须是显式列表")
+        indent = min(len(match[1]) for match in matches)
+        matches = [match for match in matches if len(match[1]) == indent]
+        entries = [block[match.end():matches[i + 1].start() if i + 1 < len(matches) else len(block)]
+                   for i, match in enumerate(matches)]
+        check_profile_listener_conflicts(entries, pinned)
+        merged = block.rstrip() + "\n" + "\n".join(render_yaml_value(pinned, indent)) + "\n"
+    return text[:start] + merged + text[end:]
+
+
 def build_runtime_text(
     item: dict[str, Any] | None = None,
     base_text: str | None = None,
@@ -3086,7 +3315,7 @@ def build_runtime_text(
         for listener in pinned:
             if listener["proxy"] not in text:
                 append_operation_log(f"固定节点监听口 {listener['name']} 指向的节点 {listener['proxy']} 不在当前配置中")
-        text = set_top_level_value(text, "listeners", pinned)
+        text = merge_pinned_listeners(text, pinned)
 
     controller_secret_value = (
         overlay.get("secret")
@@ -4592,7 +4821,8 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
 
     if cmd == "patch_clash_config":
         payload = args.get("payload") or {}
-        overlay = deep_merge(load_overlay(), payload)
+        previous_overlay = load_overlay()
+        overlay = deep_merge(previous_overlay, payload)
         if "external-controller" in overlay:
             overlay["external-controller"] = "172.18.0.1:9090"
         if PINNED_LISTENERS_KEY in payload:
@@ -4607,7 +4837,11 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
             if not pinned:
                 overlay.pop(PINNED_LISTENERS_KEY, None)
         save_overlay(overlay)
-        apply_runtime_for_current_or_empty_state()
+        try:
+            apply_runtime_for_current_or_empty_state()
+        except Exception:
+            save_overlay(previous_overlay)
+            raise
         return {"secret": controller_secret()}
 
     if cmd == "patch_clash_mode":
@@ -5254,7 +5488,9 @@ def live_mirror_files() -> dict[str, bytes]:
     files = {"etc-mihomo/config.yaml": MIHOMO_CONFIG_PATH.read_bytes()}
     for path in sorted(DATA_ROOT.rglob("*")):
         rel = path.relative_to(DATA_ROOT)
-        if rel.parts[0] in LIVE_MIRROR_EXCLUDE or path.is_symlink() or not path.is_file():
+        if path.is_symlink() or not path.is_file():
+            continue
+        if rel.parts[0] in LIVE_MIRROR_EXCLUDE and rel.as_posix() not in LIVE_MIRROR_KEEP:
             continue
         files[f"var-lib-mihomo/verge/{rel.as_posix()}"] = path.read_bytes()
     return files
@@ -5273,6 +5509,11 @@ def sync_live_mirror() -> bool:
         return False  # a restore is mid-flight: its result is not a state to come back to
     generation = current.read_text(encoding="utf-8").strip()
     with LIVE_MIRROR_LOCK:
+        # Recover a writer interrupted after moving live aside. Never delete the only committed copy.
+        old = BOOTSTRAP_ROOT / ".live-old"
+        if not LIVE_MIRROR_DIR.exists() and old.is_dir():
+            os.rename(old, LIVE_MIRROR_DIR)
+            _fsync_directory(BOOTSTRAP_ROOT)
         files = live_mirror_files()
         selections = selector_selections()
         if selections is None:  # controller unavailable: keep the last known choices
@@ -5293,23 +5534,30 @@ def sync_live_mirror() -> bool:
             for rel, data in files.items():
                 path = stage / rel
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(data)
-                path.chmod(0o600)
-            (stage / "metadata.env").write_text(metadata, encoding="utf-8")
+                atomic_write_bytes(path, data, 0o600)
+            atomic_write_text(stage / "metadata.env", metadata, 0o600)
             manifest = "".join(
                 f"{hashlib.sha256((stage / rel).read_bytes()).hexdigest()}  ./{rel}\n"
                 for rel in sorted([*files, "metadata.env"])
             )
-            (stage / "manifest.sha256").write_text(manifest, encoding="utf-8")
-            (stage / "COMPLETE").write_text("", encoding="utf-8")
-            old = BOOTSTRAP_ROOT / ".live-old"
+            atomic_write_text(stage / "manifest.sha256", manifest, 0o600)
+            atomic_write_text(stage / "COMPLETE", "", 0o600)
+            for directory in sorted((p for p in stage.rglob("*") if p.is_dir()),
+                                    key=lambda p: len(p.parts), reverse=True):
+                _fsync_directory(directory)
+            _fsync_directory(stage)
             shutil.rmtree(old, ignore_errors=True)
             if LIVE_MIRROR_DIR.exists():
                 os.rename(LIVE_MIRROR_DIR, old)
+                _fsync_directory(BOOTSTRAP_ROOT)
             os.rename(stage, LIVE_MIRROR_DIR)
+            _fsync_directory(BOOTSTRAP_ROOT)
             shutil.rmtree(old, ignore_errors=True)
         except BaseException:
             shutil.rmtree(stage, ignore_errors=True)
+            if not LIVE_MIRROR_DIR.exists() and old.is_dir():
+                os.rename(old, LIVE_MIRROR_DIR)
+                _fsync_directory(BOOTSTRAP_ROOT)
             raise
     return True
 
@@ -5322,12 +5570,50 @@ def sync_live_mirror_quietly(context: str) -> None:
         append_operation_log(f"live runtime mirror update failed ({context})", error=exc)
 
 
+def probe_pinned_listeners() -> None:
+    """Alert when a pinned listener's node stops working: its container entry then refuses every connection
+    instead of falling back to PROXY. Runs at most every PINNED_PROBE_EVERY_SECONDS."""
+    now = time.monotonic()
+    if now - PINNED_PROBE_STATE["at"] < PINNED_PROBE_EVERY_SECONDS:
+        return
+    PINNED_PROBE_STATE["at"] = now
+    listeners = load_overlay().get(PINNED_LISTENERS_KEY) or []
+    for item in listeners if isinstance(listeners, list) else []:
+        name, proxy = item.get("name"), item.get("proxy")
+        if not isinstance(name, str) or not isinstance(proxy, str):
+            continue
+        component = f"pinned.{name}"
+        query = urllib.parse.urlencode({"url": PINNED_PROBE_URL, "timeout": 8000})
+        try:
+            result = controller_request("GET", f"/proxies/{urllib.parse.quote(proxy, safe='')}/delay?{query}", timeout=12)
+            delay = result.get("delay") if isinstance(result, dict) else None
+            if not delay:
+                raise RuntimeError("no delay reported")
+        except Exception as exc:
+            reason = f"HTTP {exc.code}" if isinstance(exc, urllib.error.HTTPError) else type(exc).__name__
+            if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
+                reason = "节点不在当前配置中"
+            failures = PINNED_PROBE_STATE["failures"].get(name, 0) + 1
+            PINNED_PROBE_STATE["failures"][name] = failures
+            if failures >= PINNED_PROBE_FAILURES:
+                record_runtime_alert(component, "degraded", f"节点 {proxy} 连续 {failures} 次探测失败（{reason}），"
+                                                            f"走这个入口的应用现在连不上外网")
+            continue
+        PINNED_PROBE_STATE["failures"][name] = 0
+        record_runtime_alert(component, "ok", f"{proxy} {delay}ms")
+    flush_alert_outbox()
+
+
 def runtime_health_watch_loop() -> None:
     while not HEALTH_WATCH_STOP.wait(HEALTH_WATCH_INTERVAL_SECONDS):
         try:
             healthz_payload()
         except Exception as exc:
             append_operation_log("runtime health watch failed", error=exc)
+        try:
+            probe_pinned_listeners()
+        except Exception as exc:
+            append_operation_log("pinned listener probe failed", error=exc)
         sync_live_mirror_quietly("health watch")
 
 
