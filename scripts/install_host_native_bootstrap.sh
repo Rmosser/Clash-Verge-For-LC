@@ -184,6 +184,8 @@ copy_snapshot_file /usr/local/lib/lzc-mihomo/runtime-contract.json \
 for optional_file in \
   /etc/systemd/system/mihomo-container-proxy.socket \
   /etc/systemd/system/mihomo-container-proxy.service \
+  /etc/systemd/system/mihomo-container-proxy-pinned.socket \
+  /etc/systemd/system/mihomo-container-proxy-pinned.service \
   /etc/systemd/system/mihomo-resolved-sync.service; do
   if [[ -f "$optional_file" ]]; then
     [[ ! -L "$optional_file" ]] || { echo "ERROR: snapshot source is a symlink: $optional_file" >&2; exit 1; }
@@ -209,10 +211,15 @@ if [[ -d /var/lib/mihomo/verge ]]; then
 fi
 
 container_proxy_enabled=0
+pinned_proxy_enabled=0
 resolved_sync_enabled=0
 
 if systemctl is-enabled mihomo-container-proxy.socket >/dev/null 2>&1; then
   container_proxy_enabled=1
+fi
+
+if systemctl is-enabled mihomo-container-proxy-pinned.socket >/dev/null 2>&1; then
+  pinned_proxy_enabled=1
 fi
 
 if systemctl is-enabled mihomo-resolved-sync.service >/dev/null 2>&1; then
@@ -222,6 +229,7 @@ fi
 cat >"$staging_root/metadata.env" <<STATE
 GENERATION=$generation_id
 CONTAINER_PROXY_ENABLED=$container_proxy_enabled
+PINNED_PROXY_ENABLED=$pinned_proxy_enabled
 RESOLVED_SYNC_ENABLED=$resolved_sync_enabled
 STATE
 chmod 600 "$staging_root/metadata.env"
@@ -244,6 +252,7 @@ mv -- "$current_generation_file.tmp.$$" "$current_generation_file"
 
 cat >"$state_file.tmp.$$" <<STATE
 CONTAINER_PROXY_ENABLED=$container_proxy_enabled
+PINNED_PROXY_ENABLED=$pinned_proxy_enabled
 RESOLVED_SYNC_ENABLED=$resolved_sync_enabled
 STATE
 chmod 600 "$state_file.tmp.$$"
@@ -260,6 +269,8 @@ current_generation_file="$bootstrap_root/current-generation"
 applied_generation_file="$bootstrap_root/applied-generation"
 pending_transaction="$state_dir/pending.env"
 log_file="$bootstrap_root/bootstrap.log"
+# Verge API keeps the mutable runtime (config.yaml, verge state, node choices) here; see sync_live_mirror.
+live_root="$bootstrap_root/live"
 bridge_wait_seconds="${BRIDGE_WAIT_SECONDS:-180}"
 apply_stage=""
 
@@ -291,7 +302,7 @@ generation_path() {
 }
 
 validate_generation() {
-  local generation="$1" source metadata container_proxy_enabled resolved_sync_enabled
+  local generation="$1" source metadata container_proxy_enabled pinned_proxy_enabled resolved_sync_enabled
   source="$(generation_path "$generation")"
   [[ -d "$source" && ! -L "$source" ]] || return 1
   [[ -f "$source/COMPLETE" && -f "$source/manifest.sha256" && -f "$source/metadata.env" ]] || return 1
@@ -317,15 +328,78 @@ validate_generation() {
   # before sourcing it in a root-owned bootstrap process.
   metadata="$source/metadata.env"
   container_proxy_enabled="$(read_value "$metadata" CONTAINER_PROXY_ENABLED || true)"
+  # Generations captured before the pinned proxy existed have no flag: they stay valid rollback targets.
+  pinned_proxy_enabled="$(read_value "$metadata" PINNED_PROXY_ENABLED || true)"
+  pinned_proxy_enabled="${pinned_proxy_enabled:-0}"
   resolved_sync_enabled="$(read_value "$metadata" RESOLVED_SYNC_ENABLED || true)"
   [[ "$container_proxy_enabled" == 0 || "$container_proxy_enabled" == 1 ]] || return 1
+  [[ "$pinned_proxy_enabled" == 0 || "$pinned_proxy_enabled" == 1 ]] || return 1
   [[ "$resolved_sync_enabled" == 0 || "$resolved_sync_enabled" == 1 ]] || return 1
   if [[ "$container_proxy_enabled" == 1 ]]; then
     [[ -f "$source/systemd/mihomo-container-proxy.socket" && -f "$source/systemd/mihomo-container-proxy.service" ]] || return 1
   fi
+  if [[ "$pinned_proxy_enabled" == 1 ]]; then
+    [[ -f "$source/systemd/mihomo-container-proxy-pinned.socket" && -f "$source/systemd/mihomo-container-proxy-pinned.service" ]] || return 1
+  fi
   if [[ "$resolved_sync_enabled" == 1 ]]; then
     [[ -f "$source/systemd/mihomo-resolved-sync.service" && -f "$source/usr-local-lib-lzc-mihomo/mihomo-resolved-sync.sh" ]] || return 1
   fi
+}
+
+live_mirror_usable() {
+  # Only a complete, verified copy taken on top of the generation being applied may replace its state.
+  local generation="$1" base
+  [[ -d "$live_root" && ! -L "$live_root" ]] || return 1
+  [[ -f "$live_root/COMPLETE" && -f "$live_root/manifest.sha256" && -f "$live_root/metadata.env" ]] || return 1
+  [[ -f "$live_root/etc-mihomo/config.yaml" && -d "$live_root/var-lib-mihomo/verge" ]] || return 1
+  if [[ -n "$(find "$live_root" -type l -print -quit)" ]]; then
+    return 1
+  fi
+  (
+    cd "$live_root"
+    sha256sum -c manifest.sha256 >/dev/null
+  ) || return 1
+  base="$(read_value "$live_root/metadata.env" BASE_GENERATION || true)"
+  [[ -n "$base" && "$base" == "$generation" ]]
+}
+
+restore_selections() {
+  # Mihomo keeps select-group choices only in cache.db, which a reboot loses; put back the mirrored ones.
+  [[ -f "$live_root/selections.json" ]] || return 0
+  python3 - "$live_root/selections.json" "${CONTROLLER_URL:-http://172.18.0.1:9090}" "${MIHOMO_CONFIG:-/etc/mihomo/config.yaml}" <<'PY'
+import json, re, sys, urllib.parse, urllib.request
+
+selections_path, controller, config_path = sys.argv[1:4]
+secret = ""
+for line in open(config_path, encoding="utf-8"):
+    match = re.match(r"^secret:\s*(.*?)\s*$", line)
+    if match:
+        secret = match.group(1).strip("\"'")
+        break
+headers = {"Content-Type": "application/json"}
+if secret:
+    headers["Authorization"] = "Bearer " + secret
+
+
+def call(method, path, body=None):
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    request = urllib.request.Request(controller + path, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(request, timeout=5) as response:
+        return json.loads(response.read() or b"null")
+
+
+proxies = call("GET", "/proxies").get("proxies") or {}
+restored = skipped = 0
+for group, choice in json.load(open(selections_path, encoding="utf-8")).items():
+    current = proxies.get(group) or {}
+    if current.get("type") != "Selector" or choice not in (current.get("all") or []):
+        skipped += 1
+        continue
+    if current.get("now") != choice:
+        call("PUT", "/proxies/" + urllib.parse.quote(group, safe=""), {"name": choice})
+        restored += 1
+print("restored=%d skipped=%d" % (restored, skipped))
+PY
 }
 
 write_pending() {
@@ -428,7 +502,8 @@ runtime_services_healthy() {
 
 stop_runtime_services() {
   for service in mihomo-resolved-sync.service mihomo-container-proxy.service \
-    mihomo-container-proxy.socket mihomo-verge-api.service mihomo.service; do
+    mihomo-container-proxy.socket mihomo-container-proxy-pinned.service \
+    mihomo-container-proxy-pinned.socket mihomo-verge-api.service mihomo.service; do
     systemctl stop "$service" >/dev/null 2>&1 || true
   done
 }
@@ -455,27 +530,35 @@ replace_directory() {
   fi
 }
 
-start_container_proxy() {
-  local socket_ok=0
-  systemctl enable mihomo-container-proxy.socket >/dev/null
+start_proxy_socket() {
+  local socket="$1" port="$2" socket_ok=0
+  systemctl enable "$socket" >/dev/null
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     if ! ip -4 addr show | grep -q '172\.18\.0\.1/'; then
       sleep 1
       continue
     fi
-    systemctl reset-failed mihomo-container-proxy.socket >/dev/null 2>&1 || true
-    systemctl start mihomo-container-proxy.socket >/dev/null
-    if systemctl is-active mihomo-container-proxy.socket >/dev/null 2>&1 \
-      && ss -lnt | grep -q '172\.18\.0\.1:17890'; then
+    systemctl reset-failed "$socket" >/dev/null 2>&1 || true
+    systemctl start "$socket" >/dev/null
+    if systemctl is-active "$socket" >/dev/null 2>&1 \
+      && ss -lnt | grep -q "172\\.18\\.0\\.1:$port"; then
       socket_ok=1
       break
     fi
     sleep 1
   done
   [[ "$socket_ok" == 1 ]] || {
-    log "container proxy socket failed to reach steady state"
+    log "$socket failed to reach steady state"
     return 1
   }
+}
+
+start_container_proxy() {
+  start_proxy_socket mihomo-container-proxy.socket 17890
+}
+
+start_pinned_proxy() {
+  start_proxy_socket mihomo-container-proxy-pinned.socket 17896
 }
 
 restart_live_runtime() {
@@ -498,13 +581,16 @@ restart_live_runtime() {
   if systemctl is-enabled mihomo-container-proxy.socket >/dev/null 2>&1; then
     start_container_proxy
   fi
+  if systemctl is-enabled mihomo-container-proxy-pinned.socket >/dev/null 2>&1; then
+    start_pinned_proxy
+  fi
   if systemctl is-enabled mihomo-resolved-sync.service >/dev/null 2>&1; then
     systemctl enable --now mihomo-resolved-sync.service >/dev/null
   fi
 }
 
 apply_generation() {
-  local generation="$1" reason="$2" source metadata previous_stage=""
+  local generation="$1" reason="$2" source metadata previous_stage="" live_used=0
   if [[ -f "$pending_transaction" ]]; then
     previous_stage="$(read_value "$pending_transaction" STAGE || true)"
   fi
@@ -520,9 +606,11 @@ apply_generation() {
     sha256sum -c manifest.sha256 >/dev/null
   )
   metadata="$apply_stage/metadata.env"
-  # Read only the two validated flags; never source generation-controlled
+  # Read only the validated flags; never source generation-controlled
   # shell text as root.
   CONTAINER_PROXY_ENABLED="$(read_value "$metadata" CONTAINER_PROXY_ENABLED)"
+  PINNED_PROXY_ENABLED="$(read_value "$metadata" PINNED_PROXY_ENABLED || true)"
+  PINNED_PROXY_ENABLED="${PINNED_PROXY_ENABLED:-0}"
   RESOLVED_SYNC_ENABLED="$(read_value "$metadata" RESOLVED_SYNC_ENABLED)"
   write_pending prepared "$generation" "$apply_stage"
   if [[ -n "$previous_stage" && "$previous_stage" != "$apply_stage" ]]; then
@@ -555,12 +643,37 @@ apply_generation() {
     /etc/systemd/system/mihomo-container-proxy.socket root root 644
   install_optional_file "$apply_stage/systemd/mihomo-container-proxy.service" \
     /etc/systemd/system/mihomo-container-proxy.service root root 644
+  install_optional_file "$apply_stage/systemd/mihomo-container-proxy-pinned.socket" \
+    /etc/systemd/system/mihomo-container-proxy-pinned.socket root root 644
+  install_optional_file "$apply_stage/systemd/mihomo-container-proxy-pinned.service" \
+    /etc/systemd/system/mihomo-container-proxy-pinned.service root root 644
   install_optional_file "$apply_stage/systemd/mihomo-resolved-sync.service" \
     /etc/systemd/system/mihomo-resolved-sync.service root root 644
   install_optional_file "$apply_stage/var-lib-mihomo/Country.mmdb" \
     /var/lib/mihomo/Country.mmdb mihomo mihomo 644
   replace_directory "$apply_stage/var-lib-mihomo/verge" /var/lib/mihomo/verge
   chown -R mihomo:mihomo /var/lib/mihomo
+
+  # A reboot reset /etc and /var/lib: lay the newer live mirror over the generation it was taken on,
+  # keeping the generation's logs; fall back to the generation untouched if the mirror does not validate.
+  live_used=0
+  if live_mirror_usable "$generation"; then
+    install -o root -g mihomo -m 640 "$live_root/etc-mihomo/config.yaml" /etc/mihomo/config.yaml
+    replace_directory "$live_root/var-lib-mihomo/verge" /var/lib/mihomo/verge
+    if [[ -d "$apply_stage/var-lib-mihomo/verge/logs" ]]; then
+      cp -a -- "$apply_stage/var-lib-mihomo/verge/logs" /var/lib/mihomo/verge/logs
+    fi
+    chown -R mihomo:mihomo /var/lib/mihomo
+    if /usr/local/bin/mihomo -t -d /var/lib/mihomo -f /etc/mihomo/config.yaml >/dev/null 2>&1; then
+      live_used=1
+      log "live runtime mirror restored over generation $generation"
+    else
+      log "live runtime mirror failed validation; using generation $generation as captured"
+      install_optional_file "$apply_stage/etc-mihomo/config.yaml" /etc/mihomo/config.yaml root mihomo 640
+      replace_directory "$apply_stage/var-lib-mihomo/verge" /var/lib/mihomo/verge
+      chown -R mihomo:mihomo /var/lib/mihomo
+    fi
+  fi
 
   /usr/local/bin/mihomo -t -d /var/lib/mihomo -f /etc/mihomo/config.yaml >/dev/null
   wait_for_bridge || {
@@ -579,6 +692,12 @@ apply_generation() {
     systemctl disable --now mihomo-container-proxy.socket >/dev/null 2>&1 || true
     systemctl disable --now mihomo-container-proxy.service >/dev/null 2>&1 || true
   fi
+  if [[ "$PINNED_PROXY_ENABLED" == 1 && -f /etc/systemd/system/mihomo-container-proxy-pinned.socket ]]; then
+    start_pinned_proxy
+  else
+    systemctl disable --now mihomo-container-proxy-pinned.socket >/dev/null 2>&1 || true
+    systemctl disable --now mihomo-container-proxy-pinned.service >/dev/null 2>&1 || true
+  fi
   if [[ "$RESOLVED_SYNC_ENABLED" == 1 && -f /etc/systemd/system/mihomo-resolved-sync.service ]]; then
     systemctl enable --now mihomo-resolved-sync.service >/dev/null
   else
@@ -589,6 +708,12 @@ apply_generation() {
   wait_for_runtime_health
   if [[ "$CONTAINER_PROXY_ENABLED" == 1 ]]; then
     systemctl is-active mihomo-container-proxy.socket >/dev/null
+  fi
+  if [[ "$PINNED_PROXY_ENABLED" == 1 ]]; then
+    systemctl is-active mihomo-container-proxy-pinned.socket >/dev/null
+  fi
+  if [[ "$live_used" == 1 ]]; then
+    log "node selections: $(restore_selections 2>&1 | tail -1)"
   fi
 
   printf '%s\n' "$generation" >"$applied_generation_file.tmp.$$"

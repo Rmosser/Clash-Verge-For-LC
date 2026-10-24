@@ -6,7 +6,7 @@
 
 - Web 面板以懒猫应用形式发布，入口是 `https://clash.<box>.heiyu.space`
 - 宿主机运行时默认采用 host-native 路径，不以 `deploy/` 下的 compose 目录作为当前默认方案
-- 容器出网默认走显式代理入口 `172.18.0.1:17890`，不要假设 TUN 会自动覆盖容器网络
+- 容器出网默认走显式代理入口 `172.18.0.1:17890`，不要假设 TUN 会自动覆盖容器网络；需要固定出口的应用可走 `172.18.0.1:17896`（见 [docs/CONTAINER_PROXY_GUIDE.md](docs/CONTAINER_PROXY_GUIDE.md)）
 
 ## 当前有效 contract
 
