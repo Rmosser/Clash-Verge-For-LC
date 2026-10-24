@@ -91,6 +91,78 @@ class MihomoVergeApiTests(unittest.TestCase):
             text, _ = MODULE.build_runtime_text(base_text=profile, overlay_state={}, verge_state=verge, dns_state={})
         self.assertIn("listeners:\n  - {name: own, type: socks, port: 7999}", text)
 
+    def test_pinned_listener_preserves_existing_listeners_across_render_and_clear(self):
+        blocks = [
+            "listeners:\n  # keep custom authentication\n  - name: own\n    type: http\n    port: 7999\n"
+            "    users:\n      - username: example\n        password: synthetic\n",
+            "listeners:\n- {name: 'own: #1', type: socks, port: 7999} # keep this option\n",
+            'listeners: [{name: "own", type: http, port: 7999}] # trailing ] comment\n',
+            'listeners: [\n  {name: "own", type: http, port: 7999} # comment before ]\n]\n',
+            'listeners: [\n  {name: "own", type: http, port: 7999},\n]\n',
+            'listeners: # custom inbounds\n  [{name: "own", type: http, port: 7999}]\n',
+            "listeners:\n  - name: own\n    type: tun\n    stack: system\n",
+        ]
+        verge = {"enable_tun_mode": False, "enable_dns_settings": False}
+        for block in blocks:
+            with self.subTest(block=block), patch.object(MODULE, "ensure_state"):
+                profile = block + self.PROFILE
+                for _ in range(2):
+                    text, _ = MODULE.build_runtime_text(
+                        base_text=profile, overlay_state={MODULE.PINNED_LISTENERS_KEY: self.PINNED},
+                        verge_state=verge, dns_state={})
+                    self.assertIn("own", text)
+                    self.assertEqual(text.count("pinned-eb"), 1)
+                    if "port: 7999" in block:
+                        self.assertIn("port: 7999", text)
+                    self.assertIn("rules:\n  - MATCH,PROXY", text)
+                    if "password:" in block:
+                        self.assertIn("    users:\n      - username: example\n        password: synthetic", text)
+                    if "#" in block:
+                        for line in block.splitlines():
+                            if "#" in line:
+                                self.assertIn(line[line.index("#"):], text)
+                cleared, _ = MODULE.build_runtime_text(base_text=profile, overlay_state={},
+                                                       verge_state=verge, dns_state={})
+                self.assertIn(block, cleared)
+                self.assertNotIn("pinned-eb", cleared)
+
+    def test_pinned_listener_rejects_existing_name_and_port_conflicts(self):
+        pinned = MODULE.normalize_pinned_listeners(self.PINNED, set())
+        for block, code in (
+            ("listeners:\n  - name: pinned-eb\n    type: socks\n    port: 7999\n",
+             "PINNED_LISTENER_NAME_CONFLICT"),
+            ('listeners: [{"name": "own", "type": "http", "port": 7896}]\n',
+             "PINNED_LISTENER_PORT_CONFLICT"),
+            ("listeners:\n- {name: own, type: socks, port: '7895-7897/7999'}\n",
+             "PINNED_LISTENER_PORT_CONFLICT"),
+            ("listeners: *custom-listeners\n", "PINNED_LISTENER_MERGE_UNSUPPORTED"),
+            ("listeners:\n- {<<: *defaults, name: own, port: 7999}\n", "PINNED_LISTENER_MERGE_UNSUPPORTED"),
+        ):
+            with self.subTest(block=block), self.assertRaises(MODULE.ApiError) as ctx:
+                MODULE.merge_pinned_listeners(block, pinned)
+            self.assertEqual(ctx.exception.code, code)
+
+    def test_pinned_listener_accepts_empty_profile_listener_lists(self):
+        pinned = MODULE.normalize_pinned_listeners(self.PINNED, set())
+        for block in ("", "listeners: []\n", "listeners:\n", "listeners: null\n",
+                      "listeners: # no custom listeners\n", "listeners: null # no listeners\n"):
+            text = MODULE.merge_pinned_listeners(block + self.PROFILE, pinned)
+            self.assertEqual(text.count("pinned-eb"), 1)
+            self.assertIn("rules:\n  - MATCH,PROXY", text)
+
+    def test_patch_clash_config_rolls_back_overlay_when_listener_merge_fails(self):
+        old = {"mode": "rule"}
+        with patch.object(MODULE, "ensure_state"), patch.object(MODULE, "load_overlay", return_value=old), \
+             patch.object(MODULE, "get_verge_config_state", return_value={"verge_mixed_port": 7890}), \
+             patch.object(MODULE, "controller_request", return_value={"proxies": {self.PINNED_NODE: {}}}), \
+             patch.object(MODULE, "save_overlay") as save, \
+             patch.object(MODULE, "apply_runtime_for_current_or_empty_state",
+                          side_effect=MODULE.ApiError("PINNED_LISTENER_PORT_CONFLICT", "conflict")):
+            with self.assertRaises(MODULE.ApiError):
+                MODULE.invoke_command("patch_clash_config", {"payload": {MODULE.PINNED_LISTENERS_KEY: self.PINNED}})
+            self.assertEqual(save.call_count, 2)
+            self.assertEqual(save.call_args.args[0], old)
+
     def test_pinned_listener_for_a_missing_node_renders_and_is_logged(self):
         overlay = {MODULE.PINNED_LISTENERS_KEY: [{"name": "pinned-eb", "port": 7896, "proxy": "gone"}]}
         verge = {"enable_tun_mode": False, "enable_dns_settings": False}
@@ -462,6 +534,122 @@ class MihomoVergeApiTests(unittest.TestCase):
             payload = MODULE.runtime_info_payload()
 
         self.assertEqual(payload["profileHealth"], profile_health)
+
+    TELEGRAM = {"bot_token": "123456:ABCdefGHIjklMNOpqrSTUvwxYZ012345", "chat_id": "1043303533",
+                "label": "rainierdev"}
+
+    def test_telegram_alert_config_needs_a_valid_token_and_chat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "telegram.json"
+            with patch.object(MODULE, "ALERT_TELEGRAM_PATH", path):
+                self.assertIsNone(MODULE.telegram_alert_config())  # no file
+                path.write_text(json.dumps(self.TELEGRAM), encoding="utf-8")
+                config = MODULE.telegram_alert_config()
+                self.assertEqual(config["proxy"], "http://127.0.0.1:7890")
+                self.assertEqual(config["repeat_seconds"], 3600)
+                self.assertTrue(MODULE.alert_channel_configured())
+                self.assertEqual(MODULE.alert_repeat_seconds(), 3600)
+                path.write_text(json.dumps({**self.TELEGRAM, "bot_token": "not a token"}), encoding="utf-8")
+                self.assertIsNone(MODULE.telegram_alert_config())
+                path.write_text(json.dumps({**self.TELEGRAM, "chat_id": "@channel"}), encoding="utf-8")
+                self.assertIsNone(MODULE.telegram_alert_config())
+
+    def test_telegram_alert_text_names_the_box_and_component(self) -> None:
+        degraded = {"component": "pinned.pinned-eb", "status": "degraded", "details": "节点 X 连续 2 次探测失败"}
+        self.assertEqual(MODULE.telegram_alert_text(degraded, "rainierspace"),
+                         "🔴 Clash · rainierspace：固定节点入口 pinned-eb异常\n节点 X 连续 2 次探测失败")
+        self.assertEqual(MODULE.telegram_alert_text({"component": "controller", "status": "ok", "details": "v1"},
+                                                    "rainierdev"),
+                         "✅ Clash · rainierdev：Mihomo 控制接口已恢复")
+
+    def test_outbox_delivers_through_telegram_and_never_logs_the_token(self) -> None:
+        sent: list = []
+
+        class Response:
+            def __init__(self, body: bytes) -> None:
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self) -> bytes:
+                return self.body
+
+        class Opener:
+            def __init__(self, fail: bool) -> None:
+                self.fail = fail
+
+            def open(self, request, timeout):
+                sent.append((request.full_url, json.loads(request.data)))
+                if self.fail:
+                    raise urllib.error.HTTPError(request.full_url, 502, f"bad gateway {request.full_url}", {}, None)
+                return Response(b'{"ok": true}')
+
+        config = {**self.TELEGRAM, "proxy": "http://127.0.0.1:7890", "repeat_seconds": 3600}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            outbox, state = root / "alerts.jsonl", root / "alert-state.json"
+            event = {"id": "tg-1", "createdAt": "2026-10-24T00:00:00Z", "component": "controller",
+                     "status": "degraded", "details": "controller unavailable", "delivery": "pending"}
+            outbox.write_text(json.dumps(event) + "\n", encoding="utf-8")
+            with patch.object(MODULE, "ALERT_OUTBOX_PATH", outbox), patch.object(MODULE, "ALERT_STATE_PATH", state), \
+                 patch.object(MODULE, "ALERT_WEBHOOK_URL", ""), patch.object(MODULE, "ALERT_RETRY_BACKOFF_SECONDS", 0.0), \
+                 patch.object(MODULE, "telegram_alert_config", return_value=config), \
+                 patch.object(MODULE, "ensure_dirs"), patch.object(MODULE, "append_operation_log"), \
+                 patch.object(MODULE.urllib.request, "build_opener", return_value=Opener(fail=True)):
+                MODULE.flush_alert_outbox()
+                with patch.object(MODULE.urllib.request, "build_opener", return_value=Opener(fail=False)):
+                    MODULE.flush_alert_outbox()
+                    MODULE.flush_alert_outbox()  # already delivered: nothing more is sent
+                outbox_text = outbox.read_text(encoding="utf-8")
+                rows = [json.loads(line) for line in outbox_text.splitlines() if line.strip()]
+        self.assertEqual(len(sent), 2)
+        url, body = sent[1]
+        self.assertEqual(url, f"https://api.telegram.org/bot{self.TELEGRAM['bot_token']}/sendMessage")
+        self.assertEqual(body["chat_id"], "1043303533")
+        self.assertTrue(body["text"].startswith("🔴 Clash · rainierdev：Mihomo 控制接口异常"))
+        receipts = [r for r in rows if r.get("type") == "delivery"]
+        self.assertEqual([r["status"] for r in receipts], ["attempting", "failed", "attempting", "delivered"])
+        self.assertEqual(receipts[1]["error"], "telegram returned HTTP 502")
+        self.assertNotIn(self.TELEGRAM["bot_token"], outbox_text)
+
+    def test_pinned_probe_alerts_after_consecutive_failures_and_on_recovery(self) -> None:
+        overlay = {MODULE.PINNED_LISTENERS_KEY: [{"name": "pinned-eb", "port": 7896, "proxy": "EB Fast"}]}
+        outcomes = [OSError("down"), urllib.error.HTTPError("u", 503, "timeout", {}, None),
+                    urllib.error.HTTPError("u", 404, "missing", {}, None), {"delay": 185}]
+        calls: list = []
+
+        def controller(method, path, payload=None, timeout=15):
+            calls.append(path)
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        with patch.object(MODULE, "load_overlay", return_value=overlay), \
+             patch.object(MODULE, "controller_request", side_effect=controller), \
+             patch.object(MODULE, "record_runtime_alert") as alert, patch.object(MODULE, "flush_alert_outbox"), \
+             patch.object(MODULE, "PINNED_PROBE_STATE", {"at": float("-inf"), "failures": {}}), \
+             patch.object(MODULE, "PINNED_PROBE_EVERY_SECONDS", 0):
+            for _ in range(4):
+                MODULE.probe_pinned_listeners()
+        self.assertTrue(calls[0].startswith("/proxies/EB%20Fast/delay?url=https%3A%2F%2Fwww.gstatic.com"))
+        statuses = [(c.args[0], c.args[1]) for c in alert.call_args_list]
+        self.assertEqual(statuses, [("pinned.pinned-eb", "degraded"), ("pinned.pinned-eb", "degraded"),
+                                    ("pinned.pinned-eb", "ok")])  # the first failure alone stays quiet
+        self.assertIn("HTTP 503", alert.call_args_list[0].args[2])
+        self.assertIn("节点不在当前配置中", alert.call_args_list[1].args[2])
+
+    def test_pinned_probe_runs_at_most_every_interval(self) -> None:
+        with patch.object(MODULE, "load_overlay", return_value={}) as overlay, \
+             patch.object(MODULE, "flush_alert_outbox"), \
+             patch.object(MODULE, "PINNED_PROBE_STATE", {"at": float("-inf"), "failures": {}}):
+            MODULE.probe_pinned_listeners()
+            MODULE.probe_pinned_listeners()
+        self.assertEqual(overlay.call_count, 1)
 
     def test_alert_outbox_repairs_torn_tail_and_delivers_valid_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

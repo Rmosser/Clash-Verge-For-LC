@@ -7,6 +7,7 @@
 - 浏览器入口只走懒猫应用路由，不走裸端口
 - `secret` 不允许为空
 - 真实配置、订阅 token 和 secret 不进 Git；只放 `var/private/` 或目标机的私有路径
+- Telegram 告警的 bot token 只放目标机 `/root/.config/lzc-mihomo-alerts/telegram.json`（root、600）；投递失败只记录错误类型，不记录带 token 的 URL
 
 ## 当前访问模型
 
