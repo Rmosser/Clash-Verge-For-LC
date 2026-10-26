@@ -8,7 +8,10 @@ After=mihomo-container-proxy-pinned.socket
 [Service]
 Type=notify
 # 127.0.0.1:7896 is the Verge API overlay's pinned listener (lzc-pinned-listeners); without it connections are refused.
-ExecStart=/lib/systemd/systemd-socket-proxyd 127.0.0.1:7896
+# Each proxied connection holds two sockets and two pipes (~6 fds); the default soft limit of 1024 ran out
+# at ~170 connections when 16 agy calls started at once (2026-10-26, "Failed to allocate pipe buffer").
+ExecStart=/lib/systemd/systemd-socket-proxyd --connections-max=1024 127.0.0.1:7896
+LimitNOFILE=65536
 User=nobody
 Group=nogroup
 PrivateTmp=yes

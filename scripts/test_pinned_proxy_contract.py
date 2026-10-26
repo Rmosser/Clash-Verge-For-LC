@@ -38,10 +38,14 @@ def assert_units() -> None:
     if unit_values(INFRA / "mihomo-container-proxy-pinned.socket", "FreeBind") != ["true"]:
         raise AssertionError("pinned socket must use FreeBind like the shared socket")
     service = INFRA / "mihomo-container-proxy-pinned.service"
-    if unit_values(service, "ExecStart") != ["/lib/systemd/systemd-socket-proxyd 127.0.0.1:7896"]:
+    if unit_values(service, "ExecStart") != ["/lib/systemd/systemd-socket-proxyd --connections-max=1024 127.0.0.1:7896"]:
         raise AssertionError("pinned service must forward to the pinned listener 127.0.0.1:7896")
     if unit_values(service, "User") != ["nobody"]:
         raise AssertionError("pinned service must run unprivileged")
+    for unit in (service, INFRA / "mihomo-container-proxy.service"):
+        # 16 concurrent agy calls exhausted the default 1024 fds (2026-10-26)
+        if unit_values(unit, "LimitNOFILE") != ["65536"]:
+            raise AssertionError(f"{unit.name} must raise LimitNOFILE for concurrent app traffic")
 
 
 def assert_api_port() -> None:
