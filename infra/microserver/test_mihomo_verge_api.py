@@ -993,6 +993,32 @@ class MihomoVergeApiTests(unittest.TestCase):
         self.assertEqual(runtime["alerting"]["status"], "degraded")
         self.assertFalse(runtime["alerting"]["ready"])
 
+    def test_a_later_delivered_alert_supersedes_an_exhausted_one_for_the_same_component(self) -> None:
+        rows = [
+            {"id": "down", "createdAt": "2026-10-25T14:02:57Z", "component": "pinned.pinned-eb", "status": "degraded"},
+            {"type": "delivery", "alertId": "down", "status": "exhausted", "attempt": 5, "createdAt": "2026-10-25T14:18:38Z"},
+            {"id": "other", "createdAt": "2026-10-25T14:10:00Z", "component": "controller", "status": "degraded"},
+            {"type": "delivery", "alertId": "other", "status": "exhausted", "attempt": 5, "createdAt": "2026-10-25T14:20:00Z"},
+            {"id": "up", "createdAt": "2026-10-25T15:00:35Z", "component": "pinned.pinned-eb", "status": "ok"},
+            {"type": "delivery", "alertId": "up", "status": "delivered", "attempt": 1, "createdAt": "2026-10-25T15:00:40Z"},
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            outbox = Path(tmpdir) / "alerts.jsonl"
+            outbox.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+            with (
+                patch.object(MODULE, "ALERT_OUTBOX_PATH", outbox),
+                patch.object(MODULE, "ALERT_STATE_PATH", Path(tmpdir) / "alert-state.json"),
+                patch.object(MODULE, "alert_channel_configured", return_value=True),
+                patch.object(MODULE, "ensure_dirs"),
+                patch.object(MODULE, "append_operation_log"),
+            ):
+                health = MODULE.alert_health_payload()
+                self.assertEqual((health["superseded"], health["pending"], health["exhausted"]), (1, 1, 1))
+                self.assertEqual(health["status"], "degraded")  # the controller alert was never superseded
+                outbox.write_text("\n".join(json.dumps(row) for row in rows[:2] + rows[4:]) + "\n", encoding="utf-8")
+                health = MODULE.alert_health_payload()
+        self.assertEqual((health["superseded"], health["pending"], health["status"]), (1, 0, "ok"))
+
     def test_optional_alerting_does_not_mask_runtime_or_delivery_failures(self):
         cases = [
             ("ok", "ok", False, 0, "degraded", True),
