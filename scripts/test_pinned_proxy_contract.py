@@ -70,6 +70,21 @@ def assert_deploy_lists() -> None:
             raise AssertionError(f"deploy_microserver.sh snapshot/rollback lists miss the pinned units: {needle}")
 
 
+def assert_bootstrap_survives_a_missing_stage() -> None:
+    """A pending transaction whose stage is already gone must not abort the reconcile under set -e."""
+    text = BOOTSTRAP.read_text(encoding="utf-8")
+    script = text.split("<<'SCRIPT'\n", 1)[1].split("\nSCRIPT\n", 1)[0]
+    start = script.index("remove_bootstrap_stage() {")
+    function = script[start:script.index("\n}\n", start) + 3]
+    with tempfile.TemporaryDirectory() as tmp:
+        probe = f'set -euo pipefail\nbootstrap_root={tmp}\n{function}remove_bootstrap_stage "{tmp}/.restore-staging.gone"\necho survived\n'
+        result = subprocess.run(["bash", "-c", probe], capture_output=True, text=True, check=False)
+    if result.stdout.strip() != "survived":
+        raise AssertionError(f"remove_bootstrap_stage aborts on a missing stage: {result.stderr}")
+    if 'pending_file="$REMOTE_BOOTSTRAP_ROOT/state/pending.env"' not in text:
+        raise AssertionError("a new snapshot must retarget a pending transaction left by an earlier failed apply")
+
+
 def bootstrap_functions() -> str:
     text = BOOTSTRAP.read_text(encoding="utf-8")
     script = text.split("<<'SCRIPT'\n", 1)[1].split("\nSCRIPT\n", 1)[0]
@@ -117,6 +132,7 @@ def main() -> None:
     assert_api_port()
     assert_deploy_lists()
     assert_generations()
+    assert_bootstrap_survives_a_missing_stage()
     print("pinned container proxy contract: ok")
 
 
