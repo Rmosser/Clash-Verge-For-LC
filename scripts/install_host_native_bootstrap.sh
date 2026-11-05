@@ -480,7 +480,11 @@ remove_bootstrap_stage() {
   local candidate="$1"
   case "$candidate" in
     "$bootstrap_root"/.restore-staging-*|"$bootstrap_root"/.restore-staging.*)
-      [[ -e "$candidate" || -L "$candidate" ]] && rm -rf -- "$candidate"
+      # an `[[ ]] && rm` here returned 1 for a stage already gone and set -e killed every later reconcile
+      # (rainierspace, 2026-10-26)
+      if [[ -e "$candidate" || -L "$candidate" ]]; then
+        rm -rf -- "$candidate"
+      fi
       ;;
   esac
 }
