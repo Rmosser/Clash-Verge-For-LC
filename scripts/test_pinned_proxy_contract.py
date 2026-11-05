@@ -81,8 +81,39 @@ def assert_bootstrap_survives_a_missing_stage() -> None:
         result = subprocess.run(["bash", "-c", probe], capture_output=True, text=True, check=False)
     if result.stdout.strip() != "survived":
         raise AssertionError(f"remove_bootstrap_stage aborts on a missing stage: {result.stderr}")
-    if 'pending_file="$REMOTE_BOOTSTRAP_ROOT/state/pending.env"' not in text:
-        raise AssertionError("a new snapshot must retarget a pending transaction left by an earlier failed apply")
+
+
+def assert_snapshot_retargets_pending_transaction() -> None:
+    """Run the installer's publication boundary against a prior failed restore and an idle host."""
+    text = BOOTSTRAP.read_text(encoding="utf-8")
+    start = text.index('printf \'%s\\n\' "$generation_id" >"$current_generation_file.tmp.$$"')
+    end = text.index('\ncat >"$state_file.tmp.$$" <<STATE', start)
+    publish = text[start:end]
+    for has_pending in (False, True):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "state").mkdir()
+            current = root / "current-generation"
+            current.write_text("gen.old\n", encoding="utf-8")
+            pending = root / "state" / "pending.env"
+            if has_pending:
+                pending.write_text("PHASE=applying\nGENERATION=gen.old\nSTAGE=/old/stage\n", encoding="utf-8")
+            program = (f'set -euo pipefail\nREMOTE_BOOTSTRAP_ROOT={str(root)!r}\n'
+                       'current_generation_file="$REMOTE_BOOTSTRAP_ROOT/current-generation"\n'
+                       'generation_id=gen.new\ndate() { echo 2026-11-05T00:00:00Z; }\n' + publish)
+            subprocess.run(["bash", "-c", program], capture_output=True, text=True, check=True)
+            if current.read_text() != "gen.new\n":
+                raise AssertionError("snapshot publication must advance current-generation")
+            if pending.exists() != has_pending:
+                raise AssertionError("snapshot publication must not create a restore transaction on an idle host")
+            if has_pending:
+                values = dict(line.split("=", 1) for line in pending.read_text().splitlines())
+                if (values.get("PHASE"), values.get("GENERATION"), values.get("STAGE")) != ("prepared", "gen.new", ""):
+                    raise AssertionError("the next reconcile must apply the new snapshot without reusing the stale stage")
+                if pending.stat().st_mode & 0o777 != 0o600:
+                    raise AssertionError("pending restore metadata must remain private")
+            if list(root.rglob("*.tmp.*")):
+                raise AssertionError("publication must not leave temporary metadata behind")
 
 
 def bootstrap_functions() -> str:
@@ -133,6 +164,7 @@ def main() -> None:
     assert_deploy_lists()
     assert_generations()
     assert_bootstrap_survives_a_missing_stage()
+    assert_snapshot_retargets_pending_transaction()
     print("pinned container proxy contract: ok")
 
 

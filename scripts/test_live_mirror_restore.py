@@ -237,6 +237,8 @@ def assert_selection_restore() -> None:
 def assert_selection_failure_retains_transaction() -> None:
     # Execute the real apply_generation commit boundary, replacing only its host status/log helpers.
     script = BOOTSTRAP.read_text().split("<<'SCRIPT'\n", 1)[1].split("\nSCRIPT\n", 1)[0]
+    cleanup_start = script.index('remove_bootstrap_stage() {')
+    cleanup = script[cleanup_start:script.index('\n}\n', cleanup_start) + 3]
     tail = script.split('  if [[ "$live_used" == 1 ]]; then\n', 1)[1].split('\n}\n', 1)[0]
     commit = 'finish_apply() {\n  if [[ "$live_used" == 1 ]]; then\n' + tail + '\n}\nfinish_apply\n'
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeController)
@@ -255,7 +257,8 @@ def assert_selection_failure_retains_transaction() -> None:
                         'applied_generation_file="$bootstrap_root/applied-generation"\n'
                         'log() { printf "%s\\n" "$1"; }\n'
                         'systemctl() { echo active; }\n'
-                        'clear_pending() { rm "$bootstrap_root/state/pending.env"; }\n' + commit)
+                        'clear_pending() { rm "$bootstrap_root/state/pending.env"; }\n' + cleanup +
+                        '\nremove_bootstrap_stage "$bootstrap_root/.restore-staging.already-removed"\n' + commit)
                 FakeController.fail_method = method
                 result = run_bootstrap(root, body, env)
                 if result.returncode == 0 or not pending.exists() or (root / "applied-generation").exists():
