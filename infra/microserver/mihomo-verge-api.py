@@ -90,6 +90,18 @@ ALERT_STATE_PATH = Path(
     os.environ.get("MIHOMO_ALERT_STATE", str(LOGS_DIR / "alert-state.json"))
 )
 ALERT_WEBHOOK_URL = os.environ.get("MIHOMO_ALERT_WEBHOOK_URL", "").strip()
+# Telegram channel: {"bot_token", "chat_id", "label", "proxy"?, "repeat_seconds"?} in a root-only file under
+# /root, which a LazyCat reboot keeps. It takes precedence over the webhook when both are set.
+ALERT_TELEGRAM_PATH = Path(
+    os.environ.get("MIHOMO_ALERT_TELEGRAM_FILE", "/root/.config/lzc-mihomo-alerts/telegram.json")
+)
+ALERT_TELEGRAM_DEFAULT_PROXY = "http://127.0.0.1:7890"  # api.telegram.org is unreachable directly from the box
+ALERT_TELEGRAM_REPEAT_SECONDS = 3600  # a still-failing component reminds hourly, not every health round
+ALERT_COMPONENT_LABELS = {"controller": "Mihomo 控制接口", "restore": "运行时恢复"}
+# Probe each pinned listener's node through the controller's delay test; alert after consecutive failures.
+PINNED_PROBE_URL = os.environ.get("MIHOMO_PINNED_PROBE_URL", "https://www.gstatic.com/generate_204")
+PINNED_PROBE_EVERY_SECONDS = 300
+PINNED_PROBE_FAILURES = 2
 ALERT_COOLDOWN_SECONDS = max(
     0,
     int(os.environ.get("MIHOMO_ALERT_COOLDOWN_SECONDS", "300")),
@@ -126,6 +138,9 @@ HEALTH_WATCH_STOP = threading.Event()
 BOOTSTRAP_ROOT = Path(os.environ.get("MIHOMO_BOOTSTRAP_ROOT", "/root/.config/lzc-mihomo-bootstrap"))
 LIVE_MIRROR_DIR = BOOTSTRAP_ROOT / "live"
 LIVE_MIRROR_EXCLUDE = {"logs"}  # append-only and restored from the generation; mirroring it would churn every minute
+# ...except the alert outbox and its state: a reboot must neither resend delivered alerts nor drop pending ones.
+LIVE_MIRROR_KEEP = {"logs/alerts.jsonl", "logs/alert-state.json"}
+PINNED_PROBE_STATE: dict[str, Any] = {"at": float("-inf"), "failures": {}}
 LIVE_MIRROR_LOCK = threading.Lock()
 
 SENSITIVE_QUERY_PARAMETER_RE = re.compile(
@@ -823,6 +838,104 @@ def _alert_retry_delay(attempt: int) -> float:
     )
 
 
+def telegram_alert_config() -> dict[str, Any] | None:
+    try:
+        data = json.loads(ALERT_TELEGRAM_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    token, chat = str(data.get("bot_token") or ""), str(data.get("chat_id") or "")
+    if not re.fullmatch(r"\d+:[A-Za-z0-9_-]{20,}", token) or not re.fullmatch(r"-?\d+", chat):
+        return None
+    repeat = data.get("repeat_seconds", ALERT_TELEGRAM_REPEAT_SECONDS)
+    return {
+        "bot_token": token,
+        "chat_id": chat,
+        "label": str(data.get("label") or socket.gethostname())[:40],
+        "proxy": str(data.get("proxy") or ALERT_TELEGRAM_DEFAULT_PROXY),
+        "repeat_seconds": repeat if isinstance(repeat, int) and not isinstance(repeat, bool) and repeat >= 0
+        else ALERT_TELEGRAM_REPEAT_SECONDS,
+    }
+
+
+def alert_channel_configured() -> bool:
+    return bool(ALERT_WEBHOOK_URL or telegram_alert_config())
+
+
+def alert_repeat_seconds() -> float:
+    telegram = telegram_alert_config()
+    return telegram["repeat_seconds"] if telegram else ALERT_COOLDOWN_SECONDS
+
+
+def alert_component_label(component: str) -> str:
+    if component.startswith("pinned."):
+        return f"固定节点入口 {component[len('pinned.'):]}"
+    return ALERT_COMPONENT_LABELS.get(component, component)
+
+
+def telegram_alert_text(event: dict[str, Any], label: str) -> str:
+    degraded = event.get("status") != "ok"
+    head = (f"{'🔴' if degraded else '✅'} Clash · {label}："
+            f"{alert_component_label(str(event.get('component') or ''))}{'异常' if degraded else '已恢复'}")
+    details = str(event.get("details") or "").strip()
+    return f"{head}\n{details[:1500]}" if details and degraded else head
+
+
+def send_alert(event_id: str, event: dict[str, Any]) -> None:
+    """Deliver one alert; raise on any failure so the outbox records an attempt and retries."""
+    telegram = telegram_alert_config()
+    if telegram:
+        body = json.dumps(
+            {"chat_id": telegram["chat_id"], "text": telegram_alert_text(event, telegram["label"]),
+             "disable_web_page_preview": True},
+            ensure_ascii=False,
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            f"https://api.telegram.org/bot{telegram['bot_token']}/sendMessage",
+            data=body,
+            headers={"Content-Type": "application/json", "User-Agent": "mihomo-verge-api-alert/1.0"},
+            method="POST",
+        )
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"https": telegram["proxy"], "http": telegram["proxy"]})
+        )
+        # Error texts can carry the request URL and with it the bot token: report only their kind.
+        try:
+            with opener.open(request, timeout=ALERT_WEBHOOK_TIMEOUT_SECONDS) as response:
+                accepted = json.loads(response.read() or b"{}").get("ok") is True
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"telegram returned HTTP {exc.code}") from None
+        except Exception as exc:
+            raise RuntimeError(f"telegram unreachable: {type(exc).__name__}") from None
+        if not accepted:
+            raise RuntimeError("telegram rejected the message")
+        return
+    payload = json.dumps(
+        {
+            "id": event_id,
+            "createdAt": event.get("createdAt"),
+            "component": event.get("component"),
+            "status": event.get("status"),
+            "details": event.get("details", ""),
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        ALERT_WEBHOOK_URL,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "mihomo-verge-api-alert/1.0",
+            "Idempotency-Key": event_id,
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=ALERT_WEBHOOK_TIMEOUT_SECONDS) as response:
+        if not (200 <= int(response.status) < 300):
+            raise RuntimeError(f"alert endpoint returned HTTP {response.status}")
+
+
 def alert_health_payload() -> dict[str, Any]:
     """Expose alert channel readiness independently from controller health."""
     with ALERT_LOCK:
@@ -834,8 +947,8 @@ def alert_health_payload() -> dict[str, Any]:
             return {
                 "status": "degraded",
                 "ready": False,
-                "enabled": bool(ALERT_WEBHOOK_URL),
-                "configured": bool(ALERT_WEBHOOK_URL),
+                "enabled": alert_channel_configured(),
+                "configured": alert_channel_configured(),
                 "outbox": str(ALERT_OUTBOX_PATH),
                 "corruptionCount": 1,
                 "pending": 0,
@@ -881,20 +994,21 @@ def alert_health_payload() -> dict[str, Any]:
             corruption_count += orphan_receipts
             last_error = "delivery receipt has no matching alert event"
 
-        if not ALERT_WEBHOOK_URL:
-            last_error = "alert webhook is not configured"
+        configured = alert_channel_configured()
+        if not configured:
+            last_error = "alert channel (webhook or Telegram) is not configured"
         elif pending and not last_error:
             last_error = "alert delivery is pending"
         ready = bool(
-            ALERT_WEBHOOK_URL
+            configured
             and corruption_count == 0
             and pending == 0
         )
         return {
             "status": "ok" if ready else "degraded",
             "ready": ready,
-            "enabled": bool(ALERT_WEBHOOK_URL),
-            "configured": bool(ALERT_WEBHOOK_URL),
+            "enabled": configured,
+            "configured": configured,
             "outbox": str(ALERT_OUTBOX_PATH),
             "corruptionCount": corruption_count,
             "pending": pending,
@@ -942,7 +1056,7 @@ def record_runtime_alert(
         if previous_status == "ok" and status == "ok":
             return None
         changed = previous_status != status
-        if not changed and now - last_emitted < ALERT_COOLDOWN_SECONDS:
+        if not changed and now - last_emitted < alert_repeat_seconds():
             return None
         event = {
             "id": uuid.uuid4().hex,
@@ -950,7 +1064,7 @@ def record_runtime_alert(
             "component": component,
             "status": status,
             "details": sanitize_log_text(details)[:1000],
-            "delivery": "pending" if ALERT_WEBHOOK_URL else "disabled",
+            "delivery": "pending" if alert_channel_configured() else "disabled",
         }
         # Keep the state update and the durable event ordered: a crash can
         # duplicate an alert, but can never suppress the first durable event.
@@ -981,7 +1095,7 @@ def flush_alert_outbox() -> None:
         except Exception as exc:
             append_operation_log("alert outbox load failed", error=exc)
             return
-        if not ALERT_WEBHOOK_URL:
+        if not alert_channel_configured():
             return
         delivery_receipts: dict[str, dict[str, Any]] = {}
         for event in events:
@@ -1045,33 +1159,8 @@ def flush_alert_outbox() -> None:
                     error=receipt_error,
                 )
                 continue
-            payload = json.dumps(
-                {
-                    "id": event_id,
-                    "createdAt": event.get("createdAt"),
-                    "component": event.get("component"),
-                    "status": event.get("status"),
-                    "details": event.get("details", ""),
-                },
-                ensure_ascii=False,
-            ).encode("utf-8")
-            request = urllib.request.Request(
-                ALERT_WEBHOOK_URL,
-                data=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "User-Agent": "mihomo-verge-api-alert/1.0",
-                    "Idempotency-Key": event_id,
-                },
-                method="POST",
-            )
             try:
-                with urllib.request.urlopen(
-                    request,
-                    timeout=ALERT_WEBHOOK_TIMEOUT_SECONDS,
-                ) as response:
-                    if not (200 <= int(response.status) < 300):
-                        raise RuntimeError(f"alert endpoint returned HTTP {response.status}")
+                send_alert(event_id, event)
             except Exception as exc:
                 append_operation_log("alert delivery failed", error=exc)
                 status = "exhausted" if attempt >= ALERT_MAX_ATTEMPTS else "failed"
@@ -5399,7 +5488,9 @@ def live_mirror_files() -> dict[str, bytes]:
     files = {"etc-mihomo/config.yaml": MIHOMO_CONFIG_PATH.read_bytes()}
     for path in sorted(DATA_ROOT.rglob("*")):
         rel = path.relative_to(DATA_ROOT)
-        if rel.parts[0] in LIVE_MIRROR_EXCLUDE or path.is_symlink() or not path.is_file():
+        if path.is_symlink() or not path.is_file():
+            continue
+        if rel.parts[0] in LIVE_MIRROR_EXCLUDE and rel.as_posix() not in LIVE_MIRROR_KEEP:
             continue
         files[f"var-lib-mihomo/verge/{rel.as_posix()}"] = path.read_bytes()
     return files
@@ -5479,12 +5570,50 @@ def sync_live_mirror_quietly(context: str) -> None:
         append_operation_log(f"live runtime mirror update failed ({context})", error=exc)
 
 
+def probe_pinned_listeners() -> None:
+    """Alert when a pinned listener's node stops working: its container entry then refuses every connection
+    instead of falling back to PROXY. Runs at most every PINNED_PROBE_EVERY_SECONDS."""
+    now = time.monotonic()
+    if now - PINNED_PROBE_STATE["at"] < PINNED_PROBE_EVERY_SECONDS:
+        return
+    PINNED_PROBE_STATE["at"] = now
+    listeners = load_overlay().get(PINNED_LISTENERS_KEY) or []
+    for item in listeners if isinstance(listeners, list) else []:
+        name, proxy = item.get("name"), item.get("proxy")
+        if not isinstance(name, str) or not isinstance(proxy, str):
+            continue
+        component = f"pinned.{name}"
+        query = urllib.parse.urlencode({"url": PINNED_PROBE_URL, "timeout": 8000})
+        try:
+            result = controller_request("GET", f"/proxies/{urllib.parse.quote(proxy, safe='')}/delay?{query}", timeout=12)
+            delay = result.get("delay") if isinstance(result, dict) else None
+            if not delay:
+                raise RuntimeError("no delay reported")
+        except Exception as exc:
+            reason = f"HTTP {exc.code}" if isinstance(exc, urllib.error.HTTPError) else type(exc).__name__
+            if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
+                reason = "节点不在当前配置中"
+            failures = PINNED_PROBE_STATE["failures"].get(name, 0) + 1
+            PINNED_PROBE_STATE["failures"][name] = failures
+            if failures >= PINNED_PROBE_FAILURES:
+                record_runtime_alert(component, "degraded", f"节点 {proxy} 连续 {failures} 次探测失败（{reason}），"
+                                                            f"走这个入口的应用现在连不上外网")
+            continue
+        PINNED_PROBE_STATE["failures"][name] = 0
+        record_runtime_alert(component, "ok", f"{proxy} {delay}ms")
+    flush_alert_outbox()
+
+
 def runtime_health_watch_loop() -> None:
     while not HEALTH_WATCH_STOP.wait(HEALTH_WATCH_INTERVAL_SECONDS):
         try:
             healthz_payload()
         except Exception as exc:
             append_operation_log("runtime health watch failed", error=exc)
+        try:
+            probe_pinned_listeners()
+        except Exception as exc:
+            append_operation_log("pinned listener probe failed", error=exc)
         sync_live_mirror_quietly("health watch")
 
 

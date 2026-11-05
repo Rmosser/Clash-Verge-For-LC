@@ -80,6 +80,7 @@ curl -s -x http://172.18.0.1:17896 https://ipinfo.io/ip   # 固定节点的出�
 ### 故障时的表现
 
 - 节点从订阅里改名或消失：17896 上的连接直接失败（Mihomo 找不到 proxy），不会悄悄改走 `PROXY`；Verge API 的操作日志会记下这次渲染缺少节点。按上文把 overlay 指向新节点名即可。
+- 节点不可用（改名、消失或线路不通）时，健康巡检每 5 分钟用 controller 的 delay 接口探测一次，连续 2 次失败会发 `pinned.<name>` 告警（配置了 Telegram 或 webhook 时推送），恢复后再发一条「已恢复」。
 - `deploy_microserver.sh` 会用本地私有配置覆盖 `config.yaml`，之后要通过 Verge API 重新渲染（`enhance_profiles` 或切换一次 profile）把 listener 带回来。
 
 ## 必配环境变量

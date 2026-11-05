@@ -51,6 +51,7 @@ def write_mirror(root: Path, controller=SELECTORS) -> tuple[bool, bool]:
     (data / "verge.json").write_text('{"verge_mixed_port": 7890}', encoding="utf-8")
     (data / "profiles" / "p1.yaml").write_text("proxies: []\n", encoding="utf-8")
     (data / "logs" / "operations.log").write_text("noise\n", encoding="utf-8")
+    (data / "logs" / "alerts.jsonl").write_text('{"id": "a1", "delivery": "pending"}\n', encoding="utf-8")
     config = root / "config.yaml"
     config.write_text("mixed-port: 7890\nsecret: s3cret\n", encoding="utf-8")
     (root / "current-generation").write_text(GENERATION + "\n", encoding="utf-8")
@@ -70,8 +71,9 @@ def assert_writer() -> None:
         live = root / "live"
         if not (first and not second):
             raise AssertionError("the mirror must be written once and skipped while nothing changed")
-        if (live / "var-lib-mihomo" / "verge" / "logs").exists():
-            raise AssertionError("logs must stay out of the mirror")
+        logs = live / "var-lib-mihomo" / "verge" / "logs"
+        if (logs / "operations.log").exists() or not (logs / "alerts.jsonl").is_file():
+            raise AssertionError("the mirror keeps the alert outbox from logs/ and nothing else")
         if json.loads((live / "selections.json").read_text()) != {"GLOBAL": "PROXY", "PROXY": "EB"}:
             raise AssertionError("select-group choices must be mirrored")
         if f"BASE_GENERATION={GENERATION}" not in (live / "metadata.env").read_text():
@@ -279,8 +281,32 @@ def assert_selection_failure_retains_transaction() -> None:
         server.server_close()
 
 
+def assert_logs_merge() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        generation_logs, live_logs = root / "gen-logs", root / "verge" / "logs"
+        generation_logs.mkdir()
+        live_logs.mkdir(parents=True)
+        (generation_logs / "operations.log").write_text("from generation\n", encoding="utf-8")
+        (generation_logs / "alerts.jsonl").write_text("old outbox\n", encoding="utf-8")
+        (live_logs / "alerts.jsonl").write_text("mirrored outbox\n", encoding="utf-8")
+        result = run_bootstrap(root, f"merge_generation_logs {str(generation_logs)!r} {str(live_logs)!r}")
+        if result.returncode != 0:
+            raise AssertionError(f"merge_generation_logs failed: {result.stderr}")
+        if any(p.is_dir() for p in live_logs.iterdir()):
+            raise AssertionError("generation logs must not be nested into an existing logs/ directory")
+        if (live_logs / "alerts.jsonl").read_text() != "mirrored outbox\n":
+            raise AssertionError("the mirrored alert outbox must win over the generation's")
+        operations = live_logs / "operations.log"
+        if not operations.is_file() or operations.read_text() != "from generation\n":
+            raise AssertionError("the generation's other logs must be brought back")
+        if run_bootstrap(root, f"merge_generation_logs {str(root / 'none')!r} {str(live_logs)!r}").returncode != 0:
+            raise AssertionError("a generation without logs/ must be fine")
+
+
 def main() -> None:
     assert_writer()
+    assert_logs_merge()
     assert_writer_skips_mid_restore_and_keeps_choices_without_controller()
     assert_selection_restore()
     assert_interrupted_publication()

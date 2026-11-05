@@ -377,6 +377,18 @@ live_mirror_usable() {
   return 1
 }
 
+merge_generation_logs() {
+  # The mirror carries only the alert outbox from logs/; every other log file comes from the generation,
+  # without overwriting the mirrored outbox. (Copying the directory itself would nest it once logs/ exists.)
+  local source="$1" destination="$2" log_file
+  [[ -d "$source" ]] || return 0
+  install -d -m 755 "$destination"
+  for log_file in "$source"/*; do
+    [[ -f "$log_file" && ! -e "$destination/${log_file##*/}" ]] || continue
+    cp -a -- "$log_file" "$destination/"
+  done
+}
+
 restore_selections() {
   # Mihomo keeps select-group choices only in cache.db, which a reboot loses; put back the mirrored ones.
   [[ -f "$live_root/selections.json" ]] || return 0
@@ -688,9 +700,7 @@ apply_generation() {
   if live_mirror_usable "$generation"; then
     install -o root -g mihomo -m 640 "$live_root/etc-mihomo/config.yaml" /etc/mihomo/config.yaml
     replace_directory "$live_root/var-lib-mihomo/verge" /var/lib/mihomo/verge
-    if [[ -d "$apply_stage/var-lib-mihomo/verge/logs" ]]; then
-      cp -a -- "$apply_stage/var-lib-mihomo/verge/logs" /var/lib/mihomo/verge/logs
-    fi
+    merge_generation_logs "$apply_stage/var-lib-mihomo/verge/logs" /var/lib/mihomo/verge/logs
     chown -R mihomo:mihomo /var/lib/mihomo
     if /usr/local/bin/mihomo -t -d /var/lib/mihomo -f /etc/mihomo/config.yaml >/dev/null 2>&1; then
       live_used=1

@@ -48,8 +48,12 @@
 - generation 应用先写 pending transaction、停止相关服务、完成独立 staging
   校验，再切换文件并验证 Mihomo controller 与 Verge API；进程在中途被杀时，
   下一次启动会依据 pending generation 重做完整应用，不把混代文件当作成功。
+- 配置了 pinned listener 时，健康巡检每 5 分钟经 controller 的 delay 接口探测一次各 listener 的节点
+  （`MIHOMO_PINNED_PROBE_URL`，默认 `https://www.gstatic.com/generate_204`）；连续 2 次失败记
+  `pinned.<name>` 告警，恢复后记 ok。告警发件箱 `logs/alerts.jsonl` 与 `logs/alert-state.json`
+  随 live 镜像持久化，重启后不重发已投递告警、不丢待发告警。
 - 懒猫重启会重置 `/etc` 与 `/var/lib`。Verge API 把可变运行状态（`config.yaml`、
-  不含 `logs/` 的 verge 目录、select 组的当前选择）镜像到
+  verge 目录（`logs/` 仅保留上述告警文件）、select 组的当前选择）镜像到
   `/root/.config/lzc-mihomo-bootstrap/live/`，每次成功应用配置后与每轮健康巡检时
   刷新，并记录基准 generation；bootstrap 应用同一 generation 时把通过校验的镜像
   覆盖上去，并在 controller 就绪后恢复节点选择。基准不一致或校验失败时只用
@@ -63,8 +67,9 @@
   新的 DNS assignment。
 - `/healthz` 同时探测 Mihomo `/version` controller、restore transaction 和告警
   delivery channel；controller 或恢复事务异常、告警日志损坏、已配置告警的发送未确认时返回 HTTP 503。
-  外部 webhook 是可选通知能力：未配置时不阻止应用健康检查，Web 控制台明确显示未启用。Verge API 可按
-  `MIHOMO_ALERT_WEBHOOK_URL` 配置主动告警，所有状态转换和 delivery receipt 先
+  外部通知是可选能力：未配置时不阻止应用健康检查，Web 控制台明确显示未启用。Verge API 可按
+  `/root/.config/lzc-mihomo-alerts/telegram.json`（Telegram bot，经宿主机 `127.0.0.1:7890` 发出，
+  优先）或 `MIHOMO_ALERT_WEBHOOK_URL` 配置主动告警，所有状态转换和 delivery receipt 先
   fsync 到 `/var/lib/mihomo/verge/logs/alerts.jsonl`。启动及每次 append/flush 都会
   逐行恢复 JSONL；损坏行会被隔离并记录到同目录的
   `alerts.jsonl.corrupt.jsonl`，不会阻断后续有效告警，也不会与新 append 粘连。
