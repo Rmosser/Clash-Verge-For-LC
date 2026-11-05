@@ -1,0 +1,17 @@
+[Unit]
+Description=Mihomo pinned container proxy service (172.18.0.1:17896 -> 127.0.0.1:7896)
+Requires=mihomo.service
+After=mihomo.service
+Requires=mihomo-container-proxy-pinned.socket
+After=mihomo-container-proxy-pinned.socket
+
+[Service]
+Type=notify
+# 127.0.0.1:7896 is the Verge API overlay's pinned listener (lzc-pinned-listeners); without it connections are refused.
+ExecStart=/lib/systemd/systemd-socket-proxyd 127.0.0.1:7896
+User=nobody
+Group=nogroup
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

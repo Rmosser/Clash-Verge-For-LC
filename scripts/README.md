@@ -7,6 +7,8 @@
 | 命令 | 覆盖范围 |
 | --- | --- |
 | `bash scripts/test.sh` | shell/Python 语法和微服 API 单元测试 |
+| `python3 -B scripts/test_live_mirror_restore.py` | 重启恢复：Verge API 写出的 live 镜像被 bootstrap 校验接受、generation 不符或篡改时拒绝、节点选择恢复 |
+| `python3 -B scripts/test_pinned_proxy_contract.py` | 固定节点入口：unit 端口与 bridge、API 端口校验、部署回滚清单、旧 generation 兼容 |
 | `bash scripts/test_deploy_settings.sh` | host-native TUN/DNS 默认值、显式 opt-in 与非法值 fail-closed |
 | `bash scripts/lint.sh` | shell 语法和 Python 编译检查 |
 | `python3 -I -B scripts/check_docs.py --all` | 文档入口、必需路径和本地链接 |
@@ -27,6 +29,7 @@
 | `deploy_verge_api.sh --confirm` | 只更新指定 rainierdev/rainierspace Verge API/runtime contract | 成对备份、部署或恢复 API Python、unit metadata 和 runtime contract；不读取 `.env` 或 Mihomo secret，写入/回滚必须显式确认 |
 | `deploy_dashboard.sh --confirm` | 安装或重装懒猫 dashboard 应用 | 构建并安装 LPK，校验 `/api`、`/verge-api` 和 websocket 链路；`--clean-reset` 只清理当前 app/state，且确认后才运行 |
 | `build_dashboard_release.sh` | 只出可分发 LPK | 在 `output/release/<version>/` 生成版本化安装包 |
+| `deploy_pinned_proxy.sh --confirm` | 安装或卸载（`--remove`）固定节点容器入口 | 只下发并启停 `mihomo-container-proxy-pinned.{socket,service}`（:17896 → 127.0.0.1:7896）；不读取 `.env`、配置或 secret，不重启 Mihomo；固定 host/key 守卫 |
 | `install_host_native_bootstrap.sh --confirm` | 给 `rainierdev` / `rainierspace` 安装开机自举 | 采样当前 live host-native 部署并安装 root user-systemd bootstrap；必须显式确认并通过固定 host/key 守卫 |
 
 API 配对部署先验证宿主机的 core updater 可导入，并验证回滚清单与备份文件一致后才替换运行文件。旧宿主机须先补齐 `mihomo_core_updater.py`。

@@ -1,0 +1,14 @@
+[Unit]
+Description=Mihomo pinned container proxy socket (app bridges -> 127.0.0.1:7896)
+Requires=mihomo.service
+After=mihomo.service
+
+[Socket]
+ListenStream=172.18.0.1:17896
+ListenStream=172.19.0.1:17896
+ListenStream=172.28.3.1:17896
+FreeBind=true
+NoDelay=true
+
+[Install]
+WantedBy=sockets.target

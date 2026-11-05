@@ -66,6 +66,162 @@ class MihomoVergeApiTests(unittest.TestCase):
         self.assertEqual(save.call_args_list[-1].args[0], old)
         self.assertEqual(save_verge.call_args_list[-1].args[0], old_verge)
 
+    PINNED_NODE = "🇺🇸 🚀 Synthetic Fast Line"
+    PINNED = [{"name": "pinned-eb", "port": 7896, "proxy": PINNED_NODE}]
+    PROFILE = ("mixed-port: 7890\nsecret: synthetic-test\nproxies:\n"
+               "  - {name: '🇺🇸 🚀 Synthetic Fast Line', type: vless, server: 192.0.2.1, port: 443}\n"
+               "proxy-groups:\n  - {name: PROXY, type: select, proxies: ['🇺🇸 🚀 Synthetic Fast Line']}\n"
+               "rules:\n  - MATCH,PROXY\n")
+
+    def test_pinned_listener_survives_every_profile_render(self):
+        overlay = {MODULE.PINNED_LISTENERS_KEY: self.PINNED}
+        verge = {"enable_tun_mode": False, "enable_dns_settings": False}
+        with patch.object(MODULE, "ensure_state"):
+            for profile in (self.PROFILE, self.PROFILE.replace("192.0.2.1", "192.0.2.2")):  # a profile switch
+                text, _ = MODULE.build_runtime_text(base_text=profile, overlay_state=overlay, verge_state=verge,
+                                                    dns_state={})
+                self.assertIn("listeners:\n  - name: pinned-eb\n    type: mixed\n    port: 7896\n"
+                              "    listen: 127.0.0.1\n    proxy: '🇺🇸 🚀 Synthetic Fast Line'\n", text)
+                self.assertIn("rules:\n  - MATCH,PROXY", text)  # PROXY and its rules stay as the profile has them
+
+    def test_pinned_listener_absent_leaves_profile_listeners_alone(self):
+        verge = {"enable_tun_mode": False, "enable_dns_settings": False}
+        profile = self.PROFILE + "listeners:\n  - {name: own, type: socks, port: 7999}\n"
+        with patch.object(MODULE, "ensure_state"):
+            text, _ = MODULE.build_runtime_text(base_text=profile, overlay_state={}, verge_state=verge, dns_state={})
+        self.assertIn("listeners:\n  - {name: own, type: socks, port: 7999}", text)
+
+    def test_pinned_listener_preserves_existing_listeners_across_render_and_clear(self):
+        blocks = [
+            "listeners:\n  # keep custom authentication\n  - name: own\n    type: http\n    port: 7999\n"
+            "    users:\n      - username: example\n        password: synthetic\n",
+            "listeners:\n- {name: 'own: #1', type: socks, port: 7999} # keep this option\n",
+            'listeners: [{name: "own", type: http, port: 7999}] # trailing ] comment\n',
+            'listeners: [\n  {name: "own", type: http, port: 7999} # comment before ]\n]\n',
+            'listeners: [\n  {name: "own", type: http, port: 7999},\n]\n',
+            'listeners: # custom inbounds\n  [{name: "own", type: http, port: 7999}]\n',
+            "listeners:\n  - name: own\n    type: tun\n    stack: system\n",
+        ]
+        verge = {"enable_tun_mode": False, "enable_dns_settings": False}
+        for block in blocks:
+            with self.subTest(block=block), patch.object(MODULE, "ensure_state"):
+                profile = block + self.PROFILE
+                for _ in range(2):
+                    text, _ = MODULE.build_runtime_text(
+                        base_text=profile, overlay_state={MODULE.PINNED_LISTENERS_KEY: self.PINNED},
+                        verge_state=verge, dns_state={})
+                    self.assertIn("own", text)
+                    self.assertEqual(text.count("pinned-eb"), 1)
+                    if "port: 7999" in block:
+                        self.assertIn("port: 7999", text)
+                    self.assertIn("rules:\n  - MATCH,PROXY", text)
+                    if "password:" in block:
+                        self.assertIn("    users:\n      - username: example\n        password: synthetic", text)
+                    if "#" in block:
+                        for line in block.splitlines():
+                            if "#" in line:
+                                self.assertIn(line[line.index("#"):], text)
+                cleared, _ = MODULE.build_runtime_text(base_text=profile, overlay_state={},
+                                                       verge_state=verge, dns_state={})
+                self.assertIn(block, cleared)
+                self.assertNotIn("pinned-eb", cleared)
+
+    def test_pinned_listener_rejects_existing_name_and_port_conflicts(self):
+        pinned = MODULE.normalize_pinned_listeners(self.PINNED, set())
+        for block, code in (
+            ("listeners:\n  - name: pinned-eb\n    type: socks\n    port: 7999\n",
+             "PINNED_LISTENER_NAME_CONFLICT"),
+            ('listeners: [{"name": "own", "type": "http", "port": 7896}]\n',
+             "PINNED_LISTENER_PORT_CONFLICT"),
+            ("listeners:\n- {name: own, type: socks, port: '7895-7897/7999'}\n",
+             "PINNED_LISTENER_PORT_CONFLICT"),
+            ("listeners: *custom-listeners\n", "PINNED_LISTENER_MERGE_UNSUPPORTED"),
+            ("listeners:\n- {<<: *defaults, name: own, port: 7999}\n", "PINNED_LISTENER_MERGE_UNSUPPORTED"),
+        ):
+            with self.subTest(block=block), self.assertRaises(MODULE.ApiError) as ctx:
+                MODULE.merge_pinned_listeners(block, pinned)
+            self.assertEqual(ctx.exception.code, code)
+
+    def test_pinned_listener_accepts_empty_profile_listener_lists(self):
+        pinned = MODULE.normalize_pinned_listeners(self.PINNED, set())
+        for block in ("", "listeners: []\n", "listeners:\n", "listeners: null\n",
+                      "listeners: # no custom listeners\n", "listeners: null # no listeners\n"):
+            text = MODULE.merge_pinned_listeners(block + self.PROFILE, pinned)
+            self.assertEqual(text.count("pinned-eb"), 1)
+            self.assertIn("rules:\n  - MATCH,PROXY", text)
+
+    def test_patch_clash_config_rolls_back_overlay_when_listener_merge_fails(self):
+        old = {"mode": "rule"}
+        with patch.object(MODULE, "ensure_state"), patch.object(MODULE, "load_overlay", return_value=old), \
+             patch.object(MODULE, "get_verge_config_state", return_value={"verge_mixed_port": 7890}), \
+             patch.object(MODULE, "controller_request", return_value={"proxies": {self.PINNED_NODE: {}}}), \
+             patch.object(MODULE, "save_overlay") as save, \
+             patch.object(MODULE, "apply_runtime_for_current_or_empty_state",
+                          side_effect=MODULE.ApiError("PINNED_LISTENER_PORT_CONFLICT", "conflict")):
+            with self.assertRaises(MODULE.ApiError):
+                MODULE.invoke_command("patch_clash_config", {"payload": {MODULE.PINNED_LISTENERS_KEY: self.PINNED}})
+            self.assertEqual(save.call_count, 2)
+            self.assertEqual(save.call_args.args[0], old)
+
+    def test_pinned_listener_for_a_missing_node_renders_and_is_logged(self):
+        overlay = {MODULE.PINNED_LISTENERS_KEY: [{"name": "pinned-eb", "port": 7896, "proxy": "gone"}]}
+        verge = {"enable_tun_mode": False, "enable_dns_settings": False}
+        with patch.object(MODULE, "ensure_state"), patch.object(MODULE, "append_operation_log") as log:
+            text, _ = MODULE.build_runtime_text(base_text=self.PROFILE, overlay_state=overlay, verge_state=verge,
+                                                dns_state={})
+        self.assertIn("    proxy: gone\n", text)
+        self.assertIn("gone", log.call_args.args[0])
+
+    def test_pinned_listener_rejects_port_conflicts_and_bad_entries(self):
+        reserved = MODULE.pinned_listener_reserved_ports(
+            {}, {"verge_mixed_port": 7890, "verge_socks_enabled": True, "verge_socks_port": 7896})
+        for value, code in (
+            (self.PINNED, "PINNED_LISTENER_PORT_CONFLICT"),                       # SOCKS already on 7896
+            ([{"name": "x", "port": 7890, "proxy": "a"}], "PINNED_LISTENER_PORT_CONFLICT"),  # mixed port
+            ([{"name": "x", "port": 7891, "proxy": "a"}], "PINNED_LISTENER_PORT_CONFLICT"),  # SOCKS default
+            ([{"name": "Bad Name", "port": 7897, "proxy": "a"}], "PINNED_LISTENER_INVALID"),
+            ([{"name": "x", "port": "7897", "proxy": "a"}], "PINNED_LISTENER_INVALID"),
+            ([{"name": "x", "port": 7897, "proxy": "a\nrules: []"}], "PINNED_LISTENER_INVALID"),
+            ([{"name": "x", "port": 7897, "proxy": "a"}, {"name": "x", "port": 7898, "proxy": "a"}],
+             "PINNED_LISTENER_INVALID"),
+            ({"name": "x"}, "PINNED_LISTENER_INVALID"),
+        ):
+            with self.assertRaises(MODULE.ApiError) as ctx:
+                MODULE.normalize_pinned_listeners(value, reserved)
+            self.assertEqual(ctx.exception.code, code)
+
+    def test_patch_clash_config_saves_a_pinned_listener_only_for_a_running_node(self):
+        verge = {"verge_mixed_port": 7890, "enable_tun_mode": False, "enable_dns_settings": False}
+        with patch.object(MODULE, "ensure_state"), patch.object(MODULE, "load_overlay", return_value={"mode": "rule"}), \
+             patch.object(MODULE, "get_verge_config_state", return_value=verge), \
+             patch.object(MODULE, "controller_request", return_value={"proxies": {self.PINNED_NODE: {}, "PROXY": {}}}), \
+             patch.object(MODULE, "controller_secret", return_value="synthetic"), \
+             patch.object(MODULE, "save_overlay") as save, \
+             patch.object(MODULE, "apply_runtime_for_current_or_empty_state") as apply:
+            MODULE.invoke_command("patch_clash_config", {"payload": {MODULE.PINNED_LISTENERS_KEY: self.PINNED}})
+            self.assertEqual(save.call_args.args[0], {"mode": "rule", MODULE.PINNED_LISTENERS_KEY: self.PINNED})
+            apply.assert_called_once()
+            save.reset_mock()
+            apply.reset_mock()
+            unknown = [{"name": "pinned-eb", "port": 7896, "proxy": "not-in-profile"}]
+            with self.assertRaises(MODULE.ApiError) as ctx:
+                MODULE.invoke_command("patch_clash_config", {"payload": {MODULE.PINNED_LISTENERS_KEY: unknown}})
+            self.assertEqual(ctx.exception.code, "PINNED_LISTENER_UNKNOWN_PROXY")
+            save.assert_not_called()
+            apply.assert_not_called()
+
+    def test_patch_clash_config_clears_pinned_listeners_with_an_empty_list(self):
+        verge = {"verge_mixed_port": 7890}
+        with patch.object(MODULE, "ensure_state"), \
+             patch.object(MODULE, "load_overlay", return_value={"mode": "rule", MODULE.PINNED_LISTENERS_KEY: self.PINNED}), \
+             patch.object(MODULE, "get_verge_config_state", return_value=verge), \
+             patch.object(MODULE, "controller_request") as controller, \
+             patch.object(MODULE, "controller_secret", return_value="synthetic"), \
+             patch.object(MODULE, "save_overlay") as save, patch.object(MODULE, "apply_runtime_for_current_or_empty_state"):
+            MODULE.invoke_command("patch_clash_config", {"payload": {MODULE.PINNED_LISTENERS_KEY: []}})
+        self.assertEqual(save.call_args.args[0], {"mode": "rule"})
+        controller.assert_not_called()
+
     def test_upstream_core_upgrade_remains_stable_and_version_pinned(self):
         with patch.object(MODULE, "ensure_state"), patch.object(MODULE, "upgrade_core_release", return_value={"STATUS": "already_current", "PREV_VERSION": "v1.19.33", "TARGET_VERSION": "v1.19.33"}) as upgrade:
             result = MODULE.invoke_command("upgrade_clash_core", {"force": True, "version": "alpha"})

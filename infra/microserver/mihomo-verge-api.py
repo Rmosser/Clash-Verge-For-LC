@@ -122,6 +122,11 @@ OPERATIONS_LOG_LOCK = threading.Lock()
 RESTORE_LOCK = threading.RLock()
 ALERT_LOCK = threading.RLock()
 HEALTH_WATCH_STOP = threading.Event()
+# /root survives a LazyCat reboot; the host-native bootstrap restores /etc and /var/lib from here.
+BOOTSTRAP_ROOT = Path(os.environ.get("MIHOMO_BOOTSTRAP_ROOT", "/root/.config/lzc-mihomo-bootstrap"))
+LIVE_MIRROR_DIR = BOOTSTRAP_ROOT / "live"
+LIVE_MIRROR_EXCLUDE = {"logs"}  # append-only and restored from the generation; mirroring it would churn every minute
+LIVE_MIRROR_LOCK = threading.Lock()
 
 SENSITIVE_QUERY_PARAMETER_RE = re.compile(
     r"([?&](?:token|access_token|api_key|apikey|key|secret|password|passwd|auth|authorization|cookie|webhook)=)[^&#\s]*",
@@ -2969,6 +2974,206 @@ def empty_runtime_requires_repair() -> bool:
     return False
 
 
+PINNED_LISTENERS_KEY = "lzc-pinned-listeners"
+PINNED_LISTENER_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
+# Host services that already own a loopback port, plus the Verge SOCKS default even while SOCKS is off.
+PINNED_LISTENER_RESERVED_PORTS = {1053, 7891, 9090, 9091}
+
+
+def pinned_listener_reserved_ports(overlay: dict[str, Any], verge: dict[str, Any]) -> set[int]:
+    reserved = set(PINNED_LISTENER_RESERVED_PORTS)
+    reserved.add(parse_int(overlay.get("mixed-port", verge.get("verge_mixed_port")) or 7890, 7890))
+    for yaml_key, enabled_key, port_key in (
+        ("socks-port", "verge_socks_enabled", "verge_socks_port"),
+        ("port", "verge_http_enabled", "verge_port"),
+        ("redir-port", "verge_redir_enabled", "verge_redir_port"),
+        ("tproxy-port", "verge_tproxy_enabled", "verge_tproxy_port"),
+    ):
+        if verge.get(enabled_key):
+            port = parse_int(overlay.get(yaml_key, verge.get(port_key)), 0)
+            if port:
+                reserved.add(port)
+    return reserved
+
+
+def normalize_pinned_listeners(value: Any, reserved_ports: set[int]) -> list[dict[str, Any]]:
+    """Validate the overlay's pinned listeners: loopback mixed ports that always egress through one named proxy.
+
+    Containers reach one through its own socket unit (mihomo-container-proxy-pinned: 172.18.0.1:17896 ->
+    127.0.0.1:7896), so an app can be pinned to a node while the user keeps switching the PROXY group."""
+    if value in (None, []):
+        return []
+    if not isinstance(value, list):
+        raise ApiError("PINNED_LISTENER_INVALID", f"{PINNED_LISTENERS_KEY} 必须是列表")
+    listeners: list[dict[str, Any]] = []
+    names: set[str] = set()
+    ports: set[int] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            raise ApiError("PINNED_LISTENER_INVALID", "固定节点监听口必须是对象")
+        name, port, proxy = item.get("name"), item.get("port"), item.get("proxy")
+        if not isinstance(name, str) or not PINNED_LISTENER_NAME_RE.fullmatch(name) or name in names:
+            raise ApiError("PINNED_LISTENER_INVALID", f"监听口名称无效或重复：{name!r}（小写字母、数字、短横线）")
+        if isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535 or port in ports:
+            raise ApiError("PINNED_LISTENER_INVALID", f"监听口 {name} 的端口无效或重复：{port!r}")
+        if port in reserved_ports:
+            raise ApiError("PINNED_LISTENER_PORT_CONFLICT", f"监听口 {name} 的端口 {port} 已被其他代理端口或宿主机服务占用")
+        if not isinstance(proxy, str) or not proxy.strip() or len(proxy) > 200 or any(c in proxy for c in "\r\n"):
+            raise ApiError("PINNED_LISTENER_INVALID", f"监听口 {name} 的节点名无效")
+        names.add(name)
+        ports.add(port)
+        listeners.append({"name": name, "type": "mixed", "port": port, "listen": "127.0.0.1", "proxy": proxy})
+    return listeners
+
+
+def runtime_proxy_names() -> set[str]:
+    payload = controller_request("GET", "/proxies", timeout=6)
+    proxies = payload.get("proxies") if isinstance(payload, dict) else None
+    if not isinstance(proxies, dict):
+        raise ApiError("PINNED_LISTENER_UNVERIFIED", "读不到当前运行的节点列表，无法确认节点存在", recoverable=True)
+    return set(proxies)
+
+
+def split_yaml_flow(text: str, delimiter: str = ",") -> list[str]:
+    """Split a flow collection without splitting quoted strings or nested collections.
+
+    This only locates literal listener identity fields; Mihomo remains the YAML validator.
+    Comments are removed from this inspection copy, never from the rendered profile.
+    """
+    parts: list[str] = []
+    part = ""
+    quote = ""
+    depth = 0
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if quote:
+            part += char
+            if char == "\\" and quote == '"' and index + 1 < len(text):
+                index += 1
+                part += text[index]
+            elif char == quote:
+                if quote == "'" and text[index:index + 2] == "''":
+                    index += 1
+                    part += "'"
+                else:
+                    quote = ""
+        elif char in "\"'" and (index == 0 or text[index - 1].isspace() or text[index - 1] in "[{,:"):
+            quote = char
+            part += char
+        elif char == "#" and (index == 0 or text[index - 1].isspace()):
+            newline = text.find("\n", index)
+            index = len(text) if newline < 0 else newline
+            part += "\n"
+        elif char in "[{":
+            depth += 1
+            part += char
+        elif char in "]}":
+            depth -= 1
+            part += char
+        elif char == delimiter and depth == 0:
+            parts.append(part.strip())
+            part = ""
+        else:
+            part += char
+        index += 1
+    if quote or depth:
+        raise ApiError("PINNED_LISTENER_MERGE_UNSUPPORTED", "listeners 的引号或 flow collection 不完整")
+    parts.append(part.strip())
+    return parts
+
+
+def check_profile_listener_conflicts(entries: list[str], pinned: list[dict[str, Any]]) -> None:
+    names = {p["name"] for p in pinned}
+    ports = {p["port"] for p in pinned}
+    for entry in entries:
+        entry = entry.strip()
+        if entry.startswith("{"):
+            entry = split_yaml_flow(entry, "\0")[0].strip()
+            if not entry.endswith("}"):
+                raise ApiError("PINNED_LISTENER_MERGE_UNSUPPORTED", "listeners 的 mapping 不完整")
+            fields = split_yaml_flow(entry[1:-1])
+        else:
+            # Dedent the mapping after removing the sequence marker. Ignore nested option fields.
+            lines = entry.splitlines()
+            indents = [len(line) - len(line.lstrip()) for line in lines[1:]
+                       if line.strip() and not line.lstrip().startswith("#")]
+            indent = min(indents) if indents else 0
+            fields = lines[:1] + [line.strip() for line in lines[1:]
+                                  if line.strip() and len(line) - len(line.lstrip()) == indent]
+        identity: dict[str, str] = {}
+        for field in fields:
+            key_text, colon, raw = field.partition(":")
+            key = parse_yaml_scalar(key_text)
+            if key == "<<":
+                raise ApiError("PINNED_LISTENER_MERGE_UNSUPPORTED", "合并 pinned listener 前请展开 listeners 的 YAML merge key")
+            if key in ("name", "port") and colon:
+                raw = split_yaml_flow(raw, "\0")[0].strip()
+                if not raw or raw.startswith(("*", "&", "!", "|", ">")):
+                    raise ApiError("PINNED_LISTENER_MERGE_UNSUPPORTED", "listeners 的 name/port 必须是字面值")
+                identity[key] = json.loads(raw) if raw.startswith('"') else parse_yaml_scalar(raw)
+        if "name" not in identity:
+            raise ApiError("PINNED_LISTENER_MERGE_UNSUPPORTED", "无法安全读取 listeners 的 name；请使用显式 mapping")
+        if identity["name"] in names:
+            raise ApiError("PINNED_LISTENER_NAME_CONFLICT", f"固定监听口与 profile 重名：{identity['name']}")
+        # TUN and other non-port listeners have no TCP listener port to conflict with.
+        for span in re.split(r"[/,]", identity.get("port", "0")):
+            bounds = span.strip().split("-")
+            if not 1 <= len(bounds) <= 2 or not all(re.fullmatch(r"\d+", n) for n in bounds):
+                raise ApiError("PINNED_LISTENER_MERGE_UNSUPPORTED", "无法安全读取 listeners 的端口范围")
+            low, high = int(bounds[0]), int(bounds[-1])
+            if any(low <= port <= high for port in ports):
+                raise ApiError("PINNED_LISTENER_PORT_CONFLICT", f"固定监听口与 profile 端口冲突：{identity['port']}")
+
+
+def merge_pinned_listeners(text: str, pinned: list[dict[str, Any]]) -> str:
+    """Append to the source profile, preserving its listener options and comments verbatim."""
+    block_range = top_level_block_range(text, "listeners")
+    if block_range is None:
+        return set_top_level_value(text, "listeners", pinned)
+    start, end = block_range
+    block = text[start:end]
+    # Skip leading comments for inspection, while keeping the original block for output.
+    raw_value = block.partition(":")[2]
+    value = raw_value.strip()
+    while value.startswith("#"):
+        value = value.partition("\n")[2].lstrip()
+    if not value or re.fullmatch(r"(?:null|~|\[\s*\])(?:\s+#.*)?", value):
+        return set_top_level_value(text, "listeners", pinned)
+    if value.startswith("["):
+        value = split_yaml_flow(raw_value, "\0")[0].strip()
+        if not value.endswith("]"):
+            raise ApiError("PINNED_LISTENER_MERGE_UNSUPPORTED", "listeners 的列表不完整")
+        entries = [entry for entry in split_yaml_flow(value[1:-1]) if entry]
+        check_profile_listener_conflicts(entries, pinned)
+        # The final collection bracket may be followed by comments containing brackets.
+        # Locate it by scanning prefixes until the complete inspected value is reached.
+        close = None
+        for match in re.finditer(r"\]", block):
+            try:
+                if split_yaml_flow(block[:match.end()].partition(":")[2], "\0")[0].strip() == value:
+                    close = match.start()
+                    break
+            except ApiError:
+                continue
+        if close is None:
+            raise ApiError("PINNED_LISTENER_MERGE_UNSUPPORTED", "无法定位 listeners 列表结尾")
+        separator = "" if not entries or value[:-1].rstrip().endswith(",") else ", "
+        merged = block[:close] + "\n" + separator + json.dumps(pinned, ensure_ascii=False)[1:-1]
+        merged += "\n" + block[close:]
+    else:
+        matches = list(re.finditer(r"(?m)^( *)-\s+", block))
+        if not matches:
+            raise ApiError("PINNED_LISTENER_MERGE_UNSUPPORTED", "listeners 必须是显式列表")
+        indent = min(len(match[1]) for match in matches)
+        matches = [match for match in matches if len(match[1]) == indent]
+        entries = [block[match.end():matches[i + 1].start() if i + 1 < len(matches) else len(block)]
+                   for i, match in enumerate(matches)]
+        check_profile_listener_conflicts(entries, pinned)
+        merged = block.rstrip() + "\n" + "\n".join(render_yaml_value(pinned, indent)) + "\n"
+    return text[:start] + merged + text[end:]
+
+
 def build_runtime_text(
     item: dict[str, Any] | None = None,
     base_text: str | None = None,
@@ -3013,6 +3218,15 @@ def build_runtime_text(
                 text = set_top_level_value(text, yaml_key, port_value)
         else:
             text = remove_top_level_key(text, yaml_key)
+
+    pinned = normalize_pinned_listeners(overlay.get(PINNED_LISTENERS_KEY), pinned_listener_reserved_ports(overlay, verge))
+    if pinned:
+        # A profile without the node still renders: Mihomo then refuses that listener's connections instead
+        # of falling back to PROXY, and the operations log says why.
+        for listener in pinned:
+            if listener["proxy"] not in text:
+                append_operation_log(f"固定节点监听口 {listener['name']} 指向的节点 {listener['proxy']} 不在当前配置中")
+        text = merge_pinned_listeners(text, pinned)
 
     controller_secret_value = (
         overlay.get("secret")
@@ -3080,6 +3294,7 @@ def apply_runtime_text(new_text: str, log_message: str) -> None:
         run_command(["systemctl", "restart", "mihomo"])
         wait_for_controller()
         append_operation_log(log_message)
+        sync_live_mirror_quietly("config applied")
     except Exception as exc:
         append_operation_log(
             "runtime apply failed; restoring previous Mihomo configuration",
@@ -4517,11 +4732,27 @@ def invoke_command(cmd: str, args: dict[str, Any]) -> Any:
 
     if cmd == "patch_clash_config":
         payload = args.get("payload") or {}
-        overlay = deep_merge(load_overlay(), payload)
+        previous_overlay = load_overlay()
+        overlay = deep_merge(previous_overlay, payload)
         if "external-controller" in overlay:
             overlay["external-controller"] = "172.18.0.1:9090"
+        if PINNED_LISTENERS_KEY in payload:
+            pinned = normalize_pinned_listeners(
+                payload[PINNED_LISTENERS_KEY], pinned_listener_reserved_ports(overlay, get_verge_config_state())
+            )
+            known = runtime_proxy_names() if pinned else set()
+            missing = [p["proxy"] for p in pinned if p["proxy"] not in known]
+            if missing:
+                raise ApiError("PINNED_LISTENER_UNKNOWN_PROXY", f"当前配置里没有这些节点：{'、'.join(missing)}")
+            overlay[PINNED_LISTENERS_KEY] = [{k: p[k] for k in ("name", "port", "proxy")} for p in pinned]
+            if not pinned:
+                overlay.pop(PINNED_LISTENERS_KEY, None)
         save_overlay(overlay)
-        apply_runtime_for_current_or_empty_state()
+        try:
+            apply_runtime_for_current_or_empty_state()
+        except Exception:
+            save_overlay(previous_overlay)
+            raise
         return {"secret": controller_secret()}
 
     if cmd == "patch_clash_mode":
@@ -5148,12 +5379,113 @@ class VergeApiHandler(BaseHTTPRequestHandler):
         append_operation_log(format % args)
 
 
+def selector_selections() -> dict[str, str] | None:
+    """What every select group currently uses; Mihomo keeps it only in cache.db, which a reboot loses."""
+    try:
+        payload = controller_request("GET", "/proxies", timeout=6)
+    except Exception:
+        return None
+    proxies = payload.get("proxies") if isinstance(payload, dict) else None
+    if not isinstance(proxies, dict):
+        return None
+    return {
+        name: item["now"]
+        for name, item in sorted(proxies.items())
+        if isinstance(item, dict) and item.get("type") == "Selector" and isinstance(item.get("now"), str)
+    }
+
+
+def live_mirror_files() -> dict[str, bytes]:
+    files = {"etc-mihomo/config.yaml": MIHOMO_CONFIG_PATH.read_bytes()}
+    for path in sorted(DATA_ROOT.rglob("*")):
+        rel = path.relative_to(DATA_ROOT)
+        if rel.parts[0] in LIVE_MIRROR_EXCLUDE or path.is_symlink() or not path.is_file():
+            continue
+        files[f"var-lib-mihomo/verge/{rel.as_posix()}"] = path.read_bytes()
+    return files
+
+
+def sync_live_mirror() -> bool:
+    """Keep the bootstrap's persistent copy of the mutable runtime current; return whether it was rewritten.
+
+    A LazyCat reboot resets /etc and /var/lib but keeps /root, so without this copy the bootstrap restores the
+    generation captured at its last install and drops every later profile, setting and node choice. The copy
+    records the generation it was taken on: the bootstrap only lays it over that same generation."""
+    current = BOOTSTRAP_ROOT / "current-generation"
+    if not current.is_file() or not MIHOMO_CONFIG_PATH.is_file():
+        return False
+    if (BOOTSTRAP_ROOT / "state" / "pending.env").exists() or RESTORE_TRANSACTION_PATH.exists():
+        return False  # a restore is mid-flight: its result is not a state to come back to
+    generation = current.read_text(encoding="utf-8").strip()
+    with LIVE_MIRROR_LOCK:
+        # Recover a writer interrupted after moving live aside. Never delete the only committed copy.
+        old = BOOTSTRAP_ROOT / ".live-old"
+        if not LIVE_MIRROR_DIR.exists() and old.is_dir():
+            os.rename(old, LIVE_MIRROR_DIR)
+            _fsync_directory(BOOTSTRAP_ROOT)
+        files = live_mirror_files()
+        selections = selector_selections()
+        if selections is None:  # controller unavailable: keep the last known choices
+            previous = LIVE_MIRROR_DIR / "selections.json"
+            selections = load_json(previous, {}) if previous.is_file() else {}
+        files["selections.json"] = json.dumps(selections, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        digest = hashlib.sha256()
+        for rel in sorted(files):
+            digest.update(rel.encode("utf-8") + b"\0" + hashlib.sha256(files[rel]).digest())
+        metadata = f"BASE_GENERATION={generation}\nDIGEST={digest.hexdigest()}\n"
+        metadata_path = LIVE_MIRROR_DIR / "metadata.env"
+        if metadata_path.is_file() and metadata_path.read_text(encoding="utf-8") == metadata:
+            return False
+        for leftover in BOOTSTRAP_ROOT.glob(".live-staging.*"):  # from a write killed midway
+            shutil.rmtree(leftover, ignore_errors=True)
+        stage = Path(tempfile.mkdtemp(prefix=".live-staging.", dir=BOOTSTRAP_ROOT))
+        try:
+            for rel, data in files.items():
+                path = stage / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_bytes(path, data, 0o600)
+            atomic_write_text(stage / "metadata.env", metadata, 0o600)
+            manifest = "".join(
+                f"{hashlib.sha256((stage / rel).read_bytes()).hexdigest()}  ./{rel}\n"
+                for rel in sorted([*files, "metadata.env"])
+            )
+            atomic_write_text(stage / "manifest.sha256", manifest, 0o600)
+            atomic_write_text(stage / "COMPLETE", "", 0o600)
+            for directory in sorted((p for p in stage.rglob("*") if p.is_dir()),
+                                    key=lambda p: len(p.parts), reverse=True):
+                _fsync_directory(directory)
+            _fsync_directory(stage)
+            shutil.rmtree(old, ignore_errors=True)
+            if LIVE_MIRROR_DIR.exists():
+                os.rename(LIVE_MIRROR_DIR, old)
+                _fsync_directory(BOOTSTRAP_ROOT)
+            os.rename(stage, LIVE_MIRROR_DIR)
+            _fsync_directory(BOOTSTRAP_ROOT)
+            shutil.rmtree(old, ignore_errors=True)
+        except BaseException:
+            shutil.rmtree(stage, ignore_errors=True)
+            if not LIVE_MIRROR_DIR.exists() and old.is_dir():
+                os.rename(old, LIVE_MIRROR_DIR)
+                _fsync_directory(BOOTSTRAP_ROOT)
+            raise
+    return True
+
+
+def sync_live_mirror_quietly(context: str) -> None:
+    try:
+        if sync_live_mirror():
+            append_operation_log(f"live runtime mirror updated ({context})")
+    except Exception as exc:
+        append_operation_log(f"live runtime mirror update failed ({context})", error=exc)
+
+
 def runtime_health_watch_loop() -> None:
     while not HEALTH_WATCH_STOP.wait(HEALTH_WATCH_INTERVAL_SECONDS):
         try:
             healthz_payload()
         except Exception as exc:
             append_operation_log("runtime health watch failed", error=exc)
+        sync_live_mirror_quietly("health watch")
 
 
 def main() -> int:
