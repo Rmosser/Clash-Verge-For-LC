@@ -974,13 +974,25 @@ def alert_health_payload() -> dict[str, Any]:
             if alert_id:
                 alerts[alert_id] = event
 
-        pending = failed = exhausted = delivered = orphan_receipts = 0
+        # An undelivered alert stops counting once a later alert for the same component was delivered: the
+        # operator already has that component's current state (2026-10-25: two pinned-eb alerts exhausted their
+        # retries while the box was offline and kept /healthz at 503 after the recovery alert had arrived).
+        order = list(alerts)
+        latest_delivered: dict[str, int] = {}
+        for index, alert_id in enumerate(order):
+            if str((deliveries.get(alert_id) or {}).get("status") or "") == "delivered":
+                latest_delivered[str(alerts[alert_id].get("component") or "")] = index
+
+        pending = failed = exhausted = delivered = superseded = orphan_receipts = 0
         last_error = corruption_detail
-        for alert_id in alerts:
+        for index, alert_id in enumerate(order):
             receipt = deliveries.get(alert_id) or {}
             status = str(receipt.get("status") or "")
             if status == "delivered":
                 delivered += 1
+                continue
+            if latest_delivered.get(str(alerts[alert_id].get("component") or ""), -1) > index:
+                superseded += 1
                 continue
             pending += 1
             if status == "exhausted":
@@ -1015,6 +1027,7 @@ def alert_health_payload() -> dict[str, Any]:
             "failed": failed,
             "exhausted": exhausted,
             "delivered": delivered,
+            "superseded": superseded,
             "maxAttempts": ALERT_MAX_ATTEMPTS,
             "retryBackoffSeconds": ALERT_RETRY_BACKOFF_SECONDS,
             "retryMaxDelaySeconds": ALERT_RETRY_MAX_DELAY_SECONDS,

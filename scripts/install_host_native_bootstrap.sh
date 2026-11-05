@@ -249,6 +249,15 @@ mv -- "$staging_root" "$snapshot_root"
 printf '%s\n' "$generation_id" >"$current_generation_file.tmp.$$"
 chmod 600 "$current_generation_file.tmp.$$"
 mv -- "$current_generation_file.tmp.$$" "$current_generation_file"
+# A transaction an earlier failed apply left pending names an older generation. This snapshot of the live runtime
+# supersedes it: the next bootstrap run finishes the transaction with this generation rather than the stale one.
+pending_file="$REMOTE_BOOTSTRAP_ROOT/state/pending.env"
+if [[ -f "$pending_file" ]]; then
+  printf 'PHASE=prepared\nGENERATION=%s\nSTAGE=\nUPDATED_AT=%s\n' "$generation_id" "$(date -Iseconds)" \
+    >"$pending_file.tmp.$$"
+  chmod 600 "$pending_file.tmp.$$"
+  mv -- "$pending_file.tmp.$$" "$pending_file"
+fi
 
 cat >"$state_file.tmp.$$" <<STATE
 CONTAINER_PROXY_ENABLED=$container_proxy_enabled

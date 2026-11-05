@@ -48,6 +48,8 @@
 - generation 应用先写 pending transaction、停止相关服务、完成独立 staging
   校验，再切换文件并验证 Mihomo controller 与 Verge API；进程在中途被杀时，
   下一次启动会依据 pending generation 重做完整应用，不把混代文件当作成功。
+  若此时重新安装 bootstrap 并发布新快照，现有 pending 会改为新 generation 的 prepared
+  事务并清空旧 staging 路径；没有 pending 时不会创建事务。清理已不存在的 staging 不阻断重试。
 - 配置了 pinned listener 时，健康巡检每 5 分钟经 controller 的 delay 接口探测一次各 listener 的节点
   （`MIHOMO_PINNED_PROBE_URL`，默认 `https://www.gstatic.com/generate_204`）；连续 2 次失败记
   `pinned.<name>` 告警，恢复后记 ok。告警发件箱 `logs/alerts.jsonl` 与 `logs/alert-state.json`
@@ -74,7 +76,9 @@
   逐行恢复 JSONL；损坏行会被隔离并记录到同目录的
   `alerts.jsonl.corrupt.jsonl`，不会阻断后续有效告警，也不会与新 append 粘连。
   HTTP delivery 使用原告警 `id` 作为 `Idempotency-Key`，默认最多尝试 5 次、按
-  60 秒起始退避且最多 3600 秒；未配置、待发送、持续失败、耗尽或 journal 损坏时，
+  60 秒起始退避且最多 3600 秒。同一组件较新的告警已投递后，旧的未投递告警计为
+  `superseded`，不再计入 pending/failed/exhausted；其他组件及更新的未投递告警仍影响健康。
+  未配置、待发送、持续失败、耗尽或 journal 损坏时，
   `/healthz` 和 `/runtime-info` 的 `alerting` 都是 `degraded`/`ready: false`。
   后台 watcher 由 `MIHOMO_HEALTH_WATCH_INTERVAL_SECONDS` 控制（默认 systemd 配置为
   60 秒）。
@@ -98,6 +102,8 @@ bash scripts/deploy_microserver.sh --confirm
 
 - 不要假设 TUN 会自动代理 Docker 容器
 - 容器默认走 `172.18.0.1:17890`，跟随用户在 dashboard 里选的 `PROXY`
+- 共享与固定节点入口的 `systemd-socket-proxyd` 均设置 `--connections-max=1024` 和
+  `LimitNOFILE=65536`，为并发转发所需的 socket 与 pipe 留出文件描述符额度。
 - 需要固定出口的应用改走 `172.18.0.1:17896`；它只经过 overlay 指定的节点，节点缺失时连接失败，不回落到 `PROXY`
 - `lzc-pinned-listeners` 保存在 Verge API overlay，随每次 profile 渲染写入 `listeners:`；bootstrap generation 用 `PINNED_PROXY_ENABLED` 记录 socket 是否启用，缺省视为 0
 - pinned listeners 追加到 profile 原有列表，保留原入站选项与注释；同名或端口范围冲突会拒绝应用。
