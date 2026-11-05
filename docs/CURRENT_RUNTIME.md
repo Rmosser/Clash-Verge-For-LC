@@ -54,6 +54,10 @@
   刷新，并记录基准 generation；bootstrap 应用同一 generation 时把通过校验的镜像
   覆盖上去，并在 controller 就绪后恢复节点选择。基准不一致或校验失败时只用
   generation，因此回滚到旧 generation 不会被镜像覆盖。
+  镜像发布先持久化 staging，再切换目录；若切换中断，bootstrap 会对 `.live-old/`
+  执行相同的 manifest 与 generation 校验并恢复上一份完整镜像。节点选择恢复请求
+  失败时保留 pending transaction、返回失败并由启动服务重试；pending 存在期间
+  API 不刷新镜像，避免默认选择覆盖待恢复的选择。
 - `mihomo-resolved-sync.service` 每次 `apply` 都重新探测当前 IPv4 default-route
   interface；持久化 interface 只用于没有 default route 时的安全 revert，不能驱动
   新的 DNS assignment。
@@ -91,6 +95,9 @@ bash scripts/deploy_microserver.sh --confirm
 - 容器默认走 `172.18.0.1:17890`，跟随用户在 dashboard 里选的 `PROXY`
 - 需要固定出口的应用改走 `172.18.0.1:17896`；它只经过 overlay 指定的节点，节点缺失时连接失败，不回落到 `PROXY`
 - `lzc-pinned-listeners` 保存在 Verge API overlay，随每次 profile 渲染写入 `listeners:`；bootstrap generation 用 `PINNED_PROXY_ENABLED` 记录 socket 是否启用，缺省视为 0
+- pinned listeners 追加到 profile 原有列表，保留原入站选项与注释；同名或端口范围冲突会拒绝应用。
+  支持 block/flow 列表和 mapping；列表别名、merge key 或 name/port 的别名应先展开为字面值。
+  overlay 应用失败会恢复此前的 overlay；清空 pinned 列表不会删除 profile 自有 listeners。
 - 具体环境变量和 Node.js 说明见 [CONTAINER_PROXY_GUIDE.md](CONTAINER_PROXY_GUIDE.md)
 
 ## 变更规则

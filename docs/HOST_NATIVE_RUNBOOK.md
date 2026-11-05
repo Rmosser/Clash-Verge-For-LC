@@ -135,6 +135,10 @@ bash scripts/install_host_native_bootstrap.sh --confirm
   generation，才会覆盖上去并在 controller 就绪后恢复节点选择；镜像校验失败则按
   generation 原样启动。改动后约 60 秒内才进入镜像，重新安装 bootstrap 会产生新
   generation，旧镜像随之失效、直到下一轮巡检重写。
+- 镜像目录切换中断时，bootstrap 可从 `.live-old/` 恢复上一份完整镜像；仍须通过
+  manifest 与基准 generation 校验。节点选择恢复失败会保留 `state/pending.env` 并
+  使 bootstrap 返回失败，由 systemd 重试；API 此时暂停镜像写入。排查 controller
+  请求失败原因后重试 bootstrap，不要手动清除 pending 来跳过选择恢复。
 
 ### 健康与告警
 

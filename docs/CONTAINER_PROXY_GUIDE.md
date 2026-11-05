@@ -55,6 +55,11 @@ curl -fsS -X POST http://172.18.0.1:9091/invoke \
 
 端口不能和 mixed / socks / http / redir / tproxy 端口，以及 1053、7891、9090、9091 冲突。传空列表 `[]` 会删除这一项并重新渲染。
 
+profile 自带的 `listeners` 会保留，固定监听口追加到列表中。同名或端口范围冲突时
+拒绝应用，并恢复原 overlay。支持 block/flow 列表和 mapping；列表别名、YAML merge
+key，以及 `name` / `port` 的别名需要先展开为字面值，无法安全检查时会明确报错。
+清空固定监听口后，profile 原有监听口仍然保留。
+
 ### 安装 socket、纳入开机自举
 
 ```bash

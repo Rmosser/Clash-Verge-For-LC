@@ -346,7 +346,7 @@ validate_generation() {
   fi
 }
 
-live_mirror_usable() {
+validate_live_mirror() {
   # Only a complete, verified copy taken on top of the generation being applied may replace its state.
   local generation="$1" base
   [[ -d "$live_root" && ! -L "$live_root" ]] || return 1
@@ -361,6 +361,20 @@ live_mirror_usable() {
   ) || return 1
   base="$(read_value "$live_root/metadata.env" BASE_GENERATION || true)"
   [[ -n "$base" && "$base" == "$generation" ]]
+}
+
+live_mirror_usable() {
+  # A writer killed between the two directory renames leaves the last committed copy in .live-old.
+  # Validate each candidate independently, including its generation, before selecting it.
+  local generation="$1" candidate
+  for candidate in "$bootstrap_root/live" "$bootstrap_root/.live-old"; do
+    live_root="$candidate"
+    if validate_live_mirror "$generation"; then
+      return 0
+    fi
+  done
+  live_root="$bootstrap_root/live"
+  return 1
 }
 
 restore_selections() {
@@ -400,6 +414,16 @@ for group, choice in json.load(open(selections_path, encoding="utf-8")).items():
         restored += 1
 print("restored=%d skipped=%d" % (restored, skipped))
 PY
+}
+
+restore_selections_checked() {
+  local result
+  if result="$(restore_selections 2>&1)"; then
+    log "node selections: $result"
+  else
+    log "node selection restore failed; retaining pending transaction: $result"
+    return 1
+  fi
 }
 
 write_pending() {
@@ -444,7 +468,11 @@ remove_bootstrap_stage() {
   local candidate="$1"
   case "$candidate" in
     "$bootstrap_root"/.restore-staging-*|"$bootstrap_root"/.restore-staging.*)
-      [[ -e "$candidate" || -L "$candidate" ]] && rm -rf -- "$candidate"
+      # an `[[ ]] && rm` here returned 1 for a stage already gone and set -e killed every later reconcile
+      # (rainierspace, 2026-10-26)
+      if [[ -e "$candidate" || -L "$candidate" ]]; then
+        rm -rf -- "$candidate"
+      fi
       ;;
   esac
 }
@@ -713,7 +741,7 @@ apply_generation() {
     systemctl is-active mihomo-container-proxy-pinned.socket >/dev/null
   fi
   if [[ "$live_used" == 1 ]]; then
-    log "node selections: $(restore_selections 2>&1 | tail -1)"
+    restore_selections_checked || return 1
   fi
 
   printf '%s\n' "$generation" >"$applied_generation_file.tmp.$$"
