@@ -10,6 +10,7 @@ public_registry=https://registry.npmjs.org
 # Both Corepack and pnpm use the pinned EB Fast IPv4 listener on a cache miss.
 export HTTP_PROXY=http://172.18.0.1:17896 HTTPS_PROXY=http://172.18.0.1:17896
 export NO_PROXY=127.0.0.1,localhost,172.18.0.1
+export http_proxy="$HTTP_PROXY" https_proxy="$HTTPS_PROXY" no_proxy="$NO_PROXY"
 export COREPACK_DEFAULT_TO_LATEST=0 COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
 install_from_registry() {
