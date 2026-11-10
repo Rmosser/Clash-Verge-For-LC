@@ -64,6 +64,16 @@ NODE_OPTIONS=--max-old-space-size=3072 TZ=Asia/Shanghai npm exec --yes --package
 2. 安装 dashboard 锁定依赖；
 3. dashboard 单元测试、typecheck、ESLint 和生产构建。
 
+`scripts/ci_pnpm_install.sh` 固定使用 pnpm 11.3.0，先探测只读 npm 缓存
+`http://172.18.0.1:17893`（最多 5 秒）。Corepack 本身也从所选 registry 下载；
+版本准备最多 60 秒，缓存安装最多 180 秒。探测、准备或安装失败时，回落
+`https://registry.npmjs.org`，版本准备最多 60 秒、安装最多 600 秒；超时后最多
+再给子进程 5 秒退出。单次请求超时 30 秒、重试一次，退避 1–2 秒。
+缓存上游和公网回落均走开发机固定的 DMIT EB Fast IPv4 入口 `172.18.0.1:17896`。
+两条路径都保留 `--frozen-lockfile`、完整性检查和原有生命周期脚本行为；
+公网安装失败仍使 CI 失败。`CI_NPM_INSTALL` 日志记录路径和耗时，不把探测成功视作缓存命中。
+普通 CI 无须宿主机挂载或凭据，测试执行顺序保持不变。
+
 CI 镜像、插件 digest、内存约束和无 secret 边界以 workflow 为准；GitHub required check 和运行态 smoke 仍须分别实时核实。
 
 质量命令失败时，先报告第一个失败命令的完整错误、文件位置和是否属于依赖/环境问题；不要把远端 smoke 未执行写成通过。

@@ -44,10 +44,9 @@ steps:
       - bash -n infra/microserver/lzc-net-safe-apply scripts/mihomo-manager
       - node -e 'JSON.parse(require("node:fs").readFileSync("docs/doc-sync-rules.json", "utf8"))'
       - node -e 'const [major,minor]=process.versions.node.split(".").map(Number); if (major<22||(major===22&&minor<22)) throw new Error("Node " + process.versions.node + " is below 22.22.0")'
-      - test "$(corepack pnpm@11.3.0 --version)" = "11.3.0"
       - python3 -I -B scripts/check_docs.py --all
       - bash scripts/test.sh
-      - corepack pnpm@11.3.0 --dir src/mihomo-dashboard-app install --frozen-lockfile
+      - bash scripts/ci_pnpm_install.sh
       - TZ=Asia/Shanghai corepack pnpm@11.3.0 --dir src/mihomo-dashboard-app typecheck
       - TZ=Asia/Shanghai corepack pnpm@11.3.0 --dir src/mihomo-dashboard-app test:unit
       - TZ=Asia/Shanghai corepack pnpm@11.3.0 --dir src/mihomo-dashboard-app lint
